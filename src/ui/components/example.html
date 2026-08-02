@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>ChatComponent — Exemplo</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100vh; overflow: hidden; background: #0b0f17; }
+  .page { display: flex; flex-direction: column; height: 100vh; font-family: system-ui, sans-serif; }
+  .topbar { padding: 12px 18px; color: #dce3f0; border-bottom: 1px solid #1f2a3d; display: flex; align-items: center; gap: 12px; }
+  .topbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  .topbar button {
+    background: none; border: 1px solid #1f2a3d; color: #7b8aa5; cursor: pointer;
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; font-family: inherit;
+  }
+  .topbar button:hover { color: #4f8cff; border-color: #4f8cff; }
+  #host { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 16px; box-sizing: border-box; }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div class="topbar">
+      <h1>ChatComponent — exemplo de integração</h1>
+      <button id="btnClear">Nova conversa</button>
+      <button id="btnTest">Enviar exemplo</button>
+      <span id="eventLog" style="color:#7b8aa5; font-size:12px; margin-left:auto;"></span>
+    </div>
+    <div id="host"></div>
+  </div>
+
+  <script type="module">
+    import { ChatComponent } from "/components/chat-component.js";
+
+    const chat = new ChatComponent({
+      el: "#host",
+      baseUrl: location.origin,                      // base da API
+      apiKey: () => localStorage.getItem("deepsproxy_api_key") || "",
+      models: ["deepseek-thinking", "deepseek-no-thinking"],
+      placeholder: "Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)",
+      greeting: "Exemplo do ChatComponent. Pergunte qualquer coisa!",
+      showHeader: true,
+      showSidebar: true,
+      sidebarTitle: "Conversas",
+      autofocus: true,
+      onMessageSent: ({ text }) => {
+        console.log("[exemplo] mensagem enviada:", text);
+      },
+    }).init();
+
+    // Eventos customizados
+    const log = document.getElementById("eventLog");
+    ["chat:message-sent", "chat:message-received", "chat:cleared", "chat:error"].forEach((name) => {
+      document.getElementById("host").addEventListener(name, (e) => {
+        log.textContent = name + " ✓";
+        setTimeout(() => (log.textContent = ""), 2000);
+      });
+    });
+
+    // Métodos públicos
+    document.getElementById("btnClear").addEventListener("click", () => chat.clearChat());
+    document.getElementById("btnTest").addEventListener("click", () =>
+      chat.sendMessage("Explique o que é um proxy em uma frase.")
+    );
+
+    window.chat = chat; // acesso no console
+  </script>
+</body>
+</html>

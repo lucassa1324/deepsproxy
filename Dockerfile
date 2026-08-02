@@ -1,24 +1,26 @@
-FROM node:20-slim AS builder
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
+FROM mcr.microsoft.com/playwright:v1.59.1-noble
 
-FROM node:20-slim
-RUN apt-get update && apt-get install -y \
-    wget \
-    gnupg \
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update && apt-get install -y google-chrome-stable \
+# Tela virtual + VNC para o login remoto (noVNC no navegador)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xvfb \
+    x11vnc \
+    novnc \
     && rm -rf /var/lib/apt/lists/*
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 WORKDIR /app
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package*.json ./
-RUN npx playwright install chromium
-EXPOSE 3000
-CMD ["node", "dist/index.js"]
+
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY . .
+
+RUN npx playwright install chromium || true
+
+ENV NODE_ENV=production
+ENV OPEN_UI=false
+ENV ENABLE_VNC=true
+ENV DISPLAY=:99
+
+EXPOSE 3005 5900
+
+CMD ["bash", "/app/entrypoint.sh"]

@@ -12,80 +12,52 @@ import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 import { createDeepSeekStream, updateSessionParent } from '../services/deepseek.ts';
+import { forwardChatCompletions, findProviderForModel, isDeepseekModel } from '../services/local.ts';
+import {
+  resolveRegistry,
+  resolveActiveProvider,
+  enabledProviders,
+  isDeepseekProvider,
+} from '../services/config.ts';
+import type { Provider } from '../services/config.ts';
 import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.ts';
+import { buildAgentPrompt } from '../utils/prompt.ts';
 import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
 
 export async function chatCompletions(c: Context) {
+  const startedAt = Date.now();
   try {
     const body: OpenAIRequest = await c.req.json();
     const isStream = body.stream ?? false;
-    
-    // Extract the prompt
-    let prompt = '';
+
+    // Roteamento multi-provedor: vários provedores podem estar ativos.
+    //  - nome de modelo deepseek -> backend DeepSeek (se houver um habilitado);
+    //  - modelo conhecido por um provedor habilitado -> esse provedor;
+    //  - senão -> o provedor principal (fallback).
+    const registry = resolveRegistry(c.req.header('Cookie'));
+    const enabled = enabledProviders(registry);
+    const primary = resolveActiveProvider(c.req.header('Cookie'));
+
+    const deepseekEnabled = enabled.some((p) => isDeepseekProvider(p));
+    let target: Provider = primary;
+    if (isDeepseekModel(body.model) && deepseekEnabled) {
+      target = enabled.find((p) => isDeepseekProvider(p)) ?? primary;
+    } else if (!isDeepseekModel(body.model)) {
+      const owner = await findProviderForModel(enabled, body.model);
+      if (owner) target = owner;
+    }
+
+    if (!isDeepseekProvider(target)) {
+      return forwardChatCompletions(c, body, target);
+    }
+
+    const finalPrompt = buildAgentPrompt(body);
     const messages = body.messages || [];
-    let systemPrompt = '';
-    
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      let contentStr = '';
-      if (Array.isArray(msg.content)) {
-        contentStr = msg.content.map((c: any) => c.text || JSON.stringify(c)).join('\n');
-      } else if (typeof msg.content === 'object' && msg.content !== null) {
-        contentStr = JSON.stringify(msg.content);
-      } else {
-        contentStr = msg.content || '';
-      }
 
-      if (msg.role === 'system') {
-        systemPrompt += contentStr + '\n\n';
-      } else if (i === messages.length - 1) {
-        if (msg.role === 'user') {
-          prompt += `User: ${contentStr}\n\n`;
-        } else if (msg.role === 'assistant') {
-          let assistantContent = contentStr;
-          if ((msg as any).reasoning_content) {
-            assistantContent = `<think>\n${(msg as any).reasoning_content}\n</think>\n${assistantContent}`;
-          }
-          if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
-             for (const tc of msg.tool_calls) {
-               let args = tc.function?.arguments || '{}';
-               if (typeof args !== 'string') args = JSON.stringify(args);
-               assistantContent += `\n<tool_call>{"name": "${tc.function?.name}", "arguments": ${args}}</tool_call>`;
-             }
-          }
-          prompt += `Assistant: ${assistantContent.trim()}\n\n`;
-        } else if (msg.role === 'tool' || msg.role === 'function') {
-          prompt += `Tool Response (${msg.name || 'tool'}): ${contentStr}\n\n`;
-        }
-      }
-    }
-
-    // Inject tools instructions
-    const bodyAny = body as any;
-    if (bodyAny.tools && Array.isArray(bodyAny.tools) && bodyAny.tools.length > 0) {
-      // Better formatting for tools
-      const formattedTools = bodyAny.tools.map((t: any) => {
-        if (t.type === 'function') {
-          return {
-            name: t.function.name,
-            description: t.function.description || '',
-            parameters: t.function.parameters
-          };
-        }
-        return t;
-      });
-      const toolsJson = JSON.stringify(formattedTools, null, 2);
-      
-      systemPrompt += `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${toolsJson}\n\nTo use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:\n<tool_call>\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n</tool_call>\n\nRULES:\n1. You can call multiple tools by outputting multiple <tool_call> blocks consecutively.\n2. Do NOT output any other text after your <tool_call> blocks. Wait for the user to provide the tool response.\n3. The JSON must be valid and accurately follow the tool's parameters.\n\n`;
-      
-      if (bodyAny.tool_choice && typeof bodyAny.tool_choice === 'object' && bodyAny.tool_choice.function) {
-        const forcedTool = bodyAny.tool_choice.function.name;
-        systemPrompt += `CRITICAL: You MUST call the tool "${forcedTool}" in this response.\n\n`;
-      }
-    }
-
-    const finalPrompt = systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
+    console.log(
+      `[chat] request model=${body.model} stream=${body.stream ? 'yes' : 'no'} messages=${messages.length} promptChars=${finalPrompt.length}`
+    );
 
     const isThinkingModel = !body.model.includes('no-thinking');
     
@@ -181,7 +153,10 @@ export async function chatCompletions(c: Context) {
 
             // Extract message_id for session tracking to avoid overwriting messages
             let dsMessageId: any = null;
-            if (chunk.response_message_id) {
+            if (chunk.p === 'response/message' && chunk.v && typeof chunk.v === 'object' && typeof chunk.v.id === 'number') {
+              // Real DeepSeek protocol: the assistant message id lives at p:"response/message", v.id
+              dsMessageId = chunk.v.id;
+            } else if (chunk.response_message_id) {
               dsMessageId = chunk.response_message_id;
             } else if (chunk.v && typeof chunk.v === 'object') {
               if (chunk.v.response && chunk.v.response.message_id) {
@@ -398,6 +373,9 @@ export async function chatCompletions(c: Context) {
       });
       await streamWriter.write('data: [DONE]\n\n');
 
+      console.log(
+        `[chat] done model=${body.model} ${Date.now() - startedAt}ms tokens=${completionTokens + promptTokens} finish=${finalFinishReason}`
+      );
     });
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);

@@ -1,9 +1,11 @@
 node_modules
-dist
 deepseek_profile
-.env
+dist
 .git
-.gitignore
-README.md
-.DS_Store
+.env
+.env.*
 *.log
+npm-debug.log*
+Dockerfile
+.dockerignore
+docker-compose.yml

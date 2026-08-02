@@ -1,0 +1,1572 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DeepsProxy Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0f17;
+    --panel: #121826;
+    --panel-2: #0f1522;
+    --border: #1f2a3d;
+    --text: #dce3f0;
+    --muted: #7b8aa5;
+    --accent: #4f8cff;
+    --green: #35d07f;
+    --yellow: #e8b53a;
+    --red: #f2645f;
+    --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    background: var(--panel-2);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
+  header h1 .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill {
+    font-size: 12px; padding: 5px 10px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .pill .s { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .pill.ok { color: var(--green); border-color: #1f4d38; }
+  .pill.ok .s { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .pill.err { color: var(--red); border-color: #5a2727; }
+  .pill.err .s { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .pill.warn { color: var(--yellow); border-color: #5a4a1f; }
+  .pill.warn .s { background: var(--yellow); }
+
+  nav.tabs {
+    display: flex; gap: 4px; padding: 10px 24px 0; border-bottom: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+  nav.tabs button {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    padding: 10px 16px; font-size: 14px; border-bottom: 2px solid transparent;
+    font-family: inherit;
+  }
+  nav.tabs button:hover { color: var(--text); }
+  nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+  main { padding: 20px 24px 60px; max-width: 1100px; margin: 0 auto; }
+  section.tab { display: none; }
+  section.tab.active { display: block; }
+
+  .grid { display: grid; gap: 14px; }
+  .grid.cols-4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px;
+  }
+  .card h3 { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 12px; font-weight: 600; }
+  .card .value { font-size: 15px; font-weight: 600; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  label.field { display: block; margin-bottom: 12px; }
+  label.field span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+  input, select, textarea {
+    width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px;
+    font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { resize: vertical; min-height: 90px; font-family: "Cascadia Code", Consolas, monospace; }
+
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .row.wrap { flex-wrap: wrap; }
+  button.btn {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 10px 16px; font-size: 14px; cursor: pointer; font-family: inherit; font-weight: 600;
+  }
+  button.btn:hover { filter: brightness(1.1); }
+  button.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.btn.ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--muted); font-weight: 400;
+  }
+  button.btn.ghost:hover { color: var(--text); border-color: #2e3d57; }
+  button.btn.danger { background: transparent; border: 1px solid var(--red); color: var(--red); }
+
+  .endpoint { display: flex; gap: 10px; align-items: center; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .endpoint:last-child { border-bottom: none; }
+  .provider-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 0; border-bottom: 1px solid var(--border);
+  }
+  .provider-row:last-child { border-bottom: none; }
+  .provider-row.disabled { opacity: .55; }
+  .method {
+    font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
+    color: #0b0f17; background: var(--green); min-width: 44px; text-align: center;
+  }
+  .method.post { background: var(--accent); color: #fff; }
+  .method.get { background: var(--green); color: #0b0f17; }
+  .method.delete { background: var(--red); color: #fff; }
+  code, .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  code.inline { background: var(--panel-2); border: 1px solid var(--border); padding: 2px 6px; border-radius: 5px; color: var(--purple); }
+
+  .steps { list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step; position: relative; padding: 6px 0 6px 44px;
+    font-size: 14px; color: var(--text);
+  }
+  .steps li::before {
+    content: counter(step); position: absolute; left: 0; top: 6px;
+    width: 26px; height: 26px; border-radius: 50%;
+    background: var(--panel-2); border: 1px solid var(--accent); color: var(--accent);
+    display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  }
+  .steps li code.cmd { background: var(--panel-2); border: 1px solid var(--border); padding: 3px 8px; border-radius: 6px; color: var(--accent); }
+
+  .output {
+    background: #070a11; border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; margin-top: 14px; font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+    min-height: 80px; max-height: 380px; overflow: auto;
+  }
+  .output .meta { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  .output .reasoning { color: var(--purple); }
+  .output .reasoning .tag { color: var(--purple); font-weight: 700; }
+  .output .content { color: var(--text); }
+  .output .tools { color: var(--yellow); }
+  .output .done { color: var(--green); font-weight: 700; }
+  .output .error { color: var(--red); }
+  details.reasoning { margin-bottom: 10px; }
+  details.reasoning summary { cursor: pointer; color: var(--purple); font-size: 12px; user-select: none; }
+
+  .logs-header { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+  .logs-header .spacer { flex: 1; }
+  .filter { display: flex; gap: 6px; }
+  .filter button {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 5px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .filter button.active { border-color: var(--accent); color: var(--accent); }
+  .filter button.active.err { border-color: var(--red); color: var(--red); }
+  .filter button.active.warn { border-color: var(--yellow); color: var(--yellow); }
+  .logs {
+    background: #070a11; border: 1px solid var(--border); border-radius: 10px;
+    height: 420px; overflow-y: auto; padding: 10px; font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12.5px; line-height: 1.6;
+  }
+  .log { display: flex; gap: 8px; padding: 2px 6px; border-radius: 4px; }
+  .log:hover { background: #0d1420; }
+  .log .time { color: #4a5a7a; flex-shrink: 0; }
+  .log .level { font-weight: 700; flex-shrink: 0; width: 44px; }
+  .log.level-log .level { color: var(--muted); }
+  .log.level-info .level { color: var(--accent); }
+  .log.level-warn .level { color: var(--yellow); }
+  .log.level-error .level { color: var(--red); }
+  .log.level-debug .level { color: var(--purple); }
+  .log .msg { white-space: pre-wrap; word-break: break-word; color: var(--text); }
+
+  .checkbox { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+  .checkbox input { width: auto; }
+
+  pre.code {
+    background: #070a11; border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px; overflow-x: auto; font-size: 13px; line-height: 1.6;
+    font-family: "Cascadia Code", Consolas, monospace; color: #dce3f0;
+    position: relative;
+  }
+  .code-tabs { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; }
+  .code-tabs button {
+    background: var(--panel-2); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  .code-tabs button.active { color: var(--accent); border-color: var(--accent); }
+  .copy {
+    position: absolute; top: 10px; right: 10px; background: var(--panel); border: 1px solid var(--border);
+    color: var(--muted); border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  .copy:hover { color: var(--text); }
+
+  .usage { display: block; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .usage b { color: var(--accent); }
+  .usage .err { color: var(--red); }
+
+  /* ---- Chat (estilo ChatGPT) ---- */
+  .chat-wrap {
+    display: flex; flex-direction: row; align-items: stretch;
+    height: calc(100vh - 280px);
+    max-height: 700px;
+    overflow: hidden;
+  }
+  .chat-sidebar {
+    width: 200px; flex-shrink: 0;
+    display: flex; flex-direction: column; gap: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-right: none;
+    border-radius: 10px 0 0 10px; padding: 12px;
+    overflow-y: auto;
+  }
+  .chat-sidebar .sidebar-title {
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.08em; font-weight: 600; padding: 0 4px;
+  }
+  .chat-sidebar .btn { width: 100%; justify-content: center; }
+  .chat-main {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column;
+    padding-left: 16px;
+  }
+  .chat-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
+  }
+  .chat-header h3 { font-size: 18px; }
+  #chatMount { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+  .login-banner {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: rgba(242, 100, 95, 0.08); border: 1px solid rgba(242, 100, 95, 0.35);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 12px;
+    color: var(--red); font-size: 13px;
+  }
+  .login-banner b { font-weight: 600; }
+  .login-panel { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--panel-2); }
+
+  /* ---- Chat responsivo ---- */
+  @media (min-width: 481px) and (max-width: 768px) {
+    .chat-wrap { height: calc(100vh - 250px); max-height: 600px; }
+    .chat-sidebar { width: 165px; }
+    .chat-main { padding-left: 12px; }
+  }
+  @media (max-width: 480px) {
+    .chat-wrap { height: calc(100vh - 220px); max-height: none; }
+    .chat-sidebar {
+      width: 100%; flex-direction: row; align-items: center; gap: 8px;
+      border-right: none; border-bottom: 1px solid var(--border);
+      border-radius: 10px 10px 0 0; padding: 10px;
+    }
+    .chat-sidebar .btn { width: auto; }
+    .chat-main { padding-left: 0; }
+    .chat-header { flex-direction: column; align-items: flex-start; }
+    .chat-header h3 { font-size: 16px; }
+  }
+
+  /* ---- OVERRIDE TELA CHEIA DA ABA CHAT ---- */
+  /* Com a aba Chat ativa o body vira coluna flex: header e nav.tabs
+     mantêm a altura natural e o main preenche o restante da viewport,
+     sem position:fixed nem offsets em px (nada é sobreposto). */
+  body:has(#tab-chat.active) {
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  body:has(#tab-chat.active) header,
+  body:has(#tab-chat.active) nav.tabs { flex-shrink: 0; }
+  body:has(#tab-chat.active) main {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+    max-width: none;
+    margin: 0;
+    width: 100%;
+  }
+
+  #tab-chat.active {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    width: 100%;
+  }
+
+  #tab-chat.active .chat-wrap {
+    height: 100% !important;
+    max-height: none !important;
+    border-radius: 0 !important;
+    border: none !important;
+    background: var(--panel-2);
+  }
+
+  #tab-chat.active .chat-sidebar { border-radius: 0 !important; }
+
+  #tab-chat.active .chat-main {
+    padding-left: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  #tab-chat.active .chat-header {
+    padding: 12px 16px;
+    margin: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  /* ---- CORREÇÃO SCROLLBAR (Bug B) ---- */
+  #tab-chat.active #chatMount {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  #tab-chat.active #chatMount .ds-chat {
+    border: none !important;
+    border-radius: 0 !important;
+    flex: 1;
+    min-height: 0;
+  }
+  #tab-chat.active #chatMount .ds-chat__body-wrap { flex: 1; min-height: 0; }
+  #tab-chat.active #chatMount .ds-chat__main {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  #tab-chat.active #chatMount .ds-chat__thread {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: var(--accent, #4f8cff) #121826;
+  }
+  #tab-chat.active #chatMount .ds-chat__thread::-webkit-scrollbar { width: 10px; }
+  #tab-chat.active #chatMount .ds-chat__thread::-webkit-scrollbar-track { background: #0f1522; }
+  #tab-chat.active #chatMount .ds-chat__thread::-webkit-scrollbar-thumb {
+    background: #2b3b56;
+    border-radius: 5px;
+    border: 2px solid #0f1522;
+  }
+  #tab-chat.active #chatMount .ds-chat__thread::-webkit-scrollbar-thumb:hover { background: #4f8cff; }
+
+  #tab-chat.active .note {
+    margin: 0;
+    padding: 8px 16px;
+    border-top: 1px solid var(--border);
+    background: var(--panel-2);
+  }
+
+  /* ---- Tela cheia responsiva ---- */
+  @media (min-width: 481px) and (max-width: 768px) {
+    #tab-chat.active .chat-sidebar { width: 165px; }
+  }
+  @media (max-width: 480px) {
+    #tab-chat.active .chat-wrap { flex-direction: column; }
+    #tab-chat.active .chat-sidebar {
+      width: 100%;
+      flex-direction: row;
+      align-items: center;
+      gap: 8px;
+      border-right: none;
+      border-bottom: 1px solid var(--border);
+      padding: 10px;
+    }
+    #tab-chat.active .chat-sidebar .btn { width: auto; }
+    #tab-chat.active .chat-main { padding-left: 0; }
+    #tab-chat.active .chat-header { flex-direction: column; align-items: flex-start; }
+  }
+
+  .note { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+  .spinner {
+    width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .hidden { display: none !important; }
+  @media (max-width: 700px) {
+    header { flex-direction: column; gap: 10px; align-items: flex-start; }
+    main { padding: 14px 14px 40px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span class="dot" id="serverDot"></span> DeepsProxy Dashboard</h1>
+  <div class="pills" id="pills"></div>
+  <a href="/chat" class="btn" style="margin-left:10px; text-decoration:none;" title="Abrir chat em página separada">Chat</a>
+</header>
+
+<nav class="tabs">
+  <button class="active" data-tab="connect">Conexão</button>
+  <button data-tab="chat">Chat</button>
+  <button data-tab="test">Testar API</button>
+  <button data-tab="examples">Exemplos</button>
+  <button data-tab="logs">Logs</button>
+</nav>
+
+<main>
+
+  <!-- ============ CONEXÃO ============ -->
+  <section class="tab active" id="tab-connect">
+    <div class="grid cols-4">
+      <div class="card">
+        <h3>Servidor</h3>
+        <div class="value" id="stServer">—</div>
+        <div class="sub" id="stPort">—</div>
+      </div>
+      <div class="card">
+        <h3>Provedor</h3>
+        <div class="value" id="stProvider">—</div>
+        <div class="sub" id="stProviderSub">—</div>
+      </div>
+      <div class="card">
+        <h3>Backend</h3>
+        <div class="value" id="stBackend">—</div>
+        <div class="sub" id="stBackendSub">—</div>
+      </div>
+      <div class="card">
+        <h3>API Key</h3>
+        <div class="value" id="stApiKey">—</div>
+        <div class="sub">Autenticação da API</div>
+      </div>
+    </div>
+
+    <div class="grid" style="margin-top:14px; grid-template-columns: 1fr 1fr;">
+      <div class="card">
+        <h3>Provedores</h3>
+        <div id="providerList"></div>
+        <div class="row" style="margin-top:10px;">
+          <button class="btn" id="btnAddProvider" type="button">+ Novo provedor</button>
+          <span class="note" style="margin:0;">Salvo em cookies do navegador</span>
+        </div>
+
+        <div id="providerEditor" class="hidden" style="margin-top:14px; border-top:1px solid var(--border); padding-top:14px;">
+          <h3 id="editorTitle">Novo provedor</h3>
+          <label class="field">
+            <span>Nome</span>
+            <input id="pvName" placeholder="Ex.: Ollama local, OpenAI, Groq..." />
+          </label>
+          <label class="field">
+            <span>Tipo</span>
+            <select id="pvType">
+              <option value="openai-compatible">OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...)</option>
+              <option value="deepseek">DeepSeek (via Playwright)</option>
+            </select>
+          </label>
+          <div id="pvOpenAiFields">
+            <label class="field">
+              <span>Base URL</span>
+              <input id="pvBaseUrl" placeholder="http://localhost:1234/v1" />
+            </label>
+            <label class="field">
+              <span>Modelo (opcional — vazio usa o modelo da requisição)</span>
+              <div class="row">
+                <input id="pvModel" list="pvModelList" style="flex:1;" placeholder="(automático) — digite ou escolha um modelo" />
+                <datalist id="pvModelList"></datalist>
+                <button class="btn ghost" id="btnLoadModels" type="button">Carregar modelos</button>
+              </div>
+            </label>
+            <label class="field">
+              <span>API Key (opcional)</span>
+              <input id="pvApiKey" type="password" autocomplete="off" placeholder="Deixe vazio se não for necessária" />
+            </label>
+          </div>
+          <div class="row">
+            <button class="btn" id="btnSaveProvider" type="button">Salvar provedor</button>
+            <button class="btn ghost" id="btnTestProvider" type="button">Testar conexão</button>
+            <button class="btn ghost" id="btnCancelProvider" type="button">Cancelar</button>
+          </div>
+          <div id="pvFeedback" class="note"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Como conectar</h3>
+        <ol class="steps" id="connectSteps"></ol>
+        <button class="btn ghost" id="btnRefresh" style="margin-top:12px;">↻ Verificar conexão</button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>Conexão da API</h3>
+      <div class="row" style="align-items:flex-end;">
+        <label class="field" style="flex:1;">
+          <span>Base URL</span>
+          <input id="baseUrl" readonly />
+        </label>
+        <label class="field" style="flex:1;">
+          <span>API Key (opcional se <code class="inline">API_KEY</code> não estiver configurada no .env)</span>
+          <input id="apiKey" placeholder="Cole sua API_KEY aqui..." autocomplete="off" />
+        </label>
+      </div>
+      <h3 style="margin-top:6px;">Endpoints</h3>
+      <div id="endpoints"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px;" id="loginCard">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="min-width:220px;">
+          <h3 style="margin:0;">Login na DeepSeek</h3>
+          <div class="sub" id="loginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
+            A sessão do navegador é necessária para o chat funcionar.
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnLoginStart">Fazer login</button>
+          <button class="btn ghost" id="btnLoginFinish" style="display:none;">Concluir login</button>
+        </div>
+      </div>
+      <div id="vncRow" class="hidden" style="margin-top:8px; font-size:12.5px;">
+        Em servidor remoto, o navegador abre numa "tela virtual".
+        <a id="vncLink" href="#" target="_blank" rel="noopener">Abrir login remoto (VNC)</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CHAT ============ -->
+  <section class="tab" id="tab-chat">
+    <div class="chat-wrap">
+      <aside class="chat-sidebar">
+        <div class="sidebar-title">Conversas</div>
+        <button class="btn ghost" id="btnChatClear">Nova conversa</button>
+      </aside>
+
+      <div class="chat-main">
+        <div class="chat-header">
+          <h3 style="margin:0;">Chat</h3>
+        </div>
+
+        <div class="login-banner hidden" id="chatLoginBanner">
+          <span><b>Você não está logado na DeepSeek.</b> O chat só funciona com uma sessão válida.</span>
+          <button class="btn ghost" id="btnBannerLogin" style="color:var(--red); border-color:rgba(242,100,95,0.5);">Fazer login</button>
+        </div>
+
+        <div id="chatMount"></div>
+
+        <div id="chatNote" class="note">
+          Multi-turno preservado pelo servidor. Se <code class="inline">API_KEY</code> estiver configurada no <code class="inline">.env</code>,
+          cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ TESTAR API ============ -->
+  <section class="tab" id="tab-test">
+    <div class="card">
+      <h3>Console de teste</h3>
+      <label class="field">
+        <span>Mensagem</span>
+        <textarea id="testMessage">Olá! Me apresente em 2 frases.</textarea>
+      </label>
+      <div class="row">
+        <label class="field" style="flex:1;">
+          <span>Modelo</span>
+          <select id="testModel">
+            <option value="deepseek-thinking">deepseek-thinking</option>
+            <option value="deepseek-no-thinking">deepseek-no-thinking</option>
+          </select>
+        </label>
+        <label class="field" style="flex:1;">
+          <span>Opções</span>
+          <div style="display:flex; gap:14px; align-items:center; padding-top:9px;">
+            <label class="checkbox"><input type="checkbox" id="testStream" checked /> Streaming</label>
+          </div>
+        </label>
+        <div style="display:flex; align-items:flex-end; gap:8px;">
+          <button class="btn" id="btnTestSend">Enviar</button>
+          <button class="btn ghost" id="btnTestModels" title="Refaz a busca de modelos nos provedores ativos">Procurar modelos</button>
+          <button class="btn ghost" id="btnTestClear">Limpar</button>
+        </div>
+      </div>
+      <div class="note">
+        A requisição é feita para <code class="inline" id="testUrl"></code> com a API Key preenchida acima.
+        Se nenhuma chave for informada, a requisição sai sem <code class="inline">Authorization</code>.
+      </div>
+      <div class="output hidden" id="testOutput"></div>
+      <div class="usage hidden" id="testUsage"></div>
+    </div>
+  </section>
+
+  <!-- ============ EXEMPLOS ============ -->
+  <section class="tab" id="tab-examples">
+    <div class="card">
+      <h3>Exemplos de consumo da API</h3>
+      <div class="code-tabs" id="exampleTabs">
+        <button class="active" data-code="curl">curl</button>
+        <button data-code="python">Python</button>
+        <button data-code="node">Node.js (fetch)</button>
+        <button data-code="openai">OpenAI SDK</button>
+      </div>
+      <pre class="code"><button class="copy" data-copy="codeBlock">Copiar</button><code id="codeBlock"></code></pre>
+      <div class="note">
+        Substitua <code class="inline">SUA_API_KEY</code> pela chave do seu <code class="inline">.env</code>.
+        Sem chave configurada, basta remover o cabeçalho <code class="inline">Authorization</code>.
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ LOGS ============ -->
+  <section class="tab" id="tab-logs">
+    <div class="card">
+      <div class="logs-header">
+        <h3 style="margin:0;">Logs do servidor</h3>
+        <span class="spacer"></span>
+        <label class="checkbox"><input type="checkbox" id="logAutoScroll" checked /> Auto-scroll</label>
+        <button class="btn ghost" id="btnClearLogs">Limpar</button>
+      </div>
+      <div class="filter" id="logFilters">
+        <button class="active" data-level="all">Todos</button>
+        <button data-level="log">Log</button>
+        <button data-level="info">Info</button>
+        <button data-level="warn">Warn</button>
+        <button data-level="error" class="err">Error</button>
+        <button data-level="debug">Debug</button>
+      </div>
+      <div class="logs" id="logContainer" style="margin-top:10px;"></div>
+      <div class="note" id="logStatus">Conectando aos logs em tempo real...</div>
+    </div>
+  </section>
+
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (sel) => document.querySelector(sel);
+  const baseUrlInput = $("#baseUrl");
+  const apiKeyInput = $("#apiKey");
+  const serverDot = $("#serverDot");
+
+  // ---------- Tabs ----------
+  document.querySelectorAll("nav.tabs button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll("section.tab").forEach((s) => s.classList.remove("active"));
+      btn.classList.add("active");
+      $("#tab-" + btn.dataset.tab).classList.add("active");
+    });
+  });
+
+  // ---------- Status ----------
+  let status = { port: 3005 };
+  let lastModelIds = null;
+
+  async function loadStatus() {
+    try {
+      const res = await fetch("/api/status");
+      status = await res.json();
+      const port = status.port || 3005;
+      const providerInfo = status.provider || {};
+      const isLocal = providerInfo.type !== "deepseek";
+      baseUrlInput.value = location.origin || "http://localhost:" + port;
+      $("#testUrl").textContent = location.origin + "/v1/chat/completions";
+
+      serverDot.style.background = "var(--green)";
+      serverDot.style.boxShadow = "0 0 8px var(--green)";
+
+      $("#stServer").textContent = status.server === "online" ? "Online" : "Offline";
+      $("#stPort").textContent = "porta " + port + " · up " + fmtUptime(status.uptime);
+
+      // ---- Provedor (principal) ----
+      const providerName = isLocal
+        ? (providerInfo.name || "OpenAI-compatível")
+        : (providerInfo.name || "DeepSeek");
+      $("#stProvider").textContent = providerName;
+      $("#stProvider").style.color = isLocal ? "var(--purple)" : "var(--accent)";
+      const extraActive =
+        status.enabledCount && status.enabledCount > 1
+          ? " + " + (status.enabledCount - 1) + " ativo(s)"
+          : "";
+      $("#stProviderSub").textContent = isLocal
+        ? (providerInfo.baseUrl || "—") + extraActive
+        : "Playwright + chat.deepseek.com" + extraActive;
+
+      // ---- Backend ----
+      if (isLocal) {
+        const bk = status.backend || {};
+        $("#stBackend").textContent = bk.ok ? "Conectado" : "Offline";
+        $("#stBackend").style.color = bk.ok ? "var(--green)" : "var(--red)";
+        const modelTxt = providerInfo.model || (status.models && status.models[0]) || "";
+        $("#stBackendSub").textContent = bk.ok
+          ? modelTxt ? "Modelo: " + modelTxt : (status.models || []).length + " modelo(s) disponível(eis)"
+          : bk.baseUrl || "—";
+      } else {
+        const pw = status.playwright || {};
+        const login = status.login || {};
+        $("#stBackend").textContent = pw.initialized ? (login.loggedIn ? "Logado" : "Sessão aberta") : "Não inicializado";
+        $("#stBackend").style.color = pw.initialized ? (login.loggedIn ? "var(--green)" : "var(--yellow)") : "var(--red)";
+        $("#stBackendSub").textContent = login.cookieCount
+          ? login.cookieCount + " cookie(s) da sessão"
+          : "Nenhuma sessão salva";
+      }
+
+      // ---- Login / banner / campos ----
+      const login = status.login || {};
+      const loginInProgress = !!login.inProgress;
+      const loginHint = $("#loginHint");
+      const loginBanner = $("#chatLoginBanner");
+      const btnLoginStart = $("#btnLoginStart");
+      const btnLoginFinish = $("#btnLoginFinish");
+      const loginCard = $("#loginCard");
+
+      if (isLocal) {
+        loginCard.style.display = "none";
+        loginBanner.classList.add("hidden");
+      } else {
+        loginCard.style.display = "";
+        if (loginInProgress) {
+          loginHint.textContent = "Navegador aberto. Faça login em chat.deepseek.com e clique em \"Concluir login\".";
+          loginBanner.innerHTML = '<span><b>Login em andamento.</b> Faça login no navegador aberto e depois clique em "Concluir login".</span>';
+          loginBanner.classList.remove("hidden");
+          btnLoginStart.style.display = "none";
+          btnLoginFinish.style.display = "";
+          btnLoginFinish.textContent = "Concluir login";
+        } else if (login.loggedIn) {
+          loginHint.textContent = "Sessão válida detectada. O chat está pronto para uso.";
+          loginBanner.classList.add("hidden");
+          btnLoginStart.style.display = "";
+          btnLoginStart.textContent = "Refazer login";
+          btnLoginFinish.style.display = "none";
+        } else {
+          loginHint.textContent = "Sem sessão válida. Clique em \"Fazer login\" para abrir o navegador e autenticar na DeepSeek.";
+          loginBanner.classList.remove("hidden");
+          btnLoginStart.style.display = "";
+          btnLoginStart.textContent = "Fazer login";
+          btnLoginFinish.style.display = "none";
+        }
+      }
+
+      const vncRow = $("#vncRow");
+      if (vncRow) {
+        if (status.vnc && status.vnc.enabled && !isLocal) {
+          vncRow.classList.remove("hidden");
+          $("#vncLink").href = status.vnc.url;
+        } else {
+          vncRow.classList.add("hidden");
+        }
+      }
+
+      $("#stApiKey").textContent = status.apiKeyConfigured ? "Configurada" : "Não configurada";
+      $("#stApiKey").style.color = status.apiKeyConfigured ? "var(--green)" : "var(--yellow)";
+
+      if (status.apiKeyConfigured && !apiKeyInput.value) {
+        apiKeyInput.placeholder = "API_KEY está no .env — deixe vazio para usá-la";
+      }
+
+      const chatNote = $("#chatNote");
+      if (chatNote) {
+        chatNote.innerHTML = isLocal
+          ? "Multi-turno preservado pelo servidor (histórico enviado na requisição). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
+          : "Multi-turno preservado via sessão da DeepSeek (<code class=\"inline\">parent_message_id</code>). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.";
+      }
+
+      // ---- Config do provedor ----
+      loadProviders();
+
+      // ---- Modelos (chat/test) ----
+      const modelIds = (status.models || []).map((m) => (typeof m === "string" ? m : m.id || m));
+      if (lastModelIds === null || JSON.stringify(lastModelIds) !== JSON.stringify(modelIds)) {
+        lastModelIds = modelIds;
+        applyModelsToSelectors(modelIds);
+      }
+
+      renderPills(status);
+      renderEndpoints(port);
+      renderExamples();
+      renderConnectSteps(isLocal);
+    } catch (e) {
+      serverDot.style.background = "var(--red)";
+      serverDot.style.boxShadow = "0 0 8px var(--red)";
+    }
+  }
+
+  function renderConnectSteps(isLocal) {
+    const steps = $("#connectSteps");
+    const stepsHtml = isLocal
+      ? [
+          "Adicione um provedor OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...) com o botão <b>+ Novo provedor</b>.",
+          "Preencha a <b>Base URL</b> (opcionalmente o modelo e a API Key) e clique em <b>Salvar provedor</b>. Use <b>Testar conexão</b> para validar.",
+          "O provedor fica salvo em <b>cookies</b> e já fica ativo para o chat e para a API (veja a aba <b>Exemplos</b>).",
+        ]
+      : [
+          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.deepseek.com</code> e clique em <b>Concluir login</b>.",
+          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
+          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
+        ];
+    steps.innerHTML = stepsHtml.map((s) => "<li>" + s + "</li>").join("");
+  }
+
+  function fmtUptime(s) {
+    s = s || 0;
+    const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+    if (h > 0) return h + "h " + m + "m";
+    return m + "m " + (s % 60) + "s";
+  }
+
+  function renderPills(st) {
+    const pills = $("#pills");
+    const isLocal = (st.provider || {}).type !== "deepseek";
+    const pw = st.playwright || {}, login = st.login || {};
+    const items = [
+      { label: "Servidor", cls: st.server === "online" ? "ok" : "err" },
+      isLocal
+        ? { label: "Provedor", cls: (st.backend && st.backend.ok) ? "ok" : "err" }
+        : { label: "Playwright", cls: pw.initialized ? "ok" : "warn" },
+      isLocal
+        ? { label: "Modelos", cls: (st.models && st.models.length) ? "ok" : "warn" }
+        : { label: "Login", cls: login.loggedIn ? "ok" : "err" },
+      { label: "API Key", cls: st.apiKeyConfigured ? "ok" : "warn" },
+    ];
+    pills.innerHTML = items
+      .map((i) => `<span class="pill ${i.cls}"><span class="s"></span>${i.label}</span>`)
+      .join("");
+  }
+
+  function populateModelSelect(ids) {
+    const list = $("#pvModelList");
+    const input = $("#pvModel");
+    if (!list || !input) return;
+    const current = input.value;
+    list.innerHTML = "";
+    (ids || []).forEach((id) => {
+      const o = document.createElement("option");
+      o.value = id;
+      list.appendChild(o);
+    });
+    // Mantém o que o usuário digitou/escolheu (o datalist só oferece sugestões).
+    input.value = current;
+  }
+
+  function populateTestModels(ids) {
+    const sel = $("#testModel");
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = "";
+    (ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).forEach((id) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = id;
+      sel.appendChild(o);
+    });
+    if (ids.indexOf(current) !== -1) sel.value = current;
+    else sel.value = ids[0] || "deepseek-thinking";
+  }
+
+  // ---------- Provedores (registro + cookies) ----------
+  let providers = [];
+  let activeProviderId = null;
+  let editingId = null;
+
+  function renderProviderList() {
+    const list = $("#providerList");
+    if (!providers.length) {
+      list.innerHTML =
+        '<div class="note" style="margin:0;">Nenhum provedor salvo ainda. Clique em <b>+ Novo provedor</b> para adicionar (Ollama, LM Studio, OpenAI, Groq...).</div>';
+      return;
+    }
+    list.innerHTML = "";
+    providers.forEach((p) => {
+      const row = document.createElement("div");
+      row.className =
+        "provider-row" +
+        (p.enabled === false ? " disabled" : "") +
+        (p.id === activeProviderId ? " active" : "");
+      const typeBadge = p.type === "deepseek" ? "DeepSeek" : "OpenAI-compatível";
+      const sub = p.type === "deepseek"
+        ? "chat.deepseek.com via Playwright"
+        : (p.baseUrl + (p.model ? " · " + p.model : ""));
+      row.innerHTML =
+        '<label class="checkbox" title="Ligar/desligar este provedor">' +
+          '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' /> Ativo' +
+        '</label>' +
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<b style="font-size:14px;">' + escapeHtml(p.name) + '</b>' +
+            '<span class="pill" style="font-size:11px;padding:2px 8px;">' + typeBadge + '</span>' +
+            (p.id === activeProviderId ? '<span class="pill ok" style="font-size:11px;padding:2px 8px;"><span class="s"></span>principal</span>' : '') +
+          '</div>' +
+          '<div class="sub" style="font-size:12px;color:var(--muted);margin-top:3px;word-break:break-all;">' + escapeHtml(sub) + '</div>' +
+        '</div>' +
+        '<div class="row" style="flex-shrink:0;">' +
+          (p.id !== activeProviderId ? '<button class="btn ghost" data-act="primary" data-id="' + p.id + '">★ Principal</button>' : '') +
+          '<button class="btn ghost" data-act="edit" data-id="' + p.id + '">Editar</button>' +
+          '<button class="btn ghost danger" data-act="remove" data-id="' + p.id + '">Excluir</button>' +
+        '</div>';
+      list.appendChild(row);
+    });
+  }
+
+  function openEditor(id) {
+    editingId = id || null;
+    const p = editingId ? providers.find((x) => x.id === editingId) : null;
+    $("#editorTitle").textContent = p ? "Editar provedor" : "Novo provedor";
+    $("#pvName").value = p ? p.name : "";
+    $("#pvType").value = p ? p.type : "openai-compatible";
+    $("#pvBaseUrl").value = p ? p.baseUrl : "";
+    $("#pvApiKey").value = p ? p.apiKey : "";
+    $("#pvModel").value = p ? p.model : "";
+    $("#pvFeedback").textContent = "";
+    toggleEditorType();
+    $("#providerEditor").classList.remove("hidden");
+    $("#providerEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
+
+  function closeEditor() {
+    $("#providerEditor").classList.add("hidden");
+    editingId = null;
+  }
+
+  function toggleEditorType() {
+    const isDeep = $("#pvType").value === "deepseek";
+    $("#pvOpenAiFields").classList.toggle("hidden", isDeep);
+  }
+
+  async function saveProviders(newActive) {
+    const res = await fetch("/api/providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ providers, active: newActive || activeProviderId }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    return data;
+  }
+
+  $("#btnAddProvider").addEventListener("click", () => openEditor(null));
+  $("#btnCancelProvider").addEventListener("click", closeEditor);
+  $("#pvType").addEventListener("change", toggleEditorType);
+
+  $("#providerList").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    try {
+      if (btn.dataset.act === "primary") {
+        const data = await saveProviders(id);
+        activeProviderId = data.active;
+        renderProviderList();
+        loadStatus();
+      } else if (btn.dataset.act === "edit") {
+        openEditor(id);
+      } else if (btn.dataset.act === "remove") {
+        const target = providers.find((p) => p.id === id) || {};
+        if (!confirm('Excluir o provedor "' + target.name + '"?')) return;
+        providers = providers.filter((p) => p.id !== id);
+        if (activeProviderId === id) activeProviderId = providers[0] ? providers[0].id : null;
+        await saveProviders();
+        renderProviderList();
+        loadStatus();
+      }
+    } catch (err) {
+      alert("Erro: " + err.message);
+    }
+  });
+
+  // Ligar/desligar um provedor (todos podem ficar ativos ao mesmo tempo).
+  $("#providerList").addEventListener("change", async (e) => {
+    const cb = e.target.closest('input[data-act="toggle"]');
+    if (!cb) return;
+    const id = cb.dataset.id;
+    const p = providers.find((x) => x.id === id);
+    if (!p) return;
+    p.enabled = cb.checked;
+    let newActive;
+    if (!p.enabled && p.id === activeProviderId) {
+      const next = providers.find((x) => x.id !== p.id && x.enabled !== false);
+      if (next) newActive = next.id;
+    }
+    try {
+      const data = await saveProviders(newActive);
+      activeProviderId = data.active;
+      renderProviderList();
+      loadStatus();
+    } catch (err) {
+      p.enabled = !cb.checked;
+      alert("Erro: " + err.message);
+    }
+  });
+
+  $("#btnSaveProvider").addEventListener("click", async () => {
+    const fb = $("#pvFeedback");
+    const type = $("#pvType").value;
+    const name = $("#pvName").value.trim() || (type === "deepseek" ? "DeepSeek" : "Novo provedor");
+    if (type === "openai-compatible" && !$("#pvBaseUrl").value.trim()) {
+      fb.textContent = "Informe a Base URL.";
+      return;
+    }
+    const existing = providers.find((p) => p.id === editingId);
+    const provider = {
+      id: editingId || "pv_" + Date.now().toString(36),
+      name,
+      type,
+      baseUrl: type === "deepseek" ? "" : $("#pvBaseUrl").value.trim(),
+      apiKey: type === "deepseek" ? "" : $("#pvApiKey").value.trim(),
+      model: $("#pvModel").value.trim(),
+      enabled: existing ? existing.enabled : true,
+    };
+    const existingIndex = providers.findIndex((p) => p.id === provider.id);
+    if (existingIndex !== -1) providers[existingIndex] = provider;
+    else providers.push(provider);
+    // O primeiro provedor (ou se o principal foi removido) vira o principal.
+    let newActive;
+    if (!activeProviderId || !providers.some((p) => p.id === activeProviderId)) {
+      newActive = provider.id;
+    }
+    try {
+      const data = await saveProviders(newActive);
+      activeProviderId = data.active;
+      fb.textContent = "Provedor salvo e ativado.";
+      closeEditor();
+      renderProviderList();
+      loadStatus();
+    } catch (e) {
+      fb.textContent = "Erro ao salvar: " + e.message;
+    }
+  });
+
+  $("#btnTestProvider").addEventListener("click", async () => {
+    const fb = $("#pvFeedback");
+    const baseUrl = $("#pvBaseUrl").value.trim();
+    const apiKey = $("#pvApiKey").value.trim();
+    if (!baseUrl) {
+      fb.textContent = "Informe a Base URL para testar.";
+      return;
+    }
+    fb.textContent = "Testando conexão...";
+    try {
+      const res = await fetch("/api/provider/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ baseUrl, apiKey }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        fb.textContent = "Conectado! Modelos: " + (data.models || []).join(", ");
+        populateModelSelect(data.models || []);
+      } else {
+        fb.textContent = "Falha na conexão: " + (data.error || "sem resposta");
+      }
+    } catch (e) {
+      fb.textContent = "Erro no teste: " + e.message;
+    }
+  });
+
+  function applyModelsToSelectors(ids) {
+    populateModelSelect(ids);
+    populateTestModels(ids);
+    if (window.deepsproxyChat && window.deepsproxyChat.setModels) {
+      window.deepsproxyChat.setModels(ids.map((id) => ({ id: id, label: id })));
+    }
+  }
+
+  $("#btnLoadModels").addEventListener("click", async () => {
+    const fb = $("#pvFeedback");
+    const baseUrl = $("#pvBaseUrl").value.trim();
+    if (!baseUrl) {
+      fb.textContent = "Informe a Base URL para carregar modelos.";
+      return;
+    }
+    fb.textContent = "Carregando modelos...";
+    try {
+      const qs = "baseUrl=" + encodeURIComponent(baseUrl) + "&apiKey=" + encodeURIComponent($("#pvApiKey").value.trim());
+      const res = await fetch("/api/models?" + qs);
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.data)) {
+        const ids = data.data.map((m) => m.id || m);
+        applyModelsToSelectors(ids);
+        fb.textContent =
+          data.data.length + " modelo(s) encontrado(s) — agora disponíveis no chat e nos testes.";
+      } else {
+        fb.textContent = "Não foi possível carregar modelos: " + (data.error || res.status);
+      }
+    } catch (e) {
+      fb.textContent = "Erro ao carregar modelos: " + e.message;
+    }
+  });
+
+  async function loadProviders() {
+    try {
+      const res = await fetch("/api/providers");
+      const data = await res.json();
+      if (!res.ok) return;
+      providers = data.providers || [];
+      activeProviderId = data.active || (providers[0] && providers[0].id) || null;
+      renderProviderList();
+    } catch (e) {
+      // offline — mantém estado
+    }
+  }
+
+  function renderEndpoints(port) {
+    const base = location.origin || "http://localhost:" + port;
+    $("#endpoints").innerHTML = [
+      { m: "GET", p: "/health", d: "Health check" },
+      { m: "GET", p: "/v1/models", d: "Lista de modelos" },
+      { m: "POST", p: "/v1/chat/completions", d: "Chat (compatível com OpenAI)" },
+      { m: "GET", p: "/api/status", d: "Status do dashboard" },
+      { m: "GET", p: "/api/logs/stream", d: "Logs em tempo real (SSE)" },
+    ]
+      .map(
+        (e) =>
+          `<div class="endpoint"><span class="method ${e.m.toLowerCase()}">${e.m}</span>` +
+          `<code>${e.p}</code><span style="flex:1"></span><span style="color:var(--muted);font-size:12px;">${e.d}</span></div>`
+      )
+      .join("");
+  }
+
+  $("#btnRefresh").addEventListener("click", loadStatus);
+
+  // ---------- Login ----------
+  async function startLogin() {
+    const btn = $("#btnLoginStart");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/login/start", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao iniciar login: " + (data.error || res.status));
+      }
+    } catch (e) {
+      alert("Erro ao iniciar login: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  async function finishLogin() {
+    const btn = $("#btnLoginFinish");
+    btn.disabled = true;
+    btn.textContent = "Concluindo...";
+    try {
+      const res = await fetch("/api/login/finish", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao concluir login: " + (data.error || res.status));
+      } else if (data.login && !data.login.loggedIn) {
+        alert("Login concluído, mas não detectamos uma sessão válida. Tente novamente.");
+      }
+    } catch (e) {
+      alert("Erro ao concluir login: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  $("#btnLoginStart").addEventListener("click", startLogin);
+  $("#btnLoginFinish").addEventListener("click", finishLogin);
+  $("#btnBannerLogin").addEventListener("click", () => {
+    document.querySelector('[data-tab="connect"]').click();
+    startLogin();
+  });
+
+  // ---------- Testar API ----------
+  const testOutput = $("#testOutput");
+  const testUsage = $("#testUsage");
+  let testing = false;
+
+  $("#btnTestSend").addEventListener("click", runTest);
+  $("#btnTestClear").addEventListener("click", () => {
+    testOutput.classList.add("hidden");
+    testUsage.classList.add("hidden");
+  });
+
+  // "Procurar modelos": força uma nova busca nos provedores ativos (limpa o
+  // cache de 30s no servidor) e atualiza o seletor de modelos desta aba,
+  // o editor de provedor e o chat.
+  $("#btnTestModels").addEventListener("click", async () => {
+    const btn = $("#btnTestModels");
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Buscando...';
+    testUsage.classList.remove("hidden");
+    testUsage.innerHTML = '<span class="meta">Buscando modelos nos provedores ativos...</span>';
+    try {
+      const res = await fetch("/api/models/refresh", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      const ids = Array.isArray(data.data) ? data.data.map((m) => m.id || m) : [];
+      lastModelIds = ids;
+      applyModelsToSelectors(ids);
+      const prov = (data.providers || []).map((p) => {
+        const label = escapeHtml(p.name || p.id);
+        if (p.error) return label + ": <b class=\"err\">erro</b> (" + escapeHtml(p.error) + ")";
+        const n = (p.models || []).length;
+        return n ? label + ": " + n + " modelo(s)" : label + ": nenhum modelo";
+      });
+      testUsage.innerHTML =
+        (ids.length
+          ? "<b>" + ids.length + " modelo(s)</b> encontrado(s): " + ids.map(escapeHtml).join(", ")
+          : "Nenhum modelo encontrado nos provedores ativos.") +
+        "<br><span class=\"meta\" style=\"display:block;margin-top:6px;\">Provedores usados: " + prov.join(" · ") + "</span>";
+    } catch (e) {
+      testUsage.innerHTML = "Erro ao buscar modelos: " + escapeHtml(e.message);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = original;
+    }
+  });
+
+  async function runTest() {
+    if (testing) return;
+    testing = true;
+    const btn = $("#btnTestSend");
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Enviando...';
+
+    testOutput.classList.remove("hidden");
+    testUsage.classList.add("hidden");
+    testOutput.innerHTML = '<span class="meta">Aguardando resposta... (streaming)</span>';
+    testOutput.scrollTop = 0;
+
+    const headers = { "Content-Type": "application/json" };
+    if (apiKeyInput.value.trim()) headers["Authorization"] = "Bearer " + apiKeyInput.value.trim();
+
+    const body = {
+      model: $("#testModel").value,
+      messages: [{ role: "user", content: $("#testMessage").value }],
+      stream: $("#testStream").checked,
+    };
+
+    try {
+      const res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        testOutput.innerHTML = `<span class="error">HTTP ${res.status}: ${errText}</span>`;
+        return;
+      }
+
+      if (!body.stream) {
+        const data = await res.json();
+        renderFull(data);
+        return;
+      }
+
+      await readStream(res);
+    } catch (e) {
+      testOutput.innerHTML += `<div class="error">\n[erro] ${e.message}</div>`;
+    } finally {
+      testing = false;
+      btn.disabled = false;
+      btn.textContent = "Enviar";
+    }
+  }
+
+  function renderFull(data) {
+    const msg = data.choices?.[0]?.message || {};
+    const content = msg.content || "";
+    const reasoning = msg.reasoning_content || "";
+    let html = "";
+    if (reasoning) {
+      html +=
+        '<details class="reasoning" open><summary>Raciocínio (thinking)</summary>' +
+        '<div class="reasoning">' + escapeHtml(reasoning) + "</div></details>";
+    }
+    html += '<span class="content">' + escapeHtml(content) + "</span>";
+    if (!content && !reasoning) html += '<span class="meta">(resposta vazia)</span>';
+    testOutput.innerHTML = html;
+    if (data.usage) renderUsage(data.usage);
+  }
+
+  async function readStream(res) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let reasoning = "";
+    let content = "";
+    let finished = false;
+
+    testOutput.innerHTML = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith("data: ")) continue;
+        const data = t.slice(6);
+        if (data === "[DONE]") {
+          finished = true;
+          continue;
+        }
+        let chunk;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        const delta = chunk.choices?.[0]?.delta || {};
+        if (delta.reasoning_content) reasoning += delta.reasoning_content;
+        if (delta.content) content += delta.content;
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            testOutput.innerHTML += '<div class="tools">\n[tool_call] ' +
+              escapeHtml((tc.function?.name || "") + " " + (tc.function?.arguments || "")) + "</div>";
+          }
+        }
+        if (chunk.usage) renderUsage(chunk.usage);
+        renderStream(reasoning, content, finished);
+      }
+    }
+    if (buffer) {
+      // final partial line
+    }
+    renderStream(reasoning, content, true);
+  }
+
+  function renderStream(reasoning, content, finished) {
+    let html = "";
+    if (reasoning) {
+      html +=
+        '<details class="reasoning" open><summary>Raciocínio (thinking)</summary>' +
+        '<div class="reasoning">' + escapeHtml(reasoning) + "</div></details>";
+    }
+    if (content) html += '<span class="content">' + escapeHtml(content) + "</span>";
+    if (finished) html += '<div class="done">\n[concluído]</div>';
+    if (!reasoning && !content && !finished) html = '<span class="meta">aguardando...</span>';
+    testOutput.innerHTML = html;
+    testOutput.scrollTop = testOutput.scrollHeight;
+  }
+
+  function renderUsage(u) {
+    testUsage.classList.remove("hidden");
+    testUsage.innerHTML =
+      "Tokens — <b>" + (u.total_tokens ?? "?") + "</b> total · " +
+      "<b>" + (u.prompt_tokens ?? "?") + "</b> prompt · " +
+      "<b>" + (u.completion_tokens ?? "?") + "</b> completion";
+  }
+
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  // ---------- Exemplos ----------
+  const examples = {
+    curl: (base, key) => `curl ${base}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${key}" \\
+  -d '{
+    "model": "deepseek-thinking",
+    "messages": [
+      { "role": "user", "content": "Olá! Quem é você?" }
+    ],
+    "stream": true
+  }'`,
+    python: (base, key) => `import httpx
+
+with httpx.Client() as client:
+    with client.stream(
+        "POST",
+        "${base}/v1/chat/completions",
+        headers={"Authorization": "Bearer ${key}"},
+        json={
+            "model": "deepseek-thinking",
+            "messages": [{"role": "user", "content": "Olá! Quem é você?"}],
+            "stream": True,
+        },
+    ) as resp:
+        for line in resp.iter_lines():
+            if line.startswith("data: ") and line != "data: [DONE]":
+                print(line.removeprefix("data: "))`,
+    node: (base, key) => `const res = await fetch("${base}/v1/chat/completions", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    Authorization: "Bearer ${key}",
+  },
+  body: JSON.stringify({
+    model: "deepseek-thinking",
+    messages: [{ role: "user", content: "Olá! Quem é você?" }],
+    stream: true,
+  }),
+});
+
+const reader = res.body.getReader();
+const decoder = new TextDecoder();
+while (true) {
+  const { done, value } = await reader.read();
+  if (done) break;
+  process.stdout.write(decoder.decode(value, { stream: true }));
+}`,
+    openai: (base, key) => `import OpenAI from "openai";
+
+const client = new OpenAI({
+  baseURL: "${base}/v1",
+  apiKey: "${key}",
+});
+
+const stream = await client.chat.completions.create({
+  model: "deepseek-thinking",
+  messages: [{ role: "user", content: "Olá! Quem é você?" }],
+  stream: true,
+});
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.choices[0]?.delta?.content || "");
+}`,
+  };
+
+  function renderExamples() {
+    const base = location.origin || "http://localhost:" + (status.port || 3005);
+    const key = "SUA_API_KEY";
+    const active = document.querySelector("#exampleTabs button.active")?.dataset.code || "curl";
+    $("#codeBlock").textContent = examples[active](base, key);
+  }
+
+  document.querySelectorAll("#exampleTabs button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#exampleTabs button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      renderExamples();
+    });
+  });
+
+  document.querySelectorAll(".copy").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const text = $("#codeBlock").textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = "Copiado!";
+      } catch {
+        btn.textContent = "Erro";
+      }
+      setTimeout(() => (btn.textContent = "Copiar"), 1500);
+    });
+  });
+
+  // ---------- Logs ----------
+  const logContainer = $("#logContainer");
+  const logStatus = $("#logStatus");
+  let activeFilter = "all";
+  let logSeq = 0;
+  const seen = new Set();
+
+  function logClass(level) {
+    return "log level-" + level;
+  }
+  function logColor(level) {
+    const map = { info: "#4f8cff", warn: "#e8b53a", error: "#f2645f", debug: "#a78bfa", log: "#7b8aa5" };
+    return map[level] || "#7b8aa5";
+  }
+  function renderLogEntry(entry) {
+    const d = new Date(entry.ts);
+    const time =
+      d.toLocaleTimeString("pt-BR") + "." + String(d.getMilliseconds()).padStart(3, "0");
+    const msg = String(entry.message);
+    const row = document.createElement("div");
+    row.className = logClass(entry.level);
+    row.dataset.level = entry.level;
+    row.innerHTML =
+      '<span class="time">' + time + '</span>' +
+      '<span class="level">' + entry.level.toUpperCase() + "</span>" +
+      '<span class="msg"></span>';
+    row.querySelector(".msg").textContent = msg;
+    row.style.display = activeFilter === "all" || entry.level === activeFilter ? "" : "none";
+    logContainer.appendChild(row);
+    return row;
+  }
+
+  function appendEntry(entry) {
+    if (seen.has(entry.id)) return;
+    seen.add(entry.id);
+    if (logContainer.children.length > 2000) logContainer.removeChild(logContainer.firstChild);
+    const row = renderLogEntry(entry);
+    if ($("#logAutoScroll").checked) logContainer.scrollTop = logContainer.scrollHeight;
+  }
+
+  document.querySelectorAll("#logFilters button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#logFilters button").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      activeFilter = btn.dataset.level;
+      Array.from(logContainer.children).forEach((row) => {
+        row.style.display = activeFilter === "all" || row.dataset.level === activeFilter ? "" : "none";
+      });
+    });
+  });
+
+  $("#btnClearLogs").addEventListener("click", async () => {
+    logContainer.innerHTML = "";
+    seen.clear();
+    try { await fetch("/api/logs", { method: "DELETE" }); } catch {}
+  });
+
+  function connectLogs() {
+    const es = new EventSource("/api/logs/stream");
+    es.onopen = () => { logStatus.textContent = "Conectado aos logs em tempo real (SSE)."; };
+    es.onmessage = (ev) => {
+      try {
+        const entry = JSON.parse(ev.data);
+        appendEntry(entry);
+      } catch {}
+    };
+    es.onerror = () => {
+      logStatus.textContent = "Conexão de logs perdida, tentando reconectar...";
+      es.close();
+      setTimeout(connectLogs, 2000);
+    };
+  }
+
+  // ---------- Init ----------
+  loadStatus();
+  // Polling: atualiza status e modelos (aba Testar API) automaticamente.
+  // A cada 30s evita requisições excessivas; o SSE abaixo torna a atualização
+  // imediata quando o registro de provedores muda.
+  setInterval(loadStatus, 30000);
+
+  // SSE: ao salvar/ligar/desligar provedores no dashboard, atualiza na hora
+  // os seletores de modelo (chat, teste e editor). Reconecta automaticamente
+  // se a conexão cair; o polling de 30s fica como fallback adicional.
+  function connectModelsStream() {
+    let es;
+    try {
+      es = new EventSource("/api/models/stream");
+    } catch (e) {
+      setTimeout(connectModelsStream, 5000);
+      return;
+    }
+    es.addEventListener("models", () => loadStatus());
+    es.onerror = () => {
+      try { es.close(); } catch (e) { /* ignore */ }
+      setTimeout(connectModelsStream, 5000);
+    };
+  }
+  connectModelsStream();
+
+  connectLogs();
+})();
+</script>
+
+<script type="module">
+  import { ChatComponent } from "/components/chat-component.js";
+
+  const chatMount = document.getElementById("chatMount");
+  if (chatMount) {
+    window.deepsproxyChat = new ChatComponent({
+      el: chatMount,
+      showHeader: false,
+      showSidebar: false,
+      models: ["deepseek-thinking", "deepseek-no-thinking"],
+      apiKey: () => {
+        const input = document.querySelector("#apiKey");
+        return input ? input.value.trim() : "";
+      },
+      placeholder: "Envie uma mensagem... (Enter envia, Shift+Enter quebra linha)",
+      greeting: "Olá! Como posso ajudar? (respostas via DeepsProxy)",
+      autofocus: true,
+    }).init();
+  }
+
+  const btnNewChat = document.getElementById("btnChatClear");
+  if (btnNewChat) {
+    btnNewChat.addEventListener("click", () => {
+      if (window.deepsproxyChat) window.deepsproxyChat.clearChat();
+    });
+  }
+</script>
+</body>
+</html>

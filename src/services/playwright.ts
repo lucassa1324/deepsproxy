@@ -14,6 +14,58 @@ import path from 'path';
 let context: BrowserContext | null = null;
 export let activePage: Page | null = null;
 let currentHeaders: Record<string, string> = {};
+let loginFlowActive = false;
+
+export function isLoginFlowActive(): boolean {
+  return loginFlowActive;
+}
+
+export function getPlaywrightState() {
+  return {
+    initialized: context !== null,
+    hasActivePage: activePage !== null,
+  };
+}
+
+export async function getLoginStatus(): Promise<{ loggedIn: boolean; cookieCount: number }> {
+  if (!context) return { loggedIn: false, cookieCount: 0 };
+  try {
+    const cookies = await context.cookies('https://chat.deepseek.com');
+    const hasAuthCookie = cookies.some((c) => /token|session|auth/i.test(c.name));
+    return { loggedIn: hasAuthCookie, cookieCount: cookies.length };
+  } catch {
+    return { loggedIn: false, cookieCount: 0 };
+  }
+}
+
+export async function checkLogin(): Promise<boolean> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return true;
+  if (!activePage) return false;
+  try {
+    await activePage.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded', timeout: 15000 });
+    await activePage.waitForSelector('textarea', { timeout: 8000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function startLoginFlow(): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+  loginFlowActive = true;
+  await closePlaywright();
+  await initPlaywright(false); // visível para o usuário logar
+  if (activePage) {
+    await activePage.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
+  }
+}
+
+export async function finishLoginFlow(): Promise<void> {
+  if (process.env.TEST_MOCK_PLAYWRIGHT) return;
+  loginFlowActive = false;
+  await closePlaywright();
+  await initPlaywright(true); // volta para headless
+}
 
 export async function initPlaywright(headless = true) {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return;
@@ -55,12 +107,16 @@ export async function getDeepSeekHeaders(forceNew = false): Promise<{ headers: R
     throw new Error('Playwright not initialized');
   }
 
-  // Navigate to deepseek chat. If forceNew is true or we're not on deepseek, go to home page.
-  const currentUrl = activePage.url();
-  const isOnDeepSeek = currentUrl.includes('chat.deepseek.com');
-  const isOnSpecificChat = isOnDeepSeek && /\/chat\/\d+/.test(currentUrl);
-
-  if (!isOnDeepSeek || forceNew || isOnSpecificChat) {
+  // Ensure the page reflects the current conversation before reading state.
+  // For multi-turn requests the page must be reloaded: server-side fetches add
+  // messages to the conversation that the already-loaded page doesn't know,
+  // and a stale parent_message_id makes DeepSeek return the previous cached
+  // answer instead of answering the new prompt.
+  if (forceNew) {
+    if (!activePage.url().startsWith('https://chat.deepseek.com/')) {
+      await activePage.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
+    }
+  } else {
     await activePage.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
   }
 

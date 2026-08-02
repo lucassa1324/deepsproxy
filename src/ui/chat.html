@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DeepsProxy Chat</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    overflow: hidden;
+    height: 100vh;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+    color: #0f172a;
+  }
+
+  .layout { display: flex; height: 100vh; }
+
+  /* ===== Sidebar ===== */
+  .sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: #1e293b;
+    color: #cbd5e1;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar-header {
+    padding: 16px 14px 8px;
+    font-size: 15px;
+    font-weight: 700;
+    color: #f1f5f9;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sidebar-header i { color: #2563eb; }
+  .new-chat {
+    margin: 10px 14px 6px;
+    padding: 11px 14px;
+    border: none;
+    border-radius: 9px;
+    background: #2563eb;
+    color: #fff;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: background 0.15s;
+    font-family: inherit;
+  }
+  .new-chat:hover { background: #1d4ed8; }
+  .chat-list { flex: 1; overflow-y: auto; padding: 4px 0 12px; }
+  .chat-list::-webkit-scrollbar { width: 8px; }
+  .chat-list::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+  .chat-item {
+    padding: 10px 14px;
+    cursor: pointer;
+    border-left: 3px solid transparent;
+    transition: background 0.12s;
+  }
+  .chat-item:hover { background: #263548; }
+  .chat-item.active {
+    background: #334155;
+    border-left-color: #2563eb;
+  }
+  .chat-item .title {
+    font-size: 13px;
+    color: #e2e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.4;
+  }
+  .chat-item .time { font-size: 11px; color: #7c8ba1; margin-top: 3px; }
+  .chat-empty {
+    padding: 24px 14px;
+    text-align: center;
+    color: #64748b;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .chat-empty i { display: block; font-size: 28px; margin-bottom: 10px; color: #475569; }
+
+  /* ===== Main ===== */
+  .main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    background: #f8fafc;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .chat-header {
+    height: 56px;
+    flex-shrink: 0;
+    background: #fff;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+  }
+  .chat-header .model-name {
+    font-size: 15px;
+    font-weight: 600;
+    color: #475569;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .chat-header .model-name i { color: #2563eb; font-size: 13px; }
+  .chat-header .logo {
+    font-size: 13px;
+    color: #94a3b8;
+    font-weight: 600;
+  }
+
+  /* ===== Mensagens (única área com scroll) ===== */
+  .messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .messages::-webkit-scrollbar { width: 10px; }
+  .messages::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 6px; }
+
+  .msg { display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .msg.assistant { justify-content: flex-start; }
+  .msg .bubble {
+    max-width: 76%;
+    padding: 11px 15px;
+    border-radius: 14px;
+    font-size: 14px;
+    line-height: 1.55;
+    word-break: break-word;
+    white-space: pre-wrap;
+  }
+  .msg.user .bubble {
+    background: #2563eb;
+    color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant .bubble {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    color: #0f172a;
+    border-bottom-left-radius: 4px;
+  }
+  .msg.assistant .bubble.error { color: #dc2626; border-color: #fecaca; background: #fef2f2; }
+
+  .welcome {
+    margin: auto;
+    text-align: center;
+    color: #94a3b8;
+    max-width: 360px;
+  }
+  .welcome i { font-size: 42px; color: #cbd5e1; }
+  .welcome h2 { font-size: 20px; color: #334155; margin: 14px 0 8px; }
+  .welcome p { font-size: 13.5px; line-height: 1.6; }
+
+  .typing { display: inline-flex; gap: 5px; padding: 4px 2px; }
+  .typing span {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #94a3b8; animation: blink 1.2s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: 0.2s; }
+  .typing span:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+
+  /* ===== Rodapé / Input ===== */
+  .chat-footer {
+    flex-shrink: 0;
+    background: #fff;
+    border-top: 1px solid #e2e8f0;
+    padding: 14px 20px;
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+  }
+  .chat-footer select {
+    padding: 11px 12px;
+    border: 1px solid #cbd5e1;
+    border-radius: 10px;
+    background: #fff;
+    color: #334155;
+    font-size: 13px;
+    font-family: inherit;
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+  .chat-footer select:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+  .chat-footer textarea {
+    flex: 1;
+    resize: none;
+    min-height: 44px;
+    max-height: 160px;
+    padding: 12px 14px;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #0f172a;
+  }
+  .chat-footer textarea:focus { outline: 2px solid #bfdbfe; border-color: #2563eb; }
+  .chat-footer textarea::placeholder { color: #94a3b8; }
+  .send-btn {
+    width: 46px;
+    height: 46px;
+    flex-shrink: 0;
+    border: none;
+    border-radius: 12px;
+    background: #2563eb;
+    color: #fff;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: background 0.15s;
+  }
+  .send-btn:hover { background: #1d4ed8; }
+  .send-btn.stop { background: #dc2626; }
+  .send-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .hint { font-size: 11px; color: #94a3b8; text-align: center; padding-bottom: 2px; }
+</style>
+</head>
+<body>
+  <div class="layout">
+    <!-- ===== Barra lateral ===== -->
+    <aside class="sidebar">
+      <div class="sidebar-header"><i class="fa-solid fa-bolt"></i> DeepsProxy</div>
+      <button class="new-chat" id="newChatBtn"><i class="fa-solid fa-plus"></i> Nova Conversa</button>
+      <div class="chat-list" id="chatList"></div>
+    </aside>
+
+    <!-- ===== Área principal ===== -->
+    <main class="main">
+      <header class="chat-header">
+        <div class="model-name" id="headerModel"><i class="fa-solid fa-robot"></i><span>DeepSeek V3</span></div>
+        <div class="logo">DeepsProxy</div>
+      </header>
+
+      <div class="messages" id="messages"></div>
+
+      <footer class="chat-footer">
+        <select id="modelSelect">
+          <option value="DeepSeek V3">DeepSeek V3</option>
+          <option value="DeepSeek R1">DeepSeek R1</option>
+          <option value="GPT-4o">GPT-4o (mock)</option>
+        </select>
+        <button class="send-btn" id="btnRefreshModels" title="Buscar modelos" style="width:auto;height:auto;padding:0 8px;font-size:12px;border-radius:8px;background:var(--green,#35d07f);color:#fff;border:none;cursor:pointer;font-family:inherit;">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+        <textarea id="userInput" rows="1" placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"></textarea>
+        <button class="send-btn" id="sendBtn" title="Enviar"><i class="fa-solid fa-paper-plane"></i></button>
+      </footer>
+      <div class="hint">Enter envia · Shift+Enter nova linha</div>
+    </main>
+  </div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (s) => document.querySelector(s);
+
+  // ===== Estado =====
+  // { id, title, createdAt, messages: [{ role, content }] }
+  const chats = [];
+  let currentChatId = null;
+  let selectedModel = "";
+  let chatting = false;
+  let chatAbort = null;
+
+  // ===== Elementos =====
+  const messagesDiv = $("#messages");
+  const chatList = $("#chatList");
+  const userInput = $("#userInput");
+  const sendBtn = $("#sendBtn");
+  const modelSelect = $("#modelSelect");
+
+  const getCurrentChat = () => chats.find((c) => c.id === currentChatId) || null;
+
+  const scrollToBottom = () => {
+    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+  };
+
+  const truncate = (s, n) => (s.length > n ? s.slice(0, n).trimEnd() + "…" : s);
+
+  function formatTime(ts) {
+    const d = new Date(ts);
+    return (
+      d.toLocaleDateString("pt-BR") +
+      " " +
+      d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
+    );
+  }
+
+  // ===== Barra lateral =====
+  function renderChatList() {
+    chatList.innerHTML = "";
+    if (chats.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "chat-empty";
+      empty.innerHTML = '<i class="fa-solid fa-comments"></i>Nenhuma conversa ainda.<br>Clique em "Nova Conversa" para começar.';
+      chatList.appendChild(empty);
+      return;
+    }
+    chats.forEach((chat) => {
+      const item = document.createElement("div");
+      item.className = "chat-item" + (chat.id === currentChatId ? " active" : "");
+      item.dataset.id = chat.id;
+
+      const title = document.createElement("div");
+      title.className = "title";
+      title.textContent = chat.title;
+
+      const time = document.createElement("div");
+      time.className = "time";
+      time.textContent = formatTime(chat.createdAt);
+
+      item.appendChild(title);
+      item.appendChild(time);
+      item.addEventListener("click", () => selectChat(chat.id));
+      chatList.appendChild(item);
+    });
+    chatList.scrollTop = chatList.scrollHeight;
+  }
+
+  function selectChat(id) {
+    if (chatting && chatAbort) chatAbort.abort();
+    currentChatId = id;
+    renderChatList();
+    renderMessages();
+    userInput.focus();
+  }
+
+  // ===== Área de mensagens =====
+  function addMessageEl(role, content) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "msg " + role;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = content || "";
+    wrapper.appendChild(bubble);
+    messagesDiv.appendChild(wrapper);
+    return bubble;
+  }
+
+  function renderMessages() {
+    const chat = getCurrentChat();
+    messagesDiv.innerHTML = "";
+    if (!chat) {
+      showWelcome();
+      return;
+    }
+    if (chat.messages.length === 0) {
+      showWelcome();
+      return;
+    }
+    chat.messages.forEach((m) => addMessageEl(m.role, m.content));
+    scrollToBottom();
+  }
+
+  function showWelcome() {
+    messagesDiv.innerHTML =
+      '<div class="welcome">' +
+      '<i class="fa-solid fa-comments"></i>' +
+      "<h2>DeepsProxy Chat</h2>" +
+      "<p>Escolha um modelo no rodapé e comece a conversar. Seu histórico fica salvo na barra lateral.</p>" +
+      "</div>";
+  }
+
+  // ===== Nova conversa =====
+  function newChat() {
+    if (chatting && chatAbort) chatAbort.abort();
+    const chat = {
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+      title: "Nova conversa",
+      createdAt: Date.now(),
+      messages: [],
+    };
+    chats.push(chat);
+    currentChatId = chat.id;
+    renderChatList();
+    renderMessages();
+    userInput.focus();
+  }
+
+  // ===== Envio =====
+  function setSendState() {
+    sendBtn.disabled = chatting ? false : false;
+    if (chatting) {
+      sendBtn.classList.add("stop");
+      sendBtn.title = "Parar";
+      sendBtn.innerHTML = '<i class="fa-solid fa-stop"></i>';
+    } else {
+      sendBtn.classList.remove("stop");
+      sendBtn.title = "Enviar";
+      sendBtn.innerHTML = '<i class="fa-solid fa-paper-plane"></i>';
+    }
+  }
+
+  async function sendMessage() {
+    if (chatting) return;
+    const text = userInput.value.trim();
+    if (!text) return;
+    userInput.value = "";
+    autoGrow();
+
+    if (!getCurrentChat()) newChat();
+    const chat = getCurrentChat();
+
+    // Primeira mensagem define o título do chat
+    if (chat.messages.length === 0) {
+      chat.title = truncate(text, 30);
+      chat.createdAt = Date.now();
+      renderChatList();
+    }
+
+    chat.messages.push({ role: "user", content: text });
+    addMessageEl("user", text);
+    chat.messages.push({ role: "assistant", content: "" });
+    const bubble = addMessageEl("assistant", "");
+    bubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
+    scrollToBottom();
+
+    chatting = true;
+    setSendState();
+
+    try {
+      await callApi(chat, bubble);
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        const last = chat.messages[chat.messages.length - 1];
+        last.content = "Erro: " + e.message;
+        bubble.textContent = last.content;
+        bubble.classList.add("error");
+      }
+    } finally {
+      chatting = false;
+      setSendState();
+      const last = chat.messages[chat.messages.length - 1];
+      if (!last.content) {
+        last.content = "(resposta vazia)";
+      }
+      bubble.classList.remove("error");
+      bubble.textContent = last.content;
+      scrollToBottom();
+      userInput.focus();
+    }
+  }
+
+  async function callApi(chat, bubble) {
+    const history = chat.messages.slice();
+    const last = history[history.length - 1];
+    if (last && last.role === "assistant" && last.content === "") history.pop();
+    const messages = history.map((m) => ({ role: m.role, content: m.content }));
+    const payload = {
+      model: selectedModel,
+      messages,
+      stream: true,
+    };
+
+    const headers = { "Content-Type": "application/json" };
+    const savedKey = localStorage.getItem("deepsproxy_api_key");
+    if (savedKey) headers["Authorization"] = "Bearer " + savedKey;
+
+    chatAbort = new AbortController();
+
+    let res;
+    try {
+      res = await fetch("/v1/chat/completions", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(payload),
+        signal: chatAbort.signal,
+      });
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        chat.messages[chat.messages.length - 1].content = "Sem conexão com o servidor: " + e.message;
+        bubble.textContent = chat.messages[chat.messages.length - 1].content;
+        bubble.classList.add("error");
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      if (res.status === 401 && !savedKey) {
+        const key = prompt("API Key necessária. Cole sua API_KEY (deixe vazio para cancelar):");
+        if (key) {
+          localStorage.setItem("deepsproxy_api_key", key);
+          return callApi(chat, bubble);
+        }
+      }
+      const errText = await res.text().catch(() => "");
+      const last = chat.messages[chat.messages.length - 1];
+      last.content = "Erro HTTP " + res.status + ": " + errText;
+      bubble.textContent = last.content;
+      bubble.classList.add("error");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let assistantContent = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const t = line.trim();
+        if (!t.startsWith("data: ")) continue;
+        const data = t.slice(6);
+        if (data === "[DONE]") continue;
+        let chunk;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          continue;
+        }
+        const delta = chunk.choices?.[0]?.delta || {};
+        if (delta.content) assistantContent += delta.content;
+      }
+
+      chat.messages[chat.messages.length - 1].content = assistantContent;
+      bubble.classList.remove("error");
+      bubble.textContent = assistantContent || "…";
+      scrollToBottom();
+    }
+
+    chat.messages[chat.messages.length - 1].content = assistantContent;
+  }
+
+  // ===== Input =====
+  function autoGrow() {
+    userInput.style.height = "auto";
+    userInput.style.height = Math.min(userInput.scrollHeight, 160) + "px";
+  }
+  userInput.addEventListener("input", autoGrow);
+  userInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+    // Shift+Enter segue o comportamento nativo do textarea (quebra de linha)
+  });
+
+  sendBtn.addEventListener("click", () => {
+    if (chatting) {
+      if (chatAbort) chatAbort.abort();
+      return;
+    }
+    sendMessage();
+  });
+
+  $("#newChatBtn").addEventListener("click", newChat);
+  $("#btnRefreshModels").addEventListener("click", refreshModels);
+
+  // ===== Seletor de modelo =====
+  modelSelect.addEventListener("change", (e) => {
+    selectedModel = e.target.value;
+    $("#headerModel span").textContent = selectedModel;
+  });
+
+  let lastModelsJson = null;
+
+  async function loadModels() {
+    let ids;
+    try {
+      const res = await fetch("/api/models");
+      const data = await res.json();
+      ids = Array.isArray(data.data) ? data.data.map((m) => m.id || m) : [];
+      if (!ids.length) ids = ["deepseek-thinking"];
+    } catch (e) {
+      return; // falha transitória: mantém a seleção atual
+    }
+    const key = JSON.stringify(ids);
+    if (lastModelsJson === key) return; // nada mudou
+    lastModelsJson = key;
+
+    // Preserva a seleção se o modelo ainda existir; senão seleciona o primeiro.
+    const prev = modelSelect.value || selectedModel;
+    modelSelect.innerHTML = "";
+    ids.forEach((id) => {
+      const o = document.createElement("option");
+      o.value = id;
+      o.textContent = id;
+      modelSelect.appendChild(o);
+    });
+    selectedModel = ids.indexOf(prev) !== -1 ? prev : ids[0];
+    modelSelect.value = selectedModel;
+    $("#headerModel span").textContent = selectedModel;
+  }
+
+  // ===== Buscar modelos =====
+  async function refreshModels() {
+    try {
+      const res = await fetch("/api/models/refresh", { method: "POST" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      lastModelsJson = null;
+      await loadModels();
+    } catch (e) {
+      console.error("Erro ao buscar modelos:", e);
+    }
+  }
+
+  // ===== Init =====
+  newChat();
+  loadModels();
+
+  // Recarrega os modelos ao voltar para a aba (novos provedores adicionados
+  // no dashboard são refletidos aqui).
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") loadModels();
+  });
+  window.addEventListener("focus", loadModels);
+
+  // Polling de 30s: pega modelos novos sem trocar de aba nem recarregar.
+  setInterval(loadModels, 30000);
+
+  // SSE: atualiza na hora quando o registro de provedores muda no dashboard.
+  // Reconecta automaticamente se a conexão cair; o polling de 30s fica como
+  // fallback adicional.
+  function connectModelsStream() {
+    let es;
+    try {
+      es = new EventSource("/api/models/stream");
+    } catch (e) {
+      setTimeout(connectModelsStream, 5000);
+      return;
+    }
+    es.addEventListener("models", () => loadModels());
+    es.onerror = () => {
+      try { es.close(); } catch (e) { /* ignore */ }
+      setTimeout(connectModelsStream, 5000);
+    };
+  }
+  connectModelsStream();
+})();
+</script>
+</body>
+</html>

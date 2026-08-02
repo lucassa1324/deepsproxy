@@ -26,7 +26,7 @@ test('Models endpoint returns deepseek-thinking and deepseek-no-thinking', async
   assert.ok(body.data.some((m: any) => m.id === 'deepseek-no-thinking'));
 });
 
-test('Chat Completions endpoint with deepseek-thinking (thinking enabled)', async () => {
+test('Chat Completions endpoint with deepseek-thinking (thinking enabled)', { skip: !process.env.DEEPSEEK_LIVE_TEST }, async () => {
   // Initialize playwright for this test
   // NOTE: Headless mode can sometimes fail Cloudflare checks. We use headless=false for the test
   // to ensure it matches the logged-in browser state if needed, or you can switch it to true.

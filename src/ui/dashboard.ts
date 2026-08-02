@@ -16,6 +16,8 @@ import {
   isLoginFlowActive,
   startLoginFlow,
   finishLoginFlow,
+  getProfileDir,
+  isProfileWritable,
 } from '../services/playwright.ts';
 import { fetchModels, testProviderConnection, clearModelsCache } from '../services/local.ts';
 import { vncEnabled, vncUrl } from './vnc.ts';
@@ -123,7 +125,11 @@ dashboard.get('/api/status', async (c) => {
       hasApiKey: !!p.apiKey,
       enabled: p.enabled,
     })),
-    playwright: getPlaywrightState(),
+    playwright: {
+      ...getPlaywrightState(),
+      profileDir: getProfileDir(),
+      profileWritable: isProfileWritable(),
+    },
     login: { ...login, inProgress: isLoginFlowActive() },
     vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
   });

@@ -10,6 +10,7 @@
 
 import { chromium, BrowserContext, Page } from 'playwright';
 import path from 'path';
+import fs from 'fs';
 
 let context: BrowserContext | null = null;
 export let activePage: Page | null = null;
@@ -18,6 +19,28 @@ let loginFlowActive = false;
 
 export function isLoginFlowActive(): boolean {
   return loginFlowActive;
+}
+
+/**
+ * Diretório do perfil persistente do navegador.
+ * Usa DEEPSEEK_PROFILE_DIR quando definido (no Docker aponta para o volume
+ * persistente em /app/deepseek_profile); caso contrário usa o default local.
+ */
+export function getProfileDir(): string {
+  return process.env.DEEPSEEK_PROFILE_DIR || path.resolve('deepseek_profile');
+}
+
+export function isProfileWritable(): boolean {
+  try {
+    const dir = getProfileDir();
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, `.write-test-${Date.now()}`);
+    fs.writeFileSync(probe, 'ok');
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function getPlaywrightState() {
@@ -73,8 +96,23 @@ export async function initPlaywright(headless = true) {
     return;
   }
 
-  const profilePath = path.resolve('deepseek_profile');
-  
+  const profilePath = getProfileDir();
+  fs.mkdirSync(profilePath, { recursive: true });
+
+  // Remove locks obsoletos de encerramentos abruptos (comum quando o perfil
+  // fica em um volume montado e o container antigo é derrubado sem aviso).
+  try {
+    for (const f of fs.readdirSync(profilePath)) {
+      if (f.startsWith('Singleton')) {
+        fs.unlinkSync(path.join(profilePath, f));
+      }
+    }
+  } catch {
+    // perfil inexistente ou sem permissão — o launch abaixo vai falhar se não der
+  }
+
+  console.log(`[playwright] Profile dir: ${profilePath} | writable: ${isProfileWritable()}`);
+
   context = await chromium.launchPersistentContext(profilePath, {
     headless,
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',

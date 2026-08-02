@@ -20,6 +20,7 @@ ENV NODE_ENV=production
 ENV OPEN_UI=false
 ENV ENABLE_VNC=true
 ENV DISPLAY=:99
+ENV DEEPSEEK_PROFILE_DIR=/app/deepseek_profile
 
 EXPOSE 3005 5900
 

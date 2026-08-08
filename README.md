@@ -140,7 +140,7 @@ http://localhost:3000
 O dashboard oferece:
 
 - **Conexão** — status do servidor, Playwright, login na DeepSeek e API Key, além de instruções de conexão e endpoints.
-- **Chat** — chat estilo ChatGPT com streaming, raciocínio (thinking) colapsável, markdown, multi-turno e atalho Enter/Shift+Enter.
+- **Chat** — chat estilo ChatGPT com streaming, raciocínio (thinking) colapsável, markdown, multi-turno, atalho Enter/Shift+Enter e **imagens** (colar Ctrl+V, anexar ou arrastar/soltar; enviadas como `image_url` para modelos de visão e por upload `ref_file_ids` para a DeepSeek web).
 - **Testar API** — console para enviar mensagens e ver a resposta em streaming (incluindo raciocínio).
 - **Exemplos** — códigos prontos para consumir a API (curl, Python, Node.js e OpenAI SDK).
 - **Logs** — logs do servidor em tempo real (SSE), com filtros por nível.

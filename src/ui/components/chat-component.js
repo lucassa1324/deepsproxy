@@ -49,12 +49,18 @@ const DEFAULTS = {
   debounceMs: 120,                   // debounce do auto-grow do input
   overscan: 3,                       // linhas extra renderizadas acima/abaixo da viewport
   virtualThreshold: 40,              // nº de mensagens para ativar virtual scrolling
+  enableImages: true,                // colar/upload de imagem no chat
+  maxImages: 4,                      // limite de imagens por mensagem
+  imageMaxDim: 1280,                 // lado maior (px) após redimensionar antes de enviar
+  accept: "image/*",                 // tipos de arquivo aceitos no upload
 };
 
 const SEND_ICON =
   '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M3 11.5 21 3l-8.5 18-2.5-7.5L3 11.5z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>';
 const STOP_ICON =
   '<svg width="16" height="16" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>';
+const ATTACH_ICON =
+  '<svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M16.5 6.5 8.9 14a2.5 2.5 0 0 0 3.5 3.5l7.1-7.1a4.5 4.5 0 0 0-6.4-6.4L5.7 8.1a7 7 0 0 0 9.9 9.9l6.7-6.7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 /* ----------------------------- Utilitários ------------------------------- */
 
@@ -208,7 +214,7 @@ function mdToHtml(md) {
 /* ------------------------------- CSS scoped ------------------------------- */
 
 const CSS = `
-.ds-chat {
+  .ds-chat {
   --ds-accent: #4f8cff;
   --ds-bg: #0f1522;
   --ds-panel: #121826;
@@ -219,6 +225,7 @@ const CSS = `
   --ds-purple: #a78bfa;
   --ds-red: #f2645f;
 
+  position: relative;
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -438,11 +445,113 @@ const CSS = `
 
 .ds-chat__composer {
   display: flex;
-  gap: 10px;
-  align-items: flex-end;
+  flex-direction: column;
+  gap: 8px;
   padding: 12px 14px;
   border-top: 1px solid var(--ds-border);
   background: var(--ds-panel);
+}
+.ds-chat__composer-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+}
+.ds-chat__attach {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ds-panel-2);
+  border: 1px solid var(--ds-border);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--ds-muted);
+  padding: 0;
+}
+.ds-chat__attach:hover { color: var(--ds-accent); border-color: var(--ds-accent); }
+.ds-chat__attach:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Barra de anexos (imagens pendentes de envio) */
+.ds-chat__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+.ds-chat__attachments-warn {
+  width: 100%;
+  font-size: 12px;
+  color: var(--ds-muted);
+  line-height: 1.4;
+}
+.ds-chat__attachment {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid var(--ds-border);
+  background: var(--ds-panel-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ds-muted);
+  font-size: 11px;
+}
+.ds-chat__attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ds-chat__attachment-remove {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.ds-chat__attachment-remove:hover { background: var(--ds-red); }
+
+/* Imagens dentro do balão do usuário */
+.ds-chat__bubble-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.ds-chat__bubble-images img {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 10px;
+  display: block;
+}
+
+/* Banner de arrastar e soltar (flutuante, junto do input) */
+.ds-chat__drop {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 96px;
+  z-index: 5;
+  padding: 10px 18px;
+  background: var(--ds-panel-2);
+  border: 2px dashed var(--ds-accent);
+  border-radius: 12px;
+  color: var(--ds-accent);
+  font-weight: 600;
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  white-space: nowrap;
 }
 .ds-chat__select {
   width: auto;
@@ -456,6 +565,23 @@ const CSS = `
   font-family: inherit;
   font-weight: 600;
 }
+.ds-chat__copy-model {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ds-panel-2);
+  border: 1px solid var(--ds-border);
+  border-radius: 12px;
+  cursor: pointer;
+  color: var(--ds-muted);
+  padding: 0;
+  font-size: 15px;
+}
+.ds-chat__copy-model:hover { color: var(--ds-accent); border-color: var(--ds-accent); }
+.ds-chat__copy-model:disabled { opacity: 0.4; cursor: not-allowed; }
 .ds-chat__input {
   flex: 1;
   min-height: 56px;
@@ -535,8 +661,11 @@ const CSS = `
   .ds-chat__header { flex-direction: column; align-items: flex-start; padding: 8px 12px; }
   .ds-chat__header-model { font-size: 13px; }
   .ds-chat__composer { flex-direction: column; gap: 8px; padding: 10px 10px 12px; }
+  .ds-chat__composer-row { flex-wrap: wrap; }
   .ds-chat__select { width: 100%; min-width: 0; }
   .ds-chat__send { width: 100%; height: 48px; }
+  .ds-chat__attach { width: 100%; height: 40px; }
+  .ds-chat__copy-model { width: 100%; height: 40px; }
   .ds-chat__body-wrap { flex-direction: column; }
   .ds-chat__sidebar {
     width: 100%;
@@ -576,6 +705,7 @@ class ChatComponent {
     this._startTime = 0;
     this._stickToBottom = true;
     this._pendingStream = false;
+    this._attachments = []; // { id, dataUrl, mime, name, status }
   }
 
   /* ----------------------------- Público ------------------------------- */
@@ -610,8 +740,9 @@ class ChatComponent {
 
   sendMessage(text) {
     if (this._busy) return false;
+    const hasImages = this._attachments.length > 0;
     const msg = String(text == null ? "" : text).trim();
-    if (!msg) return false;
+    if (!msg && !hasImages) return false;
     this._send(msg);
     if (this._input && this._input.value.trim() === msg) {
       this._input.value = "";
@@ -629,6 +760,9 @@ class ChatComponent {
     this._setBusyUi(false);
     this.messages = [];
     this._heights = [];
+    this._attachments = [];
+    this._setDragOverlay(false);
+    this._renderAttachments();
     for (const [, rowEl] of this._rowEls) rowEl.remove();
     this._rowEls.clear();
 
@@ -653,6 +787,7 @@ class ChatComponent {
     this._model = modelName;
     if (this._select) this._select.value = modelName;
     if (this._headerModel) this._headerModel.textContent = this._modelLabel(modelName);
+    if (this._attachments.length) this._renderAttachments();
     return this;
   }
 
@@ -698,8 +833,14 @@ class ChatComponent {
     this._input = null;
     this._sendBtn = null;
     this._select = null;
+    this._copyModelBtn = null;
     this._spacer = null;
     this._sr = null;
+    this._attachBtn = null;
+    this._fileInput = null;
+    this._attachmentsBar = null;
+    this._dropOverlay = null;
+    this._attachments = [];
     this._initialized = false;
   }
 
@@ -787,6 +928,29 @@ class ChatComponent {
     main.appendChild(sr);
 
     const composer = el("div", "ds-chat__composer");
+    composer.appendChild(this._buildComposer());
+
+    const drop = el("div", "ds-chat__drop");
+    drop.hidden = true;
+    drop.textContent = "Solte as imagens aqui";
+    root.appendChild(drop);
+    this._dropOverlay = drop;
+
+    main.appendChild(composer);
+
+    bodyWrap.appendChild(main);
+    root.appendChild(bodyWrap);
+  }
+
+  _buildComposer() {
+    const frag = document.createDocumentFragment();
+
+    const attachments = el("div", "ds-chat__attachments");
+    attachments.hidden = true;
+    this._attachmentsBar = attachments;
+
+    const row = el("div", "ds-chat__composer-row");
+
     const select = el("select", "ds-chat__select");
     select.setAttribute("aria-label", "Modelo");
     for (const m of this._modelOptions()) {
@@ -797,6 +961,13 @@ class ChatComponent {
     }
     select.value = this._model;
     this._select = select;
+
+    const copyModel = el("button", "ds-chat__copy-model");
+    copyModel.type = "button";
+    copyModel.setAttribute("aria-label", "Copiar nome do modelo");
+    copyModel.title = "Copiar nome do modelo";
+    copyModel.textContent = "⧉";
+    this._copyModelBtn = copyModel;
 
     const input = el("textarea", "ds-chat__input");
     input.rows = 1;
@@ -810,13 +981,32 @@ class ChatComponent {
     send.innerHTML = SEND_ICON;
     this._sendBtn = send;
 
-    composer.appendChild(select);
-    composer.appendChild(input);
-    composer.appendChild(send);
-    main.appendChild(composer);
+    row.appendChild(select);
+    row.appendChild(copyModel);
+    if (this.options.enableImages) {
+      const attach = el("button", "ds-chat__attach");
+      attach.type = "button";
+      attach.setAttribute("aria-label", "Anexar imagem");
+      attach.title = "Anexar imagem (ou cole Ctrl+V)";
+      attach.innerHTML = ATTACH_ICON;
+      this._attachBtn = attach;
+      row.appendChild(attach);
 
-    bodyWrap.appendChild(main);
-    root.appendChild(bodyWrap);
+      const fileInput = document.createElement("input");
+      fileInput.type = "file";
+      fileInput.accept = this.options.accept;
+      fileInput.multiple = true;
+      fileInput.hidden = true;
+      fileInput.setAttribute("aria-hidden", "true");
+      this._fileInput = fileInput;
+      frag.appendChild(fileInput);
+    }
+    row.appendChild(input);
+    row.appendChild(send);
+
+    frag.appendChild(attachments);
+    frag.appendChild(row);
+    return frag;
   }
 
   _bindEvents() {
@@ -846,6 +1036,72 @@ class ChatComponent {
       }
     });
 
+    if (this.options.enableImages) {
+      on(input, "paste", (e) => {
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        let added = false;
+        for (const item of items) {
+          if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+            const file = item.getAsFile();
+            if (file) {
+              this._addAttachment(file);
+              added = true;
+            }
+          }
+        }
+        if (added && this._fileInput) this._fileInput.value = "";
+      });
+
+      on(this._attachBtn, "click", () => {
+        if (this._fileInput) this._fileInput.click();
+      });
+
+      on(this._fileInput, "change", () => {
+        const files = Array.from(this._fileInput.files || []);
+        this._fileInput.value = "";
+        for (const file of files) this._addAttachment(file);
+      });
+
+      // Arrastar e soltar imagens sobre o chat
+      const rootEl = this._root;
+      on(rootEl, "dragenter", (e) => {
+        if (!this._hasImageFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        this._setDragOverlay(true);
+      });
+      on(rootEl, "dragover", (e) => {
+        if (!this._hasImageFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+        this._setDragOverlay(true);
+      });
+      on(rootEl, "dragleave", (e) => {
+        if (!this._hasImageFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        if (!this._isDragTargetInside(e)) this._setDragOverlay(false);
+      });
+      on(rootEl, "drop", (e) => {
+        if (!this._hasImageFiles(e.dataTransfer)) return;
+        e.preventDefault();
+        this._setDragOverlay(false);
+        const files = Array.from(e.dataTransfer.files || []).filter((f) =>
+          (f.type || "").startsWith("image/")
+        );
+        for (const file of files) this._addAttachment(file);
+      });
+      // Garante que o banner suma mesmo se o usuário cancelar a arrastada
+      // (Esc) ou soltar fora do componente.
+      on(rootEl, "dragend", () => this._setDragOverlay(false));
+
+      // Impede o navegador de abrir a imagem em tela cheia ao soltar fora
+      // do chat (comportamento padrão ao arrastar um arquivo sobre a página).
+      const blockNativeDrag = (e) => {
+        if (this._hasImageFiles(e.dataTransfer)) e.preventDefault();
+      };
+      on(document, "dragover", blockNativeDrag);
+      on(document, "drop", blockNativeDrag);
+    }
+
     on(send, "click", () => {
       if (this._busy) {
         if (this._abort) this._abort.abort();
@@ -857,6 +1113,22 @@ class ChatComponent {
     on(select, "change", () => {
       this.setModel(select.value);
     });
+
+    const copyBtn = this._copyModelBtn;
+    if (copyBtn) {
+      on(copyBtn, "click", () => {
+        const model = this._model;
+        if (!model) return;
+        navigator.clipboard
+          ?.writeText(model)
+          .then(() => {
+            const old = copyBtn.textContent;
+            copyBtn.textContent = "✓";
+            setTimeout(() => (copyBtn.textContent = old), 1500);
+          })
+          .catch(() => {});
+      });
+    }
 
     on(thread, "click", (e) => {
       const btn = e.target.closest('[data-action="copy"]');
@@ -904,6 +1176,161 @@ class ChatComponent {
     if (!input) return;
     input.style.height = "auto";
     input.style.height = Math.min(input.scrollHeight, 200) + "px";
+  }
+
+  /* --------------------- Imagens (colar / upload / drop) ------------------ */
+
+  _hasImageFiles(dt) {
+    if (!dt) return false;
+    const items = Array.from(dt.items || []);
+    if (items.some((i) => (i.type || "").startsWith("image/"))) return true;
+    const files = Array.from(dt.files || []);
+    if (files.some((f) => (f.type || "").startsWith("image/"))) return true;
+    return Array.from(dt.types || []).includes("Files");
+  }
+
+  _setDragOverlay(show) {
+    if (this._dropOverlay) this._dropOverlay.hidden = !show;
+  }
+
+  _isDragTargetInside(e) {
+    const rt = e.relatedTarget;
+    if (rt === null || rt === undefined) return false;
+    if (rt === this._root) return true;
+    return this._root.contains(rt);
+  }
+
+  _addAttachment(file) {
+    if (!this.options.enableImages) return;
+    if (!file || !file.type || !file.type.startsWith("image/")) return;
+    if (this._attachments.length >= this.options.maxImages) {
+      this._emit("chat:error", {
+        message: "Limite de " + this.options.maxImages + " imagens por mensagem.",
+      });
+      return;
+    }
+    const id = uid();
+    const placeholder = { id, status: "loading", name: file.name || "imagem" };
+    this._attachments.push(placeholder);
+    this._renderAttachments();
+
+    this._fileToAttachment(file)
+      .then((att) => {
+        const idx = this._attachments.findIndex((a) => a.id === id);
+        if (idx === -1) return;
+        this._attachments[idx] = att;
+        this._renderAttachments();
+        this._focusInput();
+      })
+      .catch((err) => {
+        const idx = this._attachments.findIndex((a) => a.id === id);
+        if (idx !== -1) {
+          this._attachments.splice(idx, 1);
+          this._renderAttachments();
+        }
+        this._emit("chat:error", { message: err.message || String(err) });
+      });
+  }
+
+  async _fileToAttachment(file) {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Não foi possível ler a imagem"));
+      reader.readAsDataURL(file);
+    });
+
+    const img = await new Promise((resolve) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => resolve(null);
+      el.src = dataUrl;
+    });
+
+    let outDataUrl = dataUrl;
+    let outMime = file.type;
+    const maxDim = this.options.imageMaxDim;
+
+    if (img && img.naturalWidth && (img.naturalWidth > maxDim || img.naturalHeight > maxDim)) {
+      const scale = Math.min(maxDim / img.naturalWidth, maxDim / img.naturalHeight);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+      canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        outMime = file.type === "image/png" ? "image/png" : "image/jpeg";
+        outDataUrl = canvas.toDataURL(outMime, 0.9);
+      }
+    }
+
+    return {
+      id: uid(),
+      dataUrl: outDataUrl,
+      mime: outMime,
+      name: file.name || "imagem",
+      status: "ready",
+    };
+  }
+
+  _renderAttachments() {
+    const bar = this._attachmentsBar;
+    if (!bar) return;
+    bar.innerHTML = "";
+    bar.hidden = this._attachments.length === 0;
+    for (const att of this._attachments) {
+      const chip = el("span", "ds-chat__attachment");
+      if (att.dataUrl) {
+        const img = document.createElement("img");
+        img.src = att.dataUrl;
+        img.alt = att.name || "Imagem";
+        chip.appendChild(img);
+      } else {
+        chip.textContent = "Carregando…";
+      }
+      const rm = el("button", "ds-chat__attachment-remove");
+      rm.type = "button";
+      rm.setAttribute("aria-label", "Remover imagem");
+      rm.innerHTML = "×";
+      rm.addEventListener("click", () => {
+        this._attachments = this._attachments.filter((a) => a.id !== att.id);
+        this._renderAttachments();
+        this._focusInput();
+      });
+      chip.appendChild(rm);
+      bar.appendChild(chip);
+    }
+    if (this._attachments.length && this._model.startsWith("deepseek")) {
+      const info = el("span", "ds-chat__attachments-warn");
+      info.textContent =
+        "DeepSeek: a imagem é enviada por upload do navegador logado. Se a IA não a enxergar, use um modelo de visão (Ollama/LM Studio/OpenAI).";
+      bar.appendChild(info);
+    }
+  }
+
+  /* --------------------- Payload multimodal (OpenAI) ---------------------- */
+
+  _contentForMessage(m) {
+    const text = m.content || "";
+    const images = m.images || [];
+    if (!images.length) return text;
+    const parts = [];
+    if (text) parts.push({ type: "text", text });
+    for (const im of images) {
+      parts.push({ type: "image_url", image_url: { url: im.dataUrl } });
+    }
+    return parts;
+  }
+
+  _contentForPending(text) {
+    const images = this._attachments.filter((a) => a.dataUrl);
+    if (!images.length) return text;
+    const parts = [];
+    if (text) parts.push({ type: "text", text });
+    for (const im of images) {
+      parts.push({ type: "image_url", image_url: { url: im.dataUrl } });
+    }
+    return parts;
   }
 
   _setBusyUi(busy) {
@@ -1011,7 +1438,22 @@ class ChatComponent {
 
     if (msg.role === "user") {
       const bubble = el("div", "ds-chat__bubble");
-      bubble.textContent = msg.content;
+      if (msg.images && msg.images.length) {
+        const imgs = el("div", "ds-chat__bubble-images");
+        for (const im of msg.images) {
+          if (!im.dataUrl) continue;
+          const img = document.createElement("img");
+          img.src = im.dataUrl;
+          img.alt = im.name || "Imagem anexada";
+          imgs.appendChild(img);
+        }
+        bubble.appendChild(imgs);
+      }
+      if (msg.content) {
+        const textDiv = document.createElement("div");
+        textDiv.textContent = msg.content;
+        bubble.appendChild(textDiv);
+      }
       wrap.appendChild(bubble);
       return wrap;
     }
@@ -1079,18 +1521,23 @@ class ChatComponent {
     const msgs = this.messages
       .filter((m) => !m.greeting)
       .map((m) => {
-        const o = { role: m.role, content: m.content || "" };
+        const o = { role: m.role, content: this._contentForMessage(m) };
         if (m.role === "assistant" && m.reasoning) o.reasoning_content = m.reasoning;
         return o;
       });
-    if (text) msgs.push({ role: "user", content: text });
+    if (text || this._attachments.length) {
+      msgs.push({ role: "user", content: this._contentForPending(text) });
+    }
     return { model: this._model, messages: msgs, stream: true };
   }
 
   _send(text) {
     const payload = this._buildPayload(text);
 
-    const userMsg = { id: uid(), role: "user", content: text, done: true };
+    const images = this._attachments
+      .filter((a) => a.dataUrl)
+      .map((a) => ({ dataUrl: a.dataUrl, mime: a.mime }));
+    const userMsg = { id: uid(), role: "user", content: text, images, done: true };
     const asstMsg = {
       id: uid(),
       role: "assistant",
@@ -1102,12 +1549,14 @@ class ChatComponent {
     };
     const asstIdx = this.messages.length + 1;
     this.messages.push(userMsg, asstMsg);
+    this._attachments = [];
+    this._renderAttachments();
     this._render();
     this._scheduleStick();
 
-    this._emit("chat:message-sent", { text });
+    this._emit("chat:message-sent", { text, images: images.length });
     if (typeof this.options.onMessageSent === "function") {
-      try { this.options.onMessageSent({ text }); } catch (e) { /* ignore */ }
+      try { this.options.onMessageSent({ text, images: images.length }); } catch (e) { /* ignore */ }
     }
 
     this._busy = true;

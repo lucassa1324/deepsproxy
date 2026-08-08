@@ -19,7 +19,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 
-export type ProviderType = 'deepseek' | 'openai-compatible';
+export type ProviderType = 'deepseek' | 'qwen' | 'openai-compatible';
 
 export interface Provider {
   id: string;
@@ -46,6 +46,15 @@ export function normalizeBaseUrl(url: string): string {
 
 export function isDeepseekProvider(p: Provider): boolean {
   return p.type === 'deepseek';
+}
+
+export function isQwenProvider(p: Provider): boolean {
+  return p.type === 'qwen';
+}
+
+/** True para provedores baseados em navegador (Playwright): deepseek e qwen. */
+export function isBrowserProvider(p: Provider): boolean {
+  return p.type === 'deepseek' || p.type === 'qwen';
 }
 
 export function newProviderId(): string {
@@ -97,13 +106,15 @@ export function sanitizeRegistry(input: any): { registry?: ProviderRegistry; err
   const providers: Provider[] = [];
   for (const raw of list) {
     if (!raw || typeof raw !== 'object') continue;
-    const type: ProviderType = raw.type === 'deepseek' ? 'deepseek' : 'openai-compatible';
+    const type: ProviderType =
+      raw.type === 'deepseek' ? 'deepseek' : raw.type === 'qwen' ? 'qwen' : 'openai-compatible';
+    const isBrowser = type === 'deepseek' || type === 'qwen';
     const provider: Provider = {
       id: raw.id ? String(raw.id) : newProviderId(),
-      name: String(raw.name || (type === 'deepseek' ? 'DeepSeek' : 'Provedor')).trim(),
+      name: String(raw.name || (type === 'deepseek' ? 'DeepSeek' : type === 'qwen' ? 'Qwen' : 'Provedor')).trim(),
       type,
-      baseUrl: type === 'deepseek' ? '' : normalizeBaseUrl(String(raw.baseUrl || '')),
-      apiKey: type === 'deepseek' ? '' : String(raw.apiKey || ''),
+      baseUrl: isBrowser ? '' : normalizeBaseUrl(String(raw.baseUrl || '')),
+      apiKey: isBrowser ? '' : String(raw.apiKey || ''),
       model: String(raw.model || '').trim(),
       enabled: raw.enabled !== false,
     };
@@ -134,8 +145,8 @@ export function saveRegistryToMemory(registry: ProviderRegistry): void {
 }
 
 function providersFromEnv(): ProviderRegistry {
-  const isLocal = (process.env.PROVIDER || 'deepseek').toLowerCase() === 'local';
-  if (isLocal) {
+  const providerName = (process.env.PROVIDER || 'deepseek').toLowerCase();
+  if (providerName === 'local') {
     const provider: Provider = {
       id: 'env_local',
       name: 'Local (env)',
@@ -147,6 +158,9 @@ function providersFromEnv(): ProviderRegistry {
     };
     return { active: provider.id, providers: [provider] };
   }
+  // Provedores de navegador aparecem juntos por padrão: o escolhido via
+  // PROVIDER fica como principal, mas DeepSeek e Qwen ficam disponíveis
+  // para login e roteamento por modelo.
   const deepseek: Provider = {
     id: 'env_deepseek',
     name: 'DeepSeek (env)',
@@ -156,7 +170,40 @@ function providersFromEnv(): ProviderRegistry {
     model: '',
     enabled: true,
   };
-  return { active: deepseek.id, providers: [deepseek] };
+  const qwen: Provider = {
+    id: 'env_qwen',
+    name: 'Qwen (env)',
+    type: 'qwen',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    enabled: true,
+  };
+  if (providerName === 'qwen') {
+    return { active: qwen.id, providers: [qwen, deepseek] };
+  }
+  return { active: deepseek.id, providers: [deepseek, qwen] };
+}
+
+/**
+ * Migração de registro: se houver qualquer provedor de navegador (deepseek ou
+ * qwen), garante que o outro também esteja presente (habilitado). Isso mantém
+ * registros antigos (salvos antes do suporte ao Qwen, só com DeepSeek) com os
+ * dois backends disponíveis para login e roteamento por modelo.
+ */
+function ensureBrowserProviders(registry: ProviderRegistry): ProviderRegistry {
+  const hasDeepseek = registry.providers.some((p) => p.type === 'deepseek');
+  const hasQwen = registry.providers.some((p) => p.type === 'qwen');
+  if (!hasDeepseek && !hasQwen) return registry;
+  const providers = [...registry.providers];
+  if (!hasDeepseek) {
+    providers.push({ id: 'builtin_deepseek', name: 'DeepSeek (env)', type: 'deepseek', baseUrl: '', apiKey: '', model: '', enabled: true });
+  }
+  if (!hasQwen) {
+    providers.push({ id: 'builtin_qwen', name: 'Qwen (env)', type: 'qwen', baseUrl: '', apiKey: '', model: '', enabled: true });
+  }
+  if (providers.length === registry.providers.length) return registry;
+  return { active: registry.active, providers };
 }
 
 /**
@@ -166,8 +213,8 @@ function providersFromEnv(): ProviderRegistry {
  */
 export function resolveRegistry(cookieHeader?: string): ProviderRegistry {
   const fromCookie = parseRegistryFromCookie(cookieHeader);
-  if (fromCookie) return fromCookie;
-  if (memoryRegistry) return memoryRegistry;
+  if (fromCookie) return ensureBrowserProviders(fromCookie);
+  if (memoryRegistry) return ensureBrowserProviders(memoryRegistry);
   return providersFromEnv();
 }
 

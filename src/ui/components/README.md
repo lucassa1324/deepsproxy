@@ -50,6 +50,22 @@ compatível com OpenAI (`POST /v1/chat/completions`) com streaming SSE.
 | `debounceMs` | `number` | `120` | Debounce do auto-grow do input |
 | `overscan` | `number` | `3` | Linhas extras renderizadas no virtual scroll |
 | `virtualThreshold` | `number` | `40` | Nº de mensagens para ativar virtual scrolling |
+| `enableImages` | `boolean` | `true` | Habilita colar (Ctrl+V), upload e arrastar/soltar imagens |
+| `maxImages` | `number` | `4` | Limite de imagens por mensagem |
+| `imageMaxDim` | `number` | `1280` | Lado maior (px) após redimensionar antes de enviar |
+| `accept` | `string` | `"image/*"` | `accept` do input de arquivo |
+
+## Imagens
+
+- **Colar (Ctrl+V)**, **anexar** (botão 📎) ou **arrastar e soltar** imagens no chat.
+- As imagens são enviadas como `image_url` (base64) no formato OpenAI:
+  `content: [{type:"text",...}, {type:"image_url", image_url:{url:"data:image/..."}}]`.
+- Imagens maiores que `imageMaxDim` são redimensionadas no navegador antes do envio.
+- **Visão:** o caminho local (Ollama/LM Studio/OpenAI) recebe a `image_url`
+  como está. O backend DeepSeek (web) recebe a imagem por **upload** do
+  navegador logado (`ref_file_ids`); se o upload falhar, ela vira o marcador
+  `[imagem anexada]` no prompt e o modelo não a enxerga.
+- Use `enableImages: false` para desativar.
 
 ## Métodos públicos
 
@@ -69,7 +85,7 @@ Disparados no elemento raiz (`bubbles: true`):
 
 | Evento | `detail` |
 | --- | --- |
-| `chat:message-sent` | `{ text }` |
+| `chat:message-sent` | `{ text, images }` (`images` = nº de imagens) |
 | `chat:message-received` | `{ content, reasoning, usage }` |
 | `chat:cleared` | `{}` |
 | `chat:error` | `{ message }` |

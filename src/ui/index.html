@@ -104,6 +104,18 @@
   }
   .provider-row:last-child { border-bottom: none; }
   .provider-row.disabled { opacity: .55; }
+  .model-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 4px 6px 4px 10px; font-size: 12.5px;
+  }
+  .model-chip code { color: var(--purple); }
+  .model-chip button {
+    background: none; border: none; cursor: pointer; color: var(--muted);
+    font-size: 13px; padding: 2px 5px; border-radius: 5px; font-family: inherit;
+    line-height: 1;
+  }
+  .model-chip button:hover { color: var(--accent); background: var(--panel); }
   .method {
     font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
     color: #0b0f17; background: var(--green); min-width: 44px; text-align: center;
@@ -444,6 +456,7 @@
             <select id="pvType">
               <option value="openai-compatible">OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...)</option>
               <option value="deepseek">DeepSeek (via Playwright)</option>
+              <option value="qwen">Qwen (via Playwright)</option>
             </select>
           </label>
           <div id="pvOpenAiFields">
@@ -481,6 +494,19 @@
     </div>
 
     <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:10px;">
+        <h3 style="margin:0;">Modelos disponíveis</h3>
+        <button class="btn ghost" id="btnCopyAllModels" type="button" title="Copia todos os nomes de modelo (separados por vírgula)">Copiar todos</button>
+      </div>
+      <div id="modelsChips" class="row wrap" style="margin-top:10px;"></div>
+      <div class="note" style="margin-top:8px;">
+        Clique em <code class="inline">⧉</code> para copiar o nome exato de um modelo e usar na API
+        (campo <code class="inline">model</code> de <code class="inline">/v1/chat/completions</code>).
+        Use <b>Procurar modelos</b> na aba <b>Testar API</b> para atualizar a lista.
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
       <h3>Conexão da API</h3>
       <div class="row" style="align-items:flex-end;">
         <label class="field" style="flex:1;">
@@ -512,6 +538,21 @@
       <div id="vncRow" class="hidden" style="margin-top:8px; font-size:12.5px;">
         Em servidor remoto, o navegador abre numa "tela virtual".
         <a id="vncLink" href="#" target="_blank" rel="noopener">Abrir login remoto (VNC)</a>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;" id="qwenLoginCard">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="min-width:220px;">
+          <h3 style="margin:0;">Login no Qwen</h3>
+          <div class="sub" id="qwenLoginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
+            A sessão do navegador (chat.qwen.ai) é necessária para o chat com modelos Qwen.
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnQwenLoginStart">Fazer login</button>
+          <button class="btn ghost" id="btnQwenLoginFinish" style="display:none;">Concluir login</button>
+        </div>
       </div>
     </div>
   </section>
@@ -652,7 +693,8 @@
       status = await res.json();
       const port = status.port || 3005;
       const providerInfo = status.provider || {};
-      const isLocal = providerInfo.type !== "deepseek";
+      const isBrowser = providerInfo.type === "deepseek" || providerInfo.type === "qwen";
+      const isLocal = !isBrowser;
       baseUrlInput.value = location.origin || "http://localhost:" + port;
       $("#testUrl").textContent = location.origin + "/v1/chat/completions";
 
@@ -665,7 +707,7 @@
       // ---- Provedor (principal) ----
       const providerName = isLocal
         ? (providerInfo.name || "OpenAI-compatível")
-        : (providerInfo.name || "DeepSeek");
+        : (providerInfo.name || (providerInfo.type === "qwen" ? "Qwen" : "DeepSeek"));
       $("#stProvider").textContent = providerName;
       $("#stProvider").style.color = isLocal ? "var(--purple)" : "var(--accent)";
       const extraActive =
@@ -674,7 +716,7 @@
           : "";
       $("#stProviderSub").textContent = isLocal
         ? (providerInfo.baseUrl || "—") + extraActive
-        : "Playwright + chat.deepseek.com" + extraActive;
+        : (providerInfo.type === "qwen" ? "Playwright + chat.qwen.ai" : "Playwright + chat.deepseek.com") + extraActive;
 
       // ---- Backend ----
       if (isLocal) {
@@ -686,8 +728,9 @@
           ? modelTxt ? "Modelo: " + modelTxt : (status.models || []).length + " modelo(s) disponível(eis)"
           : bk.baseUrl || "—";
       } else {
-        const pw = status.playwright || {};
-        const login = status.login || {};
+        const isQwen = providerInfo.type === "qwen";
+        const pw = isQwen ? (status.qwen && status.qwen.playwright) || {} : (status.playwright || {});
+        const login = isQwen ? (status.qwen && status.qwen.login) || {} : (status.login || {});
         $("#stBackend").textContent = pw.initialized ? (login.loggedIn ? "Logado" : "Sessão aberta") : "Não inicializado";
         $("#stBackend").style.color = pw.initialized ? (login.loggedIn ? "var(--green)" : "var(--yellow)") : "var(--red)";
         $("#stBackendSub").textContent = login.cookieCount
@@ -696,39 +739,48 @@
       }
 
       // ---- Login / banner / campos ----
-      const login = status.login || {};
-      const loginInProgress = !!login.inProgress;
+      const isQwen = providerInfo.type === "qwen";
+      const dsLogin = status.login || {};
+      const qLogin = (status.qwen && status.qwen.login) || {};
+      const activeLogin = isQwen ? qLogin : dsLogin;
       const loginHint = $("#loginHint");
       const loginBanner = $("#chatLoginBanner");
       const btnLoginStart = $("#btnLoginStart");
       const btnLoginFinish = $("#btnLoginFinish");
       const loginCard = $("#loginCard");
+      const qLoginHint = $("#qwenLoginHint");
+      const btnQLoginStart = $("#btnQLoginStart");
+      const btnQLoginFinish = $("#btnQLoginFinish");
+      const qLoginCard = $("#qwenLoginCard");
 
-      if (isLocal) {
-        loginCard.style.display = "none";
+      // Os dois cards de login (DeepSeek e Qwen) aparecem juntos, cada um com
+      // status independente, sempre que houver algum provedor de navegador.
+      const hasDs = (status.providers || []).some((p) => p.type === "deepseek" && p.enabled !== false);
+      const hasQwen = (status.providers || []).some((p) => p.type === "qwen" && p.enabled !== false);
+      const anyBrowser = hasDs || hasQwen;
+      loginCard.style.display = anyBrowser ? "" : "none";
+      qLoginCard.style.display = anyBrowser ? "" : "none";
+      if (hasDs || hasQwen) {
+        setLoginCard(loginCard, loginHint, btnLoginStart, btnLoginFinish, dsLogin, "DeepSeek", "chat.deepseek.com");
+      }
+      if (hasQwen || hasDs) {
+        setLoginCard(qLoginCard, qLoginHint, btnQLoginStart, btnQLoginFinish, qLogin, "Qwen", "chat.qwen.ai");
+      }
+
+      // Banner do chat: avisa quando o provedor ativo (browser) não está logado.
+      const bannerMsg = isQwen
+        ? '<span><b>Você não está logado no Qwen.</b> O chat só funciona com uma sessão válida em chat.qwen.ai.</span>'
+        : '<span><b>Você não está logado na DeepSeek.</b> O chat só funciona com uma sessão válida.</span>';
+      if (!isBrowser) {
         loginBanner.classList.add("hidden");
+      } else if (activeLogin.inProgress) {
+        loginBanner.innerHTML = '<span><b>Login em andamento.</b> Faça login no navegador aberto e depois clique em "Concluir login".</span>';
+        loginBanner.classList.remove("hidden");
+      } else if (!activeLogin.loggedIn) {
+        loginBanner.innerHTML = bannerMsg;
+        loginBanner.classList.remove("hidden");
       } else {
-        loginCard.style.display = "";
-        if (loginInProgress) {
-          loginHint.textContent = "Navegador aberto. Faça login em chat.deepseek.com e clique em \"Concluir login\".";
-          loginBanner.innerHTML = '<span><b>Login em andamento.</b> Faça login no navegador aberto e depois clique em "Concluir login".</span>';
-          loginBanner.classList.remove("hidden");
-          btnLoginStart.style.display = "none";
-          btnLoginFinish.style.display = "";
-          btnLoginFinish.textContent = "Concluir login";
-        } else if (login.loggedIn) {
-          loginHint.textContent = "Sessão válida detectada. O chat está pronto para uso.";
-          loginBanner.classList.add("hidden");
-          btnLoginStart.style.display = "";
-          btnLoginStart.textContent = "Refazer login";
-          btnLoginFinish.style.display = "none";
-        } else {
-          loginHint.textContent = "Sem sessão válida. Clique em \"Fazer login\" para abrir o navegador e autenticar na DeepSeek.";
-          loginBanner.classList.remove("hidden");
-          btnLoginStart.style.display = "";
-          btnLoginStart.textContent = "Fazer login";
-          btnLoginFinish.style.display = "none";
-        }
+        loginBanner.classList.add("hidden");
       }
 
       const vncRow = $("#vncRow");
@@ -752,7 +804,9 @@
       if (chatNote) {
         chatNote.innerHTML = isLocal
           ? "Multi-turno preservado pelo servidor (histórico enviado na requisição). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
-          : "Multi-turno preservado via sessão da DeepSeek (<code class=\"inline\">parent_message_id</code>). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.";
+          : (isQwen
+            ? "Multi-turno preservado via sessão do Qwen (parent_id). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
+            : "Multi-turno preservado via sessão da DeepSeek (<code class=\"inline\">parent_message_id</code>). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.");
       }
 
       // ---- Config do provedor ----
@@ -763,25 +817,32 @@
       if (lastModelIds === null || JSON.stringify(lastModelIds) !== JSON.stringify(modelIds)) {
         lastModelIds = modelIds;
         applyModelsToSelectors(modelIds);
+        renderModelChips(modelIds);
       }
 
       renderPills(status);
       renderEndpoints(port);
       renderExamples();
-      renderConnectSteps(isLocal);
+      renderConnectSteps(providerInfo.type);
     } catch (e) {
       serverDot.style.background = "var(--red)";
       serverDot.style.boxShadow = "0 0 8px var(--red)";
     }
   }
 
-  function renderConnectSteps(isLocal) {
+  function renderConnectSteps(type) {
     const steps = $("#connectSteps");
-    const stepsHtml = isLocal
+    const stepsHtml = !type || type === "openai-compatible"
       ? [
           "Adicione um provedor OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...) com o botão <b>+ Novo provedor</b>.",
           "Preencha a <b>Base URL</b> (opcionalmente o modelo e a API Key) e clique em <b>Salvar provedor</b>. Use <b>Testar conexão</b> para validar.",
           "O provedor fica salvo em <b>cookies</b> e já fica ativo para o chat e para a API (veja a aba <b>Exemplos</b>).",
+        ]
+      : type === "qwen"
+      ? [
+          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.qwen.ai</code> e clique em <b>Concluir login</b>.",
+          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
+          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
         ]
       : [
           "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.deepseek.com</code> e clique em <b>Concluir login</b>.",
@@ -800,8 +861,11 @@
 
   function renderPills(st) {
     const pills = $("#pills");
-    const isLocal = (st.provider || {}).type !== "deepseek";
-    const pw = st.playwright || {}, login = st.login || {};
+    const type = (st.provider || {}).type;
+    const isLocal = type !== "deepseek" && type !== "qwen";
+    const isQwen = type === "qwen";
+    const pw = isQwen ? (st.qwen && st.qwen.playwright) || {} : (st.playwright || {});
+    const login = isQwen ? (st.qwen && st.qwen.login) || {} : (st.login || {});
     const items = [
       { label: "Servidor", cls: st.server === "online" ? "ok" : "err" },
       isLocal
@@ -847,6 +911,56 @@
     else sel.value = ids[0] || "deepseek-thinking";
   }
 
+  async function copyText(text, btn, doneLabel) {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      const old = btn.textContent;
+      btn.textContent = doneLabel || "Copiado!";
+      setTimeout(() => (btn.textContent = old), 1500);
+    } catch (e) {
+      // fallback para contexto sem clipboard API (ex.: http não-seguro)
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch (_) {}
+      document.body.removeChild(ta);
+      const old = btn.textContent;
+      btn.textContent = "Copiado!";
+      setTimeout(() => (btn.textContent = old), 1500);
+    }
+  }
+
+  // Card "Modelos disponíveis": chip por modelo com botão de copiar o nome.
+  function renderModelChips(ids) {
+    const chips = $("#modelsChips");
+    if (!chips) return;
+    chips.innerHTML = "";
+    const list = ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"];
+    list.forEach((id) => {
+      const chip = document.createElement("span");
+      chip.className = "model-chip";
+      const code = document.createElement("code");
+      code.textContent = id;
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.title = "Copiar nome do modelo";
+      btn.setAttribute("aria-label", "Copiar nome do modelo " + id);
+      btn.textContent = "⧉";
+      btn.addEventListener("click", () => copyText(id, btn));
+      chip.appendChild(code);
+      chip.appendChild(btn);
+      chips.appendChild(chip);
+    });
+  }
+
+  $("#btnCopyAllModels").addEventListener("click", () => {
+    const ids = (status.models || []).map((m) => (typeof m === "string" ? m : m.id || m));
+    const btn = $("#btnCopyAllModels");
+    copyText(ids.join(", "), btn, "Todos copiados!");
+  });
+
   // ---------- Provedores (registro + cookies) ----------
   let providers = [];
   let activeProviderId = null;
@@ -866,10 +980,12 @@
         "provider-row" +
         (p.enabled === false ? " disabled" : "") +
         (p.id === activeProviderId ? " active" : "");
-      const typeBadge = p.type === "deepseek" ? "DeepSeek" : "OpenAI-compatível";
+      const typeBadge = p.type === "deepseek" ? "DeepSeek" : (p.type === "qwen" ? "Qwen" : "OpenAI-compatível");
       const sub = p.type === "deepseek"
         ? "chat.deepseek.com via Playwright"
-        : (p.baseUrl + (p.model ? " · " + p.model : ""));
+        : (p.type === "qwen"
+          ? "chat.qwen.ai via Playwright"
+          : (p.baseUrl + (p.model ? " · " + p.model : "")));
       row.innerHTML =
         '<label class="checkbox" title="Ligar/desligar este provedor">' +
           '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' /> Ativo' +
@@ -912,8 +1028,9 @@
   }
 
   function toggleEditorType() {
-    const isDeep = $("#pvType").value === "deepseek";
-    $("#pvOpenAiFields").classList.toggle("hidden", isDeep);
+    const type = $("#pvType").value;
+    const isBrowser = type === "deepseek" || type === "qwen";
+    $("#pvOpenAiFields").classList.toggle("hidden", isBrowser);
   }
 
   async function saveProviders(newActive) {
@@ -984,7 +1101,8 @@
   $("#btnSaveProvider").addEventListener("click", async () => {
     const fb = $("#pvFeedback");
     const type = $("#pvType").value;
-    const name = $("#pvName").value.trim() || (type === "deepseek" ? "DeepSeek" : "Novo provedor");
+    const isBrowser = type === "deepseek" || type === "qwen";
+    const name = $("#pvName").value.trim() || (type === "deepseek" ? "DeepSeek" : (type === "qwen" ? "Qwen" : "Novo provedor"));
     if (type === "openai-compatible" && !$("#pvBaseUrl").value.trim()) {
       fb.textContent = "Informe a Base URL.";
       return;
@@ -994,8 +1112,8 @@
       id: editingId || "pv_" + Date.now().toString(36),
       name,
       type,
-      baseUrl: type === "deepseek" ? "" : $("#pvBaseUrl").value.trim(),
-      apiKey: type === "deepseek" ? "" : $("#pvApiKey").value.trim(),
+      baseUrl: isBrowser ? "" : $("#pvBaseUrl").value.trim(),
+      apiKey: isBrowser ? "" : $("#pvApiKey").value.trim(),
       model: $("#pvModel").value.trim(),
       enabled: existing ? existing.enabled : true,
     };
@@ -1112,6 +1230,28 @@
   $("#btnRefresh").addEventListener("click", loadStatus);
 
   // ---------- Login ----------
+  // Atualiza um card de login (DeepSeek ou Qwen) de forma independente.
+  function setLoginCard(card, hintEl, btnStart, btnFinish, login, siteName, site) {
+    if (!card || !hintEl || !btnStart || !btnFinish) return;
+    const inProgress = !!login.inProgress;
+    if (inProgress) {
+      hintEl.textContent = "Navegador aberto. Faça login em " + site + " e clique em \"Concluir login\".";
+      btnStart.style.display = "none";
+      btnFinish.style.display = "";
+      btnFinish.textContent = "Concluir login";
+    } else if (login.loggedIn) {
+      hintEl.textContent = "Sessão válida detectada no " + siteName + ". O chat está pronto para uso.";
+      btnStart.style.display = "";
+      btnStart.textContent = "Refazer login";
+      btnFinish.style.display = "none";
+    } else {
+      hintEl.textContent = "Sem sessão válida. Clique em \"Fazer login\" para abrir o navegador e autenticar no " + siteName + ".";
+      btnStart.style.display = "";
+      btnStart.textContent = "Fazer login";
+      btnFinish.style.display = "none";
+    }
+  }
+
   async function startLogin() {
     const btn = $("#btnLoginStart");
     btn.disabled = true;
@@ -1151,8 +1291,51 @@
   $("#btnLoginFinish").addEventListener("click", finishLogin);
   $("#btnBannerLogin").addEventListener("click", () => {
     document.querySelector('[data-tab="connect"]').click();
-    startLogin();
+    if (status.provider && status.provider.type === "qwen") {
+      startQwenLogin();
+    } else {
+      startLogin();
+    }
   });
+
+  // ---------- Login no Qwen ----------
+  async function startQwenLogin() {
+    const btn = $("#btnQwenLoginStart");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/qwen/login/start", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao iniciar login no Qwen: " + (data.error || res.status));
+      }
+    } catch (e) {
+      alert("Erro ao iniciar login no Qwen: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  async function finishQwenLogin() {
+    const btn = $("#btnQwenLoginFinish");
+    btn.disabled = true;
+    btn.textContent = "Concluindo...";
+    try {
+      const res = await fetch("/api/qwen/login/finish", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao concluir login no Qwen: " + (data.error || res.status));
+      } else if (data.login && !data.login.loggedIn) {
+        alert("Login concluído, mas não detectamos uma sessão válida. Tente novamente.");
+      }
+    } catch (e) {
+      alert("Erro ao concluir login no Qwen: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  $("#btnQwenLoginStart").addEventListener("click", startQwenLogin);
+  $("#btnQwenLoginFinish").addEventListener("click", finishQwenLogin);
 
   // ---------- Testar API ----------
   const testOutput = $("#testOutput");
@@ -1182,6 +1365,7 @@
       const ids = Array.isArray(data.data) ? data.data.map((m) => m.id || m) : [];
       lastModelIds = ids;
       applyModelsToSelectors(ids);
+      renderModelChips(ids);
       const prov = (data.providers || []).map((p) => {
         const label = escapeHtml(p.name || p.id);
         if (p.error) return label + ": <b class=\"err\">erro</b> (" + escapeHtml(p.error) + ")";

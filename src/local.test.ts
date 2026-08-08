@@ -126,3 +126,100 @@ test('local provider: upstream error surfaces as 502', async () => {
     restore();
   }
 });
+
+test('local provider: passthrough preserves image_url content parts (vision)', async () => {
+  let capturedBody: any = null;
+  const restore = setupLocalFetchMock((url, init) => {
+    capturedBody = JSON.parse(init?.body as string || '{}');
+    return new Response(
+      JSON.stringify({
+        id: 'chatcmpl-1',
+        object: 'chat.completion',
+        choices: [{ index: 0, message: { role: 'assistant', content: 'Vejo a imagem.' }, finish_reason: 'stop' }]
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } }
+    );
+  });
+
+  try {
+    const messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'o que tem nessa imagem?' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+        ],
+      },
+    ];
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'llava', messages, stream: false })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.choices[0].message.content, 'Vejo a imagem.');
+
+    assert.ok(Array.isArray(capturedBody.messages[0].content), 'content must stay an array');
+    assert.strictEqual(capturedBody.messages[0].content[1].type, 'image_url');
+    assert.strictEqual(capturedBody.messages[0].content[1].image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
+    assert.ok(!('tools' in capturedBody));
+  } finally {
+    restore();
+  }
+});
+
+test('local agentic: image parts preserved when tools are present (vision + tools)', async () => {
+  let capturedBody: any = null;
+  const restore = setupLocalFetchMock((url, init) => {
+    capturedBody = JSON.parse(init?.body as string || '{}');
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(encoder.encode('data: {"id":"c1","object":"chat.completion.chunk","created":1,"model":"llava","choices":[{"index":0,"delta":{"role":"assistant","content":"ok"},"finish_reason":null}]}\n\n'));
+        c.enqueue(encoder.encode('data: [DONE]\n\n'));
+        c.close();
+      }
+    });
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  });
+
+  const TOOLS = [
+    {
+      type: 'function',
+      function: { name: 'edit_file', description: 'Edit', parameters: { type: 'object', properties: {} } },
+    },
+  ];
+
+  try {
+    const messages = [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'descreva e edite o arquivo' },
+          { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+        ],
+      },
+    ];
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'llava', messages, tools: TOOLS, stream: true })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    await res.text();
+
+    assert.ok(!('tools' in capturedBody), 'tools must be injected as system prompt');
+    assert.ok(capturedBody.messages[0].role === 'system', 'first message must be system with tools');
+    assert.ok(capturedBody.messages[0].content.includes('# TOOLS AVAILABLE'));
+    const userMsg = capturedBody.messages.find((m: any) => m.role === 'user');
+    assert.ok(Array.isArray(userMsg.content), 'user content must remain an array with the image');
+    assert.strictEqual(userMsg.content.find((p: any) => p.type === 'image_url').image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
+  } finally {
+    restore();
+  }
+});

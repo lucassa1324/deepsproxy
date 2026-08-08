@@ -32,10 +32,19 @@ export interface DeepSeekPayload {
   preempt: boolean;
 }
 
+export interface DeepSeekStreamOptions {
+  /** Sessão pré-criada (ex.: sessão de visão criada via chat_session/create). */
+  chatSessionId?: string;
+  /** model_type a enviar (ex.: "vision" quando há imagens). */
+  modelType?: string | null;
+}
+
 export async function createDeepSeekStream(
-  prompt: string, 
-  enableThinking: boolean, 
-  forcedParentId?: number | null
+  prompt: string,
+  enableThinking: boolean,
+  forcedParentId?: number | null,
+  refFileIds: string[] = [],
+  opts: DeepSeekStreamOptions = {}
 ): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string }> {
   // Obtain fresh headers/PoW from Playwright
   // If forcedParentId is null, it means we are explicitly starting a new session
@@ -46,19 +55,20 @@ export async function createDeepSeekStream(
   // 2. If tracked parent ID is available for this session, use it.
   // 3. Fallback to Playwright's state.
   let actualParentId: number | null = parentMessageId;
-  
+
   if (forcedParentId !== undefined) {
     actualParentId = forcedParentId;
   } else if (chatSessionId && sessionStates[chatSessionId] !== undefined) {
     actualParentId = sessionStates[chatSessionId];
   }
 
+  const effectiveSessionId = opts.chatSessionId || chatSessionId;
   const payload: DeepSeekPayload = {
-    chat_session_id: chatSessionId || undefined,
+    chat_session_id: effectiveSessionId || undefined,
     parent_message_id: actualParentId,
-    model_type: null,
+    model_type: opts.modelType !== undefined ? opts.modelType : null,
     prompt: prompt,
-    ref_file_ids: [],
+    ref_file_ids: refFileIds,
     thinking_enabled: enableThinking,
     search_enabled: true,
     preempt: false
@@ -75,10 +85,12 @@ export async function createDeepSeekStream(
       'x-ds-pow-response': headers['x-ds-pow-response'],
       'x-hif-dliq': headers['x-hif-dliq'],
       'x-hif-leim': headers['x-hif-leim'],
-      'x-app-version': '20240126.1',
-      'x-client-locale': 'pt_BR',
-      'x-client-platform': 'web',
-      'x-client-version': '1.0.0'
+      'cookie': headers['cookie'],
+      'x-client-bundle-id': headers['x-client-bundle-id'] || 'com.deepseek.chat',
+      'x-client-locale': headers['x-client-locale'] || 'pt_BR',
+      'x-client-platform': headers['x-client-platform'] || 'web',
+      'x-client-version': headers['x-client-version'] || '2.3.0',
+      'x-client-timezone-offset': headers['x-client-timezone-offset'] || '-10800'
     },
     body: JSON.stringify(payload)
   });
@@ -88,5 +100,5 @@ export async function createDeepSeekStream(
     throw new Error(`Failed to fetch from DeepSeek: ${response.status} ${response.statusText} - ${errText}`);
   }
 
-  return { stream: response.body, headers, uiSessionId: chatSessionId };
+  return { stream: response.body, headers, uiSessionId: effectiveSessionId };
 }

@@ -15,7 +15,7 @@ import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 import type { Provider } from './config.ts';
-import { buildAgentPrompt } from '../utils/prompt.ts';
+import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 
@@ -147,10 +147,58 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
 
 /* ------------------------- Agentic (ferramentas via prompt) ------------------------- */
 
+/** True quando alguma mensagem traz imagens no formato OpenAI (image_url). */
+function hasImageParts(messages: any[]): boolean {
+  return (messages || []).some(
+    (m) => Array.isArray(m.content) && m.content.some((p: any) => p && p.type === 'image_url')
+  );
+}
+
+/**
+ * Mantém as partes multimodais (imagens) das mensagens originais e injeta as
+ * instruções de ferramentas num system message. Usado quando o request traz
+ * ferramentas E imagens, para que modelos de visão recebam a imagem de fato
+ * em vez do marcador de texto.
+ */
+function buildAgenticMessagesWithImages(body: OpenAIRequest): any[] {
+  const systemParts: string[] = [];
+  const messages: any[] = [];
+
+  for (const m of body.messages || []) {
+    if (m.role === 'system') {
+      systemParts.push(
+        Array.isArray(m.content)
+          ? m.content.map(contentPartToText).join('\n')
+          : String(m.content || '')
+      );
+      continue;
+    }
+    messages.push({
+      ...m,
+      content: Array.isArray(m.content)
+        ? m.content
+            .filter((p: any) => p && (p.type === 'image_url' || (p.type === 'text' && p.text != null)))
+            .map((p: any) =>
+              p.type === 'image_url' ? { type: 'image_url', image_url: { url: p.image_url?.url } } : { type: 'text', text: p.text }
+            )
+        : m.content,
+    });
+  }
+
+  const toolInstructions = buildToolsInstructions(body);
+  if (toolInstructions) systemParts.push(toolInstructions);
+  if (systemParts.length > 0) {
+    messages.unshift({ role: 'system', content: systemParts.join('\n\n').trim() });
+  }
+  return messages;
+}
+
 async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provider) {
   const isStream = body.stream ?? false;
-  const finalPrompt = buildAgentPrompt(body);
-  const messages = [{ role: 'user', content: finalPrompt }];
+  const hasImages = hasImageParts(body.messages || []);
+  const messages = hasImages
+    ? buildAgenticMessagesWithImages(body)
+    : [{ role: 'user', content: buildAgentPrompt(body) }];
   const model = effectiveModel(provider, body);
 
   const payload: any = { ...body, messages, stream: isStream };
@@ -209,7 +257,9 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
     let emittedToolCallCount = 0;
     let upstreamUsage: any = null;
     let completionTokens = 0;
-    const promptTokens = Math.ceil(finalPrompt.length / 3.5);
+    const promptTokens = Math.ceil(
+      (Array.isArray(messages[0]?.content) ? JSON.stringify(messages) : messages[0]?.content || '').length / 3.5
+    );
 
     const emitContent = async (text: string) => {
       if (text && emittedToolCallCount === 0) {

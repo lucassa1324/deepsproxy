@@ -20,6 +20,16 @@ import {
   isProfileWritable,
 } from '../services/playwright.ts';
 import { fetchModels, testProviderConnection, clearModelsCache } from '../services/local.ts';
+import {
+  getQwenLoginStatus,
+  getQwenPlaywrightState,
+  isQwenLoginFlowActive,
+  startQwenLoginFlow,
+  finishQwenLoginFlow,
+  getQwenProfileDir,
+  isQwenProfileWritable,
+} from '../services/qwen-playwright.ts';
+import { fetchQwenModels, clearQwenModelsCache, QWEN_KNOWN_MODELS } from '../services/qwen.ts';
 import { vncEnabled, vncUrl } from './vnc.ts';
 import {
   resolveRegistry,
@@ -29,6 +39,7 @@ import {
   saveRegistryToMemory,
   serializeProvidersCookie,
   isDeepseekProvider,
+  isQwenProvider,
   PROVIDERS_COOKIE,
 } from '../services/config.ts';
 
@@ -37,6 +48,18 @@ export const dashboard = new Hono();
 // Incrementado quando o registro de provedores muda. As páginas (chat e
 // dashboard) usam /api/models/stream para atualizar a lista de modelos na hora.
 let modelsVersion = 0;
+
+// Lista de modelos do Qwen: busca na API (via Playwright) com fallback para a
+// lista estática quando o backend não responde.
+async function qwenModelsWithFallback(): Promise<any[]> {
+  try {
+    const models = await fetchQwenModels();
+    if (models.length) return models;
+  } catch (err: any) {
+    console.warn('[models] falha ao buscar modelos do Qwen; usando lista conhecida:', err.message);
+  }
+  return QWEN_KNOWN_MODELS.map((m) => ({ ...m, object: 'model' }));
+}
 
 const html = readFileSync(fileURLToPath(new URL('./index.html', import.meta.url)), 'utf-8');
 const chatHtml = readFileSync(fileURLToPath(new URL('./chat.html', import.meta.url)), 'utf-8');
@@ -72,6 +95,14 @@ dashboard.get('/api/status', async (c) => {
   for (const p of enabled) {
     if (isDeepseekProvider(p)) {
       for (const m of ['deepseek-thinking', 'deepseek-no-thinking']) {
+        if (!seenModels.has(m)) {
+          modelsList.push(m);
+          seenModels.add(m);
+        }
+      }
+    } else if (isQwenProvider(p)) {
+      const models = await qwenModelsWithFallback();
+      for (const m of models.map((m: any) => m.id)) {
         if (!seenModels.has(m)) {
           modelsList.push(m);
           seenModels.add(m);
@@ -129,6 +160,14 @@ dashboard.get('/api/status', async (c) => {
       ...getPlaywrightState(),
       profileDir: getProfileDir(),
       profileWritable: isProfileWritable(),
+    },
+    qwen: {
+      playwright: {
+        ...getQwenPlaywrightState(),
+        profileDir: getQwenProfileDir(),
+        profileWritable: isQwenProfileWritable(),
+      },
+      login: { ...(await getQwenLoginStatus()), inProgress: isQwenLoginFlowActive() },
     },
     login: { ...login, inProgress: isLoginFlowActive() },
     vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
@@ -217,6 +256,16 @@ dashboard.post('/api/models/refresh', async (c) => {
         { id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' },
         { id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }
       );
+    } else if (isQwenProvider(p)) {
+      clearQwenModelsCache();
+      try {
+        const models = await qwenModelsWithFallback();
+        info.models = models.map((m: any) => m.id);
+        data.push(...models);
+      } catch (e: any) {
+        info.error = e?.message || String(e);
+        info.models = [];
+      }
     } else {
       try {
         const models = await fetchModels(p, true); // force refresh
@@ -285,6 +334,9 @@ dashboard.get('/api/models', async (c) => {
         { id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' },
         { id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }
       );
+    } else if (isQwenProvider(p)) {
+      const models = await qwenModelsWithFallback();
+      if (models) data.push(...models);
     } else {
       const models = await fetchModels(p);
       if (models) data.push(...models);
@@ -338,6 +390,27 @@ dashboard.post('/api/login/finish', async (c) => {
     await finishLoginFlow();
     const login = await getLoginStatus();
     console.log(`[login] Fluxo concluído. Logado: ${login.loggedIn}`);
+    return c.json({ ok: true, login });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+dashboard.post('/api/qwen/login/start', async (c) => {
+  try {
+    await startQwenLoginFlow();
+    console.log('[qwen] Navegador aberto para login. Conclua no navegador e clique em "Concluir login".');
+    return c.json({ ok: true, inProgress: true });
+  } catch (e: any) {
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+dashboard.post('/api/qwen/login/finish', async (c) => {
+  try {
+    await finishQwenLoginFlow();
+    const login = await getQwenLoginStatus();
+    console.log(`[qwen] Fluxo concluído. Logado: ${login.loggedIn}`);
     return c.json({ ok: true, login });
   } catch (e: any) {
     return c.json({ error: e.message }, 500);

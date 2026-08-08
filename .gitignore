@@ -1,6 +1,8 @@
 node_modules/
 dist/
 deepseek_profile/
+qwen_profile/
+qwenproxy/
 .env
 .env.local
 *.log

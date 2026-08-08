@@ -184,9 +184,80 @@
     border-top: 1px solid #e2e8f0;
     padding: 14px 20px;
     display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .chat-footer-row {
+    display: flex;
     gap: 10px;
     align-items: flex-end;
   }
+  .attachments {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .attachment {
+    position: relative;
+    width: 60px;
+    height: 60px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #94a3b8;
+    font-size: 11px;
+  }
+  .attachment img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .attachment .remove {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 18px;
+    height: 18px;
+    border: none;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+  }
+  .attachment .remove:hover { background: #dc2626; }
+  .bubble-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  .bubble-images img {
+    max-width: 220px;
+    max-height: 220px;
+    border-radius: 10px;
+    display: block;
+  }
+  .attach-btn {
+    width: 46px;
+    height: 46px;
+    flex-shrink: 0;
+    border: 1px solid #cbd5e1;
+    border-radius: 12px;
+    background: #fff;
+    color: #64748b;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.15s;
+  }
+  .attach-btn:hover { border-color: #2563eb; color: #2563eb; }
   .chat-footer select {
     padding: 11px 12px;
     border: 1px solid #cbd5e1;
@@ -254,16 +325,21 @@
       <div class="messages" id="messages"></div>
 
       <footer class="chat-footer">
-        <select id="modelSelect">
-          <option value="DeepSeek V3">DeepSeek V3</option>
-          <option value="DeepSeek R1">DeepSeek R1</option>
-          <option value="GPT-4o">GPT-4o (mock)</option>
-        </select>
-        <button class="send-btn" id="btnRefreshModels" title="Buscar modelos" style="width:auto;height:auto;padding:0 8px;font-size:12px;border-radius:8px;background:var(--green,#35d07f);color:#fff;border:none;cursor:pointer;font-family:inherit;">
-          <i class="fa-solid fa-rotate"></i>
-        </button>
-        <textarea id="userInput" rows="1" placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"></textarea>
-        <button class="send-btn" id="sendBtn" title="Enviar"><i class="fa-solid fa-paper-plane"></i></button>
+        <div class="attachments" id="attachments" hidden></div>
+        <div class="chat-footer-row">
+          <select id="modelSelect">
+            <option value="DeepSeek V3">DeepSeek V3</option>
+            <option value="DeepSeek R1">DeepSeek R1</option>
+            <option value="GPT-4o">GPT-4o (mock)</option>
+          </select>
+          <button class="send-btn" id="btnRefreshModels" title="Buscar modelos" style="width:auto;height:auto;padding:0 8px;font-size:12px;border-radius:8px;background:var(--green,#35d07f);color:#fff;border:none;cursor:pointer;font-family:inherit;">
+            <i class="fa-solid fa-rotate"></i>
+          </button>
+          <button class="attach-btn" id="attachBtn" title="Anexar imagem (ou cole Ctrl+V)"><i class="fa-solid fa-paperclip"></i></button>
+          <textarea id="userInput" rows="1" placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"></textarea>
+          <button class="send-btn" id="sendBtn" title="Enviar"><i class="fa-solid fa-paper-plane"></i></button>
+          <input type="file" id="fileInput" accept="image/*" multiple hidden>
+        </div>
       </footer>
       <div class="hint">Enter envia · Shift+Enter nova linha</div>
     </main>
@@ -276,12 +352,16 @@
   const $ = (s) => document.querySelector(s);
 
   // ===== Estado =====
-  // { id, title, createdAt, messages: [{ role, content }] }
+  // { id, title, createdAt, messages: [{ role, content, images? }] }
   const chats = [];
   let currentChatId = null;
   let selectedModel = "";
   let chatting = false;
   let chatAbort = null;
+  const MAX_IMAGES = 4;
+  const IMAGE_MAX_DIM = 1280;
+  // Imagens pendentes de envio: { id, dataUrl, mime, name }
+  let attachments = [];
 
   // ===== Elementos =====
   const messagesDiv = $("#messages");
@@ -289,6 +369,12 @@
   const userInput = $("#userInput");
   const sendBtn = $("#sendBtn");
   const modelSelect = $("#modelSelect");
+  const attachBtn = $("#attachBtn");
+  const fileInput = $("#fileInput");
+  const attachmentsDiv = $("#attachments");
+
+  const uid = () =>
+    "a" + Math.random().toString(36).slice(2) + Date.now().toString(36);
 
   const getCurrentChat = () => chats.find((c) => c.id === currentChatId) || null;
 
@@ -305,6 +391,104 @@
       " " +
       d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })
     );
+  }
+
+  // ===== Imagens (anexo / colar / upload) =====
+  function fileToAttachment(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Não foi possível ler a imagem"));
+      reader.readAsDataURL(file);
+    }).then((dataUrl) => {
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve({ img, dataUrl });
+        img.onerror = () => resolve({ img: null, dataUrl });
+        img.src = dataUrl;
+      });
+    }).then(({ img, dataUrl }) => {
+      let outDataUrl = dataUrl;
+      let outMime = file.type;
+      if (img && img.naturalWidth && (img.naturalWidth > IMAGE_MAX_DIM || img.naturalHeight > IMAGE_MAX_DIM)) {
+        const scale = Math.min(IMAGE_MAX_DIM / img.naturalWidth, IMAGE_MAX_DIM / img.naturalHeight);
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        canvas.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          outMime = file.type === "image/png" ? "image/png" : "image/jpeg";
+          outDataUrl = canvas.toDataURL(outMime, 0.9);
+        }
+      }
+      return { id: uid(), dataUrl: outDataUrl, mime: outMime, name: file.name || "imagem" };
+    });
+  }
+
+  function addAttachment(file) {
+    if (!file || !file.type || !file.type.startsWith("image/")) return;
+    if (attachments.length >= MAX_IMAGES) {
+      alert("Limite de " + MAX_IMAGES + " imagens por mensagem.");
+      return;
+    }
+    const id = uid();
+    attachments.push({ id, status: "loading", name: file.name || "imagem" });
+    renderAttachments();
+    fileToAttachment(file)
+      .then((att) => {
+        const idx = attachments.findIndex((a) => a.id === id);
+        if (idx !== -1) {
+          attachments[idx] = att;
+          renderAttachments();
+          userInput.focus();
+        }
+      })
+      .catch((err) => {
+        attachments = attachments.filter((a) => a.id !== id);
+        renderAttachments();
+        alert(err.message);
+      });
+  }
+
+  function renderAttachments() {
+    attachmentsDiv.innerHTML = "";
+    attachmentsDiv.hidden = attachments.length === 0;
+    attachments.forEach((att) => {
+      const chip = document.createElement("span");
+      chip.className = "attachment";
+      if (att.dataUrl) {
+        const img = document.createElement("img");
+        img.src = att.dataUrl;
+        img.alt = att.name || "Imagem";
+        chip.appendChild(img);
+      } else {
+        chip.textContent = "Carregando…";
+      }
+      const rm = document.createElement("button");
+      rm.className = "remove";
+      rm.type = "button";
+      rm.title = "Remover";
+      rm.setAttribute("aria-label", "Remover imagem");
+      rm.innerHTML = "×";
+      rm.addEventListener("click", () => {
+        attachments = attachments.filter((a) => a.id !== att.id);
+        renderAttachments();
+        userInput.focus();
+      });
+      chip.appendChild(rm);
+      attachmentsDiv.appendChild(chip);
+    });
+  }
+
+  // Constrói o content de uma mensagem no formato OpenAI (array com imagens).
+  function contentFor(images, text) {
+    const ready = images.filter((im) => im.dataUrl);
+    if (!ready.length) return text;
+    const parts = [];
+    if (text) parts.push({ type: "text", text });
+    ready.forEach((im) => parts.push({ type: "image_url", image_url: { url: im.dataUrl } }));
+    return parts;
   }
 
   // ===== Barra lateral =====
@@ -347,12 +531,26 @@
   }
 
   // ===== Área de mensagens =====
-  function addMessageEl(role, content) {
+  function addMessageEl(role, content, images) {
     const wrapper = document.createElement("div");
     wrapper.className = "msg " + role;
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = content || "";
+    if (role === "user" && images && images.length) {
+      const imgs = document.createElement("div");
+      imgs.className = "bubble-images";
+      images.forEach((im) => {
+        if (!im.dataUrl) return;
+        const img = document.createElement("img");
+        img.src = im.dataUrl;
+        img.alt = im.name || "Imagem anexada";
+        imgs.appendChild(img);
+      });
+      bubble.appendChild(imgs);
+    }
+    const textEl = document.createElement("div");
+    textEl.textContent = content || "";
+    bubble.appendChild(textEl);
     wrapper.appendChild(bubble);
     messagesDiv.appendChild(wrapper);
     return bubble;
@@ -369,7 +567,7 @@
       showWelcome();
       return;
     }
-    chat.messages.forEach((m) => addMessageEl(m.role, m.content));
+    chat.messages.forEach((m) => addMessageEl(m.role, m.content, m.images));
     scrollToBottom();
   }
 
@@ -415,7 +613,8 @@
   async function sendMessage() {
     if (chatting) return;
     const text = userInput.value.trim();
-    if (!text) return;
+    const images = attachments.filter((a) => a.dataUrl);
+    if (!text && !images.length) return;
     userInput.value = "";
     autoGrow();
 
@@ -424,13 +623,15 @@
 
     // Primeira mensagem define o título do chat
     if (chat.messages.length === 0) {
-      chat.title = truncate(text, 30);
+      chat.title = truncate(text || "[imagem]", 30);
       chat.createdAt = Date.now();
       renderChatList();
     }
 
-    chat.messages.push({ role: "user", content: text });
-    addMessageEl("user", text);
+    chat.messages.push({ role: "user", content: text, images });
+    addMessageEl("user", text, images);
+    attachments = [];
+    renderAttachments();
     chat.messages.push({ role: "assistant", content: "" });
     const bubble = addMessageEl("assistant", "");
     bubble.innerHTML = '<div class="typing"><span></span><span></span><span></span></div>';
@@ -466,7 +667,10 @@
     const history = chat.messages.slice();
     const last = history[history.length - 1];
     if (last && last.role === "assistant" && last.content === "") history.pop();
-    const messages = history.map((m) => ({ role: m.role, content: m.content }));
+    const messages = history.map((m) => ({
+      role: m.role,
+      content: m.images && m.images.length ? contentFor(m.images, m.content) : m.content,
+    }));
     const payload = {
       model: selectedModel,
       messages,
@@ -562,6 +766,73 @@
     }
     // Shift+Enter segue o comportamento nativo do textarea (quebra de linha)
   });
+
+  // Colar imagem (Ctrl+V)
+  userInput.addEventListener("paste", (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    let added = false;
+    for (const item of items) {
+      if (item.kind === "file" && item.type && item.type.startsWith("image/")) {
+        const file = item.getAsFile();
+        if (file) {
+          addAttachment(file);
+          added = true;
+        }
+      }
+    }
+    if (added) fileInput.value = "";
+  });
+
+  attachBtn.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    const files = Array.from(fileInput.files || []);
+    fileInput.value = "";
+    files.forEach(addAttachment);
+  });
+
+  // Arrastar e soltar imagens sobre a área de mensagens
+  const hasImageFiles = (dt) => {
+    if (!dt) return false;
+    if (Array.from(dt.items || []).some((i) => (i.type || "").startsWith("image/"))) return true;
+    if (Array.from(dt.files || []).some((f) => (f.type || "").startsWith("image/"))) return true;
+    return Array.from(dt.types || []).includes("Files");
+  };
+  messagesDiv.addEventListener("dragenter", (e) => {
+    if (!hasImageFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    messagesDiv.style.outline = "2px dashed #2563eb";
+  });
+  messagesDiv.addEventListener("dragover", (e) => {
+    if (!hasImageFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+  });
+  messagesDiv.addEventListener("dragleave", (e) => {
+    if (!hasImageFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    const rt = e.relatedTarget;
+    if (rt === null || rt === undefined || !messagesDiv.contains(rt)) {
+      messagesDiv.style.outline = "";
+    }
+  });
+  messagesDiv.addEventListener("drop", (e) => {
+    if (!hasImageFiles(e.dataTransfer)) return;
+    e.preventDefault();
+    messagesDiv.style.outline = "";
+    Array.from(e.dataTransfer.files || [])
+      .filter((f) => (f.type || "").startsWith("image/"))
+      .forEach(addAttachment);
+  });
+  messagesDiv.addEventListener("dragend", () => {
+    messagesDiv.style.outline = "";
+  });
+
+  // Impede o navegador de abrir a imagem em tela cheia ao soltar fora do chat
+  const blockNativeDrag = (e) => {
+    if (hasImageFiles(e.dataTransfer)) e.preventDefault();
+  };
+  document.addEventListener("dragover", blockNativeDrag);
+  document.addEventListener("drop", blockNativeDrag);
 
   sendBtn.addEventListener("click", () => {
     if (chatting) {

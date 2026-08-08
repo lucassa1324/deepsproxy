@@ -30,9 +30,25 @@ export interface MessageToolCall {
   function: ToolCallFunction;
 }
 
+/** Parte de texto no conteúdo multimodal (formato OpenAI) */
+export interface TextContentPart {
+  type: 'text';
+  text: string;
+}
+
+/** Parte de imagem no conteúdo multimodal (formato OpenAI) */
+export interface ImageContentPart {
+  type: 'image_url';
+  image_url: { url: string };
+  detail?: string;
+}
+
+export type ContentPart = TextContentPart | ImageContentPart;
+export type MessageContent = string | null | ContentPart[];
+
 export interface Message {
   role: string;
-  content: string | null;
+  content: MessageContent;
   /** Present on assistant messages that invoked tools */
   tool_calls?: MessageToolCall[];
   /** Present on tool/function response messages to link back to a call */

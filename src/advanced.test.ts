@@ -18,6 +18,45 @@ function setupFetchMock(handler: (url: string, init?: RequestInit) => Response |
   return () => { globalThis.fetch = originalFetch; };
 }
 
+test('non-streaming: returns a single JSON chat.completion', async () => {
+  const restore = setupFetchMock((url) => {
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"v":{"response":{"message_id":1}}}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/thinking_content","v":"pensando"}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/content","v":"Ol"}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/content","v":"á!"}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/accumulated_token_usage","o":"SET","v":10}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        c.close();
+      }
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'deepseek-thinking', messages: [{ role: 'user', content: 'test' }], stream: false })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    assert.ok((res.headers.get('Content-Type') || '').includes('application/json'), 'Should respond with JSON, not SSE');
+
+    const data = await res.json();
+    assert.strictEqual(data.object, 'chat.completion');
+    assert.strictEqual(data.choices[0].message.role, 'assistant');
+    assert.strictEqual(data.choices[0].message.content, 'Olá!');
+    assert.strictEqual(data.choices[0].message.reasoning_content, 'pensando');
+    assert.strictEqual(data.choices[0].finish_reason, 'stop');
+    assert.strictEqual(data.usage.completion_tokens, 10);
+  } finally {
+    restore();
+  }
+});
+
 test('multiturn-thinking-tools: maintains reasoning_content history', async () => {
   let capturedPrompt = '';
 
@@ -221,6 +260,102 @@ test('session-parent-tracking: appends messages using response message_id as par
     assert.strictEqual(capturedPayloads[1].parent_message_id, 1001, 'Turn 2 should use message_id from Turn 1 as parent');
     assert.strictEqual(capturedPayloads[1].prompt, 'User: Turn 2\n\n', 'Should only send the last message');
   } finally {
+    restore();
+  }
+});
+
+test('deepseek: image content parts become a marker in the prompt (no crash)', async () => {
+  let capturedPrompt = '';
+
+  const restore = setupFetchMock((url, init) => {
+    const bodyObj = JSON.parse(init?.body as string || '{}');
+    capturedPrompt = bodyObj.prompt;
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"v":{"response":{"message_id":1}}}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/content","v":"ok"}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        c.close();
+      }
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-thinking',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'o que tem nessa imagem?' },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+            ],
+          }
+        ]
+      })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    await res.text();
+
+    assert.ok(capturedPrompt.includes('[imagem anexada]'), 'image parts must become a marker');
+    assert.ok(capturedPrompt.includes('o que tem nessa imagem?'));
+    assert.ok(!capturedPrompt.includes('data:image/png'), 'base64 must not leak into the prompt');
+  } finally {
+    restore();
+  }
+});
+
+test('deepseek: images trigger upload and ref_file_ids are sent in the payload', async () => {
+  let capturedPayload: any = null;
+
+  const restore = setupFetchMock((url, init) => {
+    capturedPayload = JSON.parse(init?.body as string || '{}');
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode('data: {"v":{"response":{"message_id":1}}}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/content","v":"ok"}\n\n'));
+        c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+        c.close();
+      }
+    });
+    return new Response(stream, { status: 200 });
+  });
+
+  try {
+    process.env.TEST_MOCK_UPLOAD = '1';
+    const req = new Request('http://localhost/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-thinking',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'o que tem nessa imagem?' },
+              { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+            ],
+          }
+        ]
+      })
+    });
+
+    const res = await app.fetch(req);
+    assert.strictEqual(res.status, 200);
+    await res.text();
+
+    assert.ok(Array.isArray(capturedPayload.ref_file_ids), 'payload must carry ref_file_ids');
+    assert.deepStrictEqual(capturedPayload.ref_file_ids, ['mock-vision-file-1'], 'forked vision ids must be forwarded');
+    assert.strictEqual(capturedPayload.model_type, 'vision', 'images must use the vision model');
+    assert.strictEqual(capturedPayload.chat_session_id, 'mock-vision-session', 'vision session id must be used');
+  } finally {
+    delete process.env.TEST_MOCK_UPLOAD;
     restore();
   }
 });

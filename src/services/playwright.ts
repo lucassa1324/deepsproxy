@@ -105,6 +105,9 @@ export async function startLoginFlow(): Promise<void> {
   }
   loginFlowActive = true;
   await closePlaywright();
+  // Espera o Chrome liberar o perfil antes de reabrir (evita "profile in use"
+  // / contexto que fecha imediatamente no Windows).
+  await new Promise((r) => setTimeout(r, 800));
   await initPlaywright(false); // visível para o usuário logar
   if (activePage) {
     await activePage.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
@@ -160,6 +163,17 @@ export async function closePlaywright() {
     }
     context = null;
     activePage = null;
+  }
+  // Remove locks obsoletos do perfil (Chrome/Windows) para permitir reabrir o
+  // browser imediatamente sem erro de "profile in use" ou contexto que morre.
+  try {
+    for (const f of fs.readdirSync(getProfileDir())) {
+      if (f.startsWith('Singleton')) {
+        fs.unlinkSync(path.join(getProfileDir(), f));
+      }
+    }
+  } catch {
+    // perfil inexistente ou sem permissão
   }
 }
 
@@ -454,6 +468,37 @@ export async function prepareDeepSeekVisionFiles(fileIds: string[]): Promise<Dee
 }
 
 /**
+ * Fila da DeepSeek: a extração de headers/PoW usa a MESMA página (UI), então
+ * requisições concorrentes são serializadas nessa etapa (as demais ficam na
+ * fila). Com os headers prontos, os streams rodam em paralelo (fetch direto).
+ */
+let deepseekLockTail: Promise<void> = Promise.resolve();
+let deepseekActive = 0;
+let deepseekWaiting = 0;
+
+export function getDeepSeekQueueState(): { active: number; waiting: number } {
+  return { active: deepseekActive, waiting: deepseekWaiting };
+}
+
+async function withDeepSeekLock<T>(fn: () => Promise<T>): Promise<T> {
+  let release!: () => void;
+  const prev = deepseekLockTail;
+  deepseekLockTail = new Promise<void>((r) => {
+    release = r;
+  });
+  deepseekWaiting++;
+  await prev.catch(() => {});
+  deepseekWaiting--;
+  deepseekActive++;
+  try {
+    return await fn();
+  } finally {
+    deepseekActive--;
+    release();
+  }
+}
+
+/**
  * Ensures the session is valid and extracts headers, PoW, and session ID.
  */
 export async function getDeepSeekHeaders(forceNew = false): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: number | null }> {
@@ -463,6 +508,10 @@ export async function getDeepSeekHeaders(forceNew = false): Promise<{ headers: R
     return { headers: { authorization: 'Bearer MOCK' }, chatSessionId: mockSessionId, parentMessageId: null };
   }
 
+  return withDeepSeekLock(() => getDeepSeekHeadersInner(forceNew));
+}
+
+async function getDeepSeekHeadersInner(forceNew = false): Promise<{ headers: Record<string, string>, chatSessionId: string, parentMessageId: number | null }> {
   if (loginFlowActive) {
     throw new Error('Login da DeepSeek em andamento. Conclua o login no dashboard antes de usar o chat.');
   }

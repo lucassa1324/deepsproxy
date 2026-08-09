@@ -115,6 +115,17 @@
     gap: 8px;
   }
   .chat-header .model-name i { color: #2563eb; font-size: 13px; }
+  .chat-header .model-cat {
+    font-size: 11px;
+    font-weight: 600;
+    color: #2563eb;
+    background: #eff6ff;
+    border: 1px solid #bfdbfe;
+    border-radius: 999px;
+    padding: 2px 8px;
+    text-transform: capitalize;
+  }
+  .chat-footer select optgroup { font-style: normal; color: #64748b; }
   .chat-header .logo {
     font-size: 13px;
     color: #94a3b8;
@@ -318,7 +329,7 @@
     <!-- ===== Área principal ===== -->
     <main class="main">
       <header class="chat-header">
-        <div class="model-name" id="headerModel"><i class="fa-solid fa-robot"></i><span>DeepSeek V3</span></div>
+        <div class="model-name" id="headerModel"><i class="fa-solid fa-robot"></i><span>DeepSeek V3</span><span class="model-cat" id="headerModelCat" hidden></span></div>
         <div class="logo">DeepsProxy</div>
       </header>
 
@@ -848,37 +859,68 @@
   // ===== Seletor de modelo =====
   modelSelect.addEventListener("change", (e) => {
     selectedModel = e.target.value;
-    $("#headerModel span").textContent = selectedModel;
+    renderHeaderModel(selectedModel);
   });
 
   let lastModelsJson = null;
+  let modelsById = {};
+
+  function renderHeaderModel(id) {
+    const m = modelsById[id] || {};
+    $("#headerModel span").textContent = m.label || id;
+    const cat = $("#headerModelCat");
+    if (cat) {
+      cat.textContent = m.category_label || "";
+      cat.hidden = !m.category_label;
+    }
+  }
 
   async function loadModels() {
-    let ids;
+    let list = [];
     try {
       const res = await fetch("/api/models");
       const data = await res.json();
-      ids = Array.isArray(data.data) ? data.data.map((m) => m.id || m) : [];
-      if (!ids.length) ids = ["deepseek-thinking"];
+      list = (Array.isArray(data.data) ? data.data : []).map((m) =>
+        typeof m === "string" ? { id: m } : m
+      );
     } catch (e) {
-      return; // falha transitória: mantém a seleção atual
+      return; // falha transitoria: mantem a selecao atual
     }
-    const key = JSON.stringify(ids);
+    const key = JSON.stringify(list.map((m) => m.id || m));
     if (lastModelsJson === key) return; // nada mudou
     lastModelsJson = key;
 
-    // Preserva a seleção se o modelo ainda existir; senão seleciona o primeiro.
+    modelsById = {};
+    for (const m of list) modelsById[m.id || m] = m;
+
+    // Preserva a selecao se o modelo ainda existir; senao seleciona o primeiro.
     const prev = modelSelect.value || selectedModel;
+    const opts = list.length ? list : [{ id: "deepseek-thinking" }];
     modelSelect.innerHTML = "";
-    ids.forEach((id) => {
+    const order = ["visao", "programacao", "matematica", "chat"];
+    const rank = (c) => (c && order.indexOf(c) !== -1 ? order.indexOf(c) : 99);
+    const sorted = [...opts].sort(
+      (a, b) =>
+        rank(a.category) - rank(b.category) ||
+        String(a.label || a.id).localeCompare(String(b.label || b.id))
+    );
+    let group = null;
+    for (const m of sorted) {
+      const cat = m.category_label || "Outros";
+      if (cat !== group) {
+        group = cat;
+        const g = document.createElement("optgroup");
+        g.label = cat;
+        modelSelect.appendChild(g);
+      }
       const o = document.createElement("option");
-      o.value = id;
-      o.textContent = id;
-      modelSelect.appendChild(o);
-    });
-    selectedModel = ids.indexOf(prev) !== -1 ? prev : ids[0];
+      o.value = m.id;
+      o.textContent = m.label || m.id;
+      modelSelect.lastChild.appendChild(o);
+    }
+    selectedModel = sorted.some((m) => m.id === prev) ? prev : sorted[0].id;
     modelSelect.value = selectedModel;
-    $("#headerModel span").textContent = selectedModel;
+    renderHeaderModel(selectedModel);
   }
 
   // ===== Buscar modelos =====

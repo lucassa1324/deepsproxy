@@ -18,6 +18,7 @@ import {
   finishLoginFlow,
   getProfileDir,
   isProfileWritable,
+  getDeepSeekQueueState,
 } from '../services/playwright.ts';
 import { fetchModels, testProviderConnection, clearModelsCache } from '../services/local.ts';
 import {
@@ -28,8 +29,10 @@ import {
   finishQwenLoginFlow,
   getQwenProfileDir,
   isQwenProfileWritable,
+  getQwenPoolState,
 } from '../services/qwen-playwright.ts';
 import { fetchQwenModels, clearQwenModelsCache, QWEN_KNOWN_MODELS } from '../services/qwen.ts';
+import { enrichModel } from '../services/qwen-utils.ts';
 import { vncEnabled, vncUrl } from './vnc.ts';
 import {
   resolveRegistry,
@@ -83,95 +86,124 @@ dashboard.get('/components/chat-component.js', (c) =>
 );
 
 dashboard.get('/api/status', async (c) => {
-  const login = await getLoginStatus();
-  const registry = resolveRegistry(c.req.header('Cookie'));
-  const enabled = enabledProviders(registry);
-  const primary = resolveActiveProvider(c.req.header('Cookie'));
+  try {
+    const login = await getLoginStatus();
+    const registry = resolveRegistry(c.req.header('Cookie'));
+    const enabled = enabledProviders(registry);
+    const primary = resolveActiveProvider(c.req.header('Cookie'));
 
-  let modelsList: string[] = [];
-  const seenModels = new Set<string>();
-  let backend: { ok: boolean; baseUrl: string; model: string } | null = null;
+    let modelsList: any[] = [];
+    const seenModels = new Set<string>();
+    let backend: { ok: boolean; baseUrl: string; model: string } | null = null;
 
-  for (const p of enabled) {
-    if (isDeepseekProvider(p)) {
-      for (const m of ['deepseek-thinking', 'deepseek-no-thinking']) {
-        if (!seenModels.has(m)) {
-          modelsList.push(m);
-          seenModels.add(m);
-        }
-      }
-    } else if (isQwenProvider(p)) {
-      const models = await qwenModelsWithFallback();
-      for (const m of models.map((m: any) => m.id)) {
-        if (!seenModels.has(m)) {
-          modelsList.push(m);
-          seenModels.add(m);
-        }
-      }
-    } else {
-      const models = await fetchModels(p);
-      if (models) {
-        for (const m of models.map((m: any) => m.id)) {
+    for (const p of enabled) {
+      if (isDeepseekProvider(p)) {
+        for (const m of ['deepseek-thinking', 'deepseek-no-thinking']) {
           if (!seenModels.has(m)) {
-            modelsList.push(m);
+            modelsList.push(enrichModel({ id: m, object: 'model', owned_by: 'deepseek' }));
             seenModels.add(m);
           }
         }
-      }
-      // Inclui o modelo de override do provedor, se configurado e não duplicado.
-      if (p.model && !seenModels.has(p.model)) {
-        modelsList.push(p.model);
-        seenModels.add(p.model);
+      } else if (isQwenProvider(p)) {
+        const models = await qwenModelsWithFallback();
+        for (const m of models.map((m: any) => enrichModel(m))) {
+          if (!seenModels.has(m.id)) {
+            modelsList.push(m);
+            seenModels.add(m.id);
+          }
+        }
+      } else {
+        const models = await fetchModels(p);
+        if (models) {
+          for (const m of models.map((m: any) => enrichModel(m))) {
+            if (!seenModels.has(m.id)) {
+              modelsList.push(m);
+              seenModels.add(m.id);
+            }
+          }
+        }
+        // Inclui o modelo de override do provedor, se configurado e não duplicado.
+        if (p.model && !seenModels.has(p.model)) {
+          modelsList.push(enrichModel({ id: p.model, object: 'model', owned_by: p.name }));
+          seenModels.add(p.model);
+        }
       }
     }
-  }
 
-  if (!isDeepseekProvider(primary)) {
-    const models = await fetchModels(primary);
-    backend = { ok: !!models, baseUrl: primary.baseUrl, model: primary.model };
-  }
+    if (!isDeepseekProvider(primary)) {
+      const models = await fetchModels(primary);
+      backend = { ok: !!models, baseUrl: primary.baseUrl, model: primary.model };
+    }
 
-  return c.json({
-    server: 'online',
-    port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
-    uptime: Math.floor(process.uptime()),
-    apiKeyConfigured: !!process.env.API_KEY,
-    provider: {
-      id: primary.id,
-      name: primary.name,
-      type: primary.type,
-      baseUrl: primary.baseUrl,
-      model: primary.model,
-      hasApiKey: !!primary.apiKey,
-    },
-    enabledCount: enabled.length,
-    models: modelsList,
-    backend,
-    providers: registry.providers.map((p) => ({
-      id: p.id,
-      name: p.name,
-      type: p.type,
-      baseUrl: p.baseUrl,
-      model: p.model,
-      hasApiKey: !!p.apiKey,
-      enabled: p.enabled,
-    })),
-    playwright: {
-      ...getPlaywrightState(),
-      profileDir: getProfileDir(),
-      profileWritable: isProfileWritable(),
-    },
-    qwen: {
-      playwright: {
-        ...getQwenPlaywrightState(),
-        profileDir: getQwenProfileDir(),
-        profileWritable: isQwenProfileWritable(),
+    return c.json({
+      server: 'online',
+      port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
+      uptime: Math.floor(process.uptime()),
+      apiKeyConfigured: !!process.env.API_KEY,
+      provider: {
+        id: primary.id,
+        name: primary.name,
+        type: primary.type,
+        baseUrl: primary.baseUrl,
+        model: primary.model,
+        hasApiKey: !!primary.apiKey,
       },
-      login: { ...(await getQwenLoginStatus()), inProgress: isQwenLoginFlowActive() },
-    },
-    login: { ...login, inProgress: isLoginFlowActive() },
-    vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
-  });
+      enabledCount: enabled.length,
+      models: modelsList,
+      backend,
+      providers: registry.providers.map((p) => ({
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        baseUrl: p.baseUrl,
+        model: p.model,
+        hasApiKey: !!p.apiKey,
+        enabled: p.enabled,
+      })),
+      playwright: {
+        ...getPlaywrightState(),
+        profileDir: getProfileDir(),
+        profileWritable: isProfileWritable(),
+      },
+      deepseek: {
+        queue: getDeepSeekQueueState(),
+      },
+      qwen: {
+        playwright: {
+          ...getQwenPlaywrightState(),
+          profileDir: getQwenProfileDir(),
+          profileWritable: isQwenProfileWritable(),
+        },
+        pool: getQwenPoolState(),
+        login: { ...(await getQwenLoginStatus()), inProgress: isQwenLoginFlowActive() },
+      },
+      login: { ...login, inProgress: isLoginFlowActive() },
+      vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
+    });
+  } catch (err: any) {
+    // Um erro isolado (ex.: página do navegador fechada) não pode derrubar o
+    // status inteiro do dashboard — o login ficaria congelado no botão.
+    console.warn('[status] Falha ao montar status completo:', err.message);
+    return c.json({
+      server: 'online',
+      port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
+      uptime: Math.floor(process.uptime()),
+      apiKeyConfigured: !!process.env.API_KEY,
+      provider: { id: '', name: '', type: 'unknown', baseUrl: '', model: '', hasApiKey: false },
+      enabledCount: 0,
+      models: [],
+      backend: null,
+      providers: [],
+      playwright: {},
+      deepseek: { queue: { active: 0, waiting: 0 } },
+      qwen: {
+        pool: { capacity: 0, active: 0, waiting: 0 },
+        login: { loggedIn: false, cookieCount: 0, inProgress: isQwenLoginFlowActive() },
+      },
+      login: { loggedIn: false, cookieCount: 0, inProgress: isLoginFlowActive() },
+      vnc: { enabled: false },
+    });
+  }
 });
 
 /* ------------------------- Provedores (cookie) ------------------------- */
@@ -253,15 +285,15 @@ dashboard.post('/api/models/refresh', async (c) => {
     if (isDeepseekProvider(p)) {
       info.models = ['deepseek-thinking', 'deepseek-no-thinking'];
       data.push(
-        { id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' },
-        { id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }
+        enrichModel({ id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' }),
+        enrichModel({ id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' })
       );
     } else if (isQwenProvider(p)) {
       clearQwenModelsCache();
       try {
         const models = await qwenModelsWithFallback();
         info.models = models.map((m: any) => m.id);
-        data.push(...models);
+        data.push(...models.map((m: any) => enrichModel(m)));
       } catch (e: any) {
         info.error = e?.message || String(e);
         info.models = [];
@@ -270,18 +302,18 @@ dashboard.post('/api/models/refresh', async (c) => {
       try {
         const models = await fetchModels(p, true); // force refresh
         info.models = models ? models.map((m: any) => m.id) : [];
-        if (models) data.push(...models);
+        if (models) data.push(...models.map((m: any) => enrichModel(m)));
       } catch (e: any) {
         info.error = e?.message || String(e);
         info.models = [];
       }
       if (p.model && !seen.has(p.model)) {
-        data.push({ id: p.model, object: 'model', owned_by: p.name });
+        data.push(enrichModel({ id: p.model, object: 'model', owned_by: p.name }));
       }
     }
     providersInfo.push(info);
   }
-  const deduped = data.filter((m: any) => {
+  const deduped = data.map((m: any) => enrichModel(m)).filter((m: any) => {
     if (seen.has(m.id)) return false;
     seen.add(m.id);
     return true;
@@ -318,7 +350,7 @@ dashboard.get('/api/models', async (c) => {
           .map((m: any) => m.id)
           .join(', ')}${models.length > 10 ? ', ...' : ''}`
       );
-      return c.json({ object: 'list', data: models });
+      return c.json({ object: 'list', data: models.map((m: any) => enrichModel(m)) });
     }
     return c.json(
       { object: 'list', data: [], error: `Não foi possível listar modelos de ${queryBaseUrl}` },
@@ -331,35 +363,35 @@ dashboard.get('/api/models', async (c) => {
   for (const p of enabled) {
     if (isDeepseekProvider(p)) {
       data.push(
-        { id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' },
-        { id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }
+        enrichModel({ id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' }),
+        enrichModel({ id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' })
       );
     } else if (isQwenProvider(p)) {
       const models = await qwenModelsWithFallback();
-      if (models) data.push(...models);
+      if (models) data.push(...models.map((m: any) => enrichModel(m)));
     } else {
       const models = await fetchModels(p);
-      if (models) data.push(...models);
-      // Inclui o modelo de override do provedor, se configurado e não duplicado.
+      if (models) data.push(...models.map((m: any) => enrichModel(m)));
+      // Inclui o modelo de override do provedor, se configurado e nǜo duplicado.
       if (p.model && !seen.has(p.model)) {
-        data.push({ id: p.model, object: 'model', owned_by: p.name });
+        data.push(enrichModel({ id: p.model, object: 'model', owned_by: p.name }));
       }
     }
   }
-  const deduped = data.filter((m: any) => {
+  const deduped = data.map((m: any) => enrichModel(m)).filter((m: any) => {
     if (seen.has(m.id)) return false;
     seen.add(m.id);
     return true;
   });
-  // O fallback para os modelos DeepSeek só faz sentido quando NÃO há
-  // provedores configurados. Se há provedores habilitados mas o upstream
-  // falhou / não retornou modelos, mostra a lista real (possivelmente vazia)
+  // O fallback para os modelos DeepSeek s�� faz sentido quando NǟO hǭ
+  // provedores configurados. Se hǭ provedores habilitados mas o upstream
+  // falhou / nǜo retornou modelos, mostra a lista real (possivelmente vazia)
   // em vez de modelos DeepSeek que roteariam para o provedor errado.
   const result =
     enabled.length === 0 && !deduped.length
       ? [
-          { id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' },
-          { id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' },
+          enrichModel({ id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' }),
+          enrichModel({ id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }),
         ]
       : deduped;
   return c.json({ object: 'list', data: result });

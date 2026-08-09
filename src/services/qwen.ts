@@ -5,9 +5,11 @@
  * Farias). Usa o playwright qwen-específico para extrair headers/PoW.
  */
 
-import { getQwenHeaders, getQwenBasicHeaders, activeQwenPage } from './qwen-playwright.ts';
+import { getQwenHeaders, getQwenBasicHeaders, acquireQwenStreamPage, releaseQwenStreamPage, isQwenLoginFlowActive } from './qwen-playwright.ts';
 import { browserStreamFetch } from './stream-bridge.ts';
+import type { Page } from 'playwright';
 import { v4 as uuidv4 } from 'uuid';
+import { enrichModel } from './qwen-utils.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -26,26 +28,39 @@ export function qwenStreamsActive(): number {
 }
 
 /** Envolve um stream para decrementar o contador quando ele termina/cancela. */
-function trackStream(stream: ReadableStream): ReadableStream {
+function trackStream(stream: ReadableStream, onDone?: () => void): ReadableStream {
   activeStreams++;
   const reader = stream.getReader();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    activeStreams--;
+    if (onDone) {
+      try {
+        onDone();
+      } catch {
+        // ignora
+      }
+    }
+  };
   return new ReadableStream({
     async pull(controller) {
       try {
         const { done, value } = await reader.read();
         if (done) {
           controller.close();
-          activeStreams--;
+          finish();
         } else {
           controller.enqueue(value);
         }
       } catch (e) {
         controller.error(e);
-        activeStreams--;
+        finish();
       }
     },
     async cancel() {
-      activeStreams--;
+      finish();
       try {
         await reader.cancel();
       } catch {
@@ -133,8 +148,8 @@ export function clearQwenModelsCache(): void {
 
 /** Lista estática conhecida de modelos Qwen (usada quando a busca falha). */
 export const QWEN_KNOWN_MODELS = [
-  { id: 'qwen3.6-plus', owned_by: 'qwen' },
-  { id: 'qwen3.6-plus-no-thinking', owned_by: 'qwen' },
+  enrichModel({ id: 'qwen3.6-plus', owned_by: 'qwen', label: 'Qwen3.6-Plus' }),
+  enrichModel({ id: 'qwen3.6-plus-no-thinking', owned_by: 'qwen', label: 'Qwen3.6-Plus (sem thinking)' }),
 ];
 
 export function isQwenModel(model: string): boolean {
@@ -217,20 +232,27 @@ export async function fetchQwenModels(): Promise<any[]> {
 
   const json = await response.json();
   if (json.data && Array.isArray(json.data)) {
-    const models = json.data.map((m: any) => ({
-      id: m.id,
-      object: 'model',
-      created: m.info?.created_at || Math.floor(Date.now() / 1000),
-      owned_by: m.owned_by || 'qwen'
-    }));
+    const models = json.data.map((m: any) =>
+      enrichModel({
+        id: m.id,
+        object: 'model',
+        created: m.info?.created_at || Math.floor(Date.now() / 1000),
+        owned_by: m.owned_by || 'qwen',
+        label: m.info?.name || m.info?.meta?.short_description || undefined,
+        description: m.info?.meta?.description || undefined,
+        meta: m.info?.meta,
+      })
+    );
 
     // Add -no-thinking versions for models that support thinking
     const extendedModels = [...models];
     for (const m of models) {
-      extendedModels.push({
-        ...m,
-        id: `${m.id}-no-thinking`
-      });
+      extendedModels.push(
+        enrichModel({
+          ...m,
+          id: `${m.id}-no-thinking`,
+        })
+      );
     }
 
     cachedModels = extendedModels;
@@ -239,6 +261,65 @@ export async function fetchQwenModels(): Promise<any[]> {
   }
 
   return [];
+}
+
+/**
+ * Executa o fetch de chat DENTRO de uma aba do pool, com detecção de desafio
+ * anti-bot (TMD) e retry com headers novos. Lança em caso de falha; em caso
+ * de sucesso devolve o stream de SSE.
+ */
+async function browserChatFetch(
+  page: Page,
+  url: string,
+  payloadJson: string,
+  timeoutMs: number,
+  initialHeaders: Record<string, string>,
+): Promise<{ stream: ReadableStream, headers: Record<string, string> }> {
+  const attempt = async (hdrs: Record<string, string>) =>
+    browserStreamFetch(page, url, {
+      method: 'POST',
+      headers: buildBrowserCompletionHeaders(hdrs),
+      body: payloadJson,
+      timeoutMs,
+    });
+
+  const result = await attempt(initialHeaders);
+
+  if (result.contentType.includes('text/event-stream') && result.status < 400) {
+    return { stream: result.stream, headers: initialHeaders };
+  }
+
+  if (result.body && isTmdChallenge(result.body)) {
+    console.warn('[Qwen] Desafio anti-bot (TMD) detectado via browser; atualizando headers e tentando de novo...');
+    await sleep(500 + Math.floor(Math.random() * 1000));
+    const { headers: freshHeaders } = await getQwenHeaders(true);
+    const retry = await attempt(freshHeaders);
+    if (retry.contentType.includes('text/event-stream') && retry.status < 400) {
+      return { stream: retry.stream, headers: freshHeaders };
+    }
+    if (retry.body && isTmdChallenge(retry.body)) {
+      throw new Error('Qwen: desafio anti-bot persiste após atualizar headers. Resolva o captcha no navegador antes de usar o chat.');
+    }
+    throw new Error(`Qwen: falha ao criar stream (retry) — ${retry.status}: ${retry.body.slice(0, 300)}`);
+  }
+
+  if (result.status < 400 && !result.contentType.includes('text/event-stream') && !result.body) {
+    console.warn('[Qwen] Browser retornou 200 com corpo vazio; tentando com headers novos...');
+    await sleep(500 + Math.floor(Math.random() * 1000));
+    const { headers: freshHeaders } = await getQwenHeaders(true);
+    const retry = await attempt(freshHeaders);
+    if (retry.contentType.includes('text/event-stream') && retry.status < 400) {
+      return { stream: retry.stream, headers: freshHeaders };
+    }
+    if (retry.body && isTmdChallenge(retry.body)) {
+      throw new Error('Qwen: desafio anti-bot persiste após atualizar headers.');
+    }
+    throw new Error(`Qwen: falha ao criar stream (retry vazio) — ${retry.status}: ${retry.body.slice(0, 300)}`);
+  }
+
+  throw new Error(
+    `Qwen: resposta inesperada do stream — ${result.status} ${result.contentType} body=${result.body?.slice(0, 200) || '(vazio)'}`
+  );
 }
 
 export async function createQwenStream(
@@ -256,14 +337,18 @@ export async function createQwenStream(
   }
 }
 
-async function createQwenStreamInner(
+/**
+ * Monta a requisição de chat (headers + payload + URL). O handshake de headers
+ * fica aqui porque roda de forma EXCLUSIVA (dentro do slot do pool), evitando
+ * que dois handshakes concorrentes quebrem a página de controle.
+ */
+async function buildQwenChatRequest(
   prompt: string,
   enableThinking: boolean,
   modelId: string,
   forcedParentId?: string | null
-): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string }> {
+): Promise<{ headers: Record<string, string>, chatSessionId: string, url: string, payloadJson: string, timeoutMs: number }> {
   const { headers, chatSessionId, parentMessageId } = await getQwenHeaders(forcedParentId === null);
-
   let actualParentId: string | null = parentMessageId;
 
   if (forcedParentId !== undefined) {
@@ -321,83 +406,74 @@ async function createQwenStreamInner(
     ? `https://chat.qwen.ai/api/v2/chat/completions?chat_id=${chatSessionId}`
     : 'https://chat.qwen.ai/api/v2/chat/completions';
 
-  const payloadJson = JSON.stringify(payload);
-  const timeoutMs = 120000;
+  return { headers, chatSessionId, url, payloadJson: JSON.stringify(payload), timeoutMs: 120000 };
+}
 
-  // Requisições de chat são feitas DENTRO da página logada (fetch same-origin
-  // com o fingerprint real do browser) para não esbarrar no desafio anti-bot
-  // (TMD/x5sec) que bloqueia o fetch direto do Node com headers extraídos.
-  const page = activeQwenPage;
-  if (page && !page.isClosed() && page.url().includes('chat.qwen.ai')) {
-    const attempt = async (hdrs: Record<string, string>) =>
-      browserStreamFetch(page, url, {
-        method: 'POST',
-        headers: buildBrowserCompletionHeaders(hdrs),
-        body: payloadJson,
-        timeoutMs,
-      });
-
-    const result = await attempt(headers);
-
-    if (result.contentType.includes('text/event-stream') && result.status < 400) {
-      return { stream: trackStream(result.stream), headers, uiSessionId: chatSessionId };
-    }
-
-    if (result.body && isTmdChallenge(result.body)) {
-      console.warn('[Qwen] Desafio anti-bot (TMD) detectado via browser; atualizando headers e tentando de novo...');
-      await sleep(500 + Math.floor(Math.random() * 1000));
-      const { headers: freshHeaders } = await getQwenHeaders(true);
-      const retry = await attempt(freshHeaders);
-      if (retry.contentType.includes('text/event-stream') && retry.status < 400) {
-        return { stream: trackStream(retry.stream), headers: freshHeaders, uiSessionId: chatSessionId };
-      }
-      if (retry.body && isTmdChallenge(retry.body)) {
-        throw new Error('Qwen: desafio anti-bot persiste após atualizar headers. Resolva o captcha no navegador antes de usar o chat.');
-      }
-      throw new Error(`Qwen: falha ao criar stream (retry) — ${retry.status}: ${retry.body.slice(0, 300)}`);
-    }
-
-    if (result.status < 400 && !result.contentType.includes('text/event-stream') && !result.body) {
-      console.warn('[Qwen] Browser retornou 200 com corpo vazio; tentando com headers novos...');
-      await sleep(500 + Math.floor(Math.random() * 1000));
-      const { headers: freshHeaders } = await getQwenHeaders(true);
-      const retry = await attempt(freshHeaders);
-      if (retry.contentType.includes('text/event-stream') && retry.status < 400) {
-        return { stream: trackStream(retry.stream), headers: freshHeaders, uiSessionId: chatSessionId };
-      }
-      if (retry.body && isTmdChallenge(retry.body)) {
-        throw new Error('Qwen: desafio anti-bot persiste após atualizar headers.');
-      }
-      throw new Error(`Qwen: falha ao criar stream (retry vazio) — ${retry.status}: ${retry.body.slice(0, 300)}`);
-    }
-
-    throw new Error(
-      `Qwen: resposta inesperada do stream — ${result.status} ${result.contentType} body=${result.body?.slice(0, 200) || '(vazio)'}`
-    );
+async function createQwenStreamInner(
+  prompt: string,
+  enableThinking: boolean,
+  modelId: string,
+  forcedParentId?: string | null
+): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string }> {
+  // Guarda ANTES de entrar na fila do pool: durante o login do Qwen a janela
+  // fica visível e o pool é esvaziado — sem este guard a requisição ficaria
+  // esperando para sempre na fila (capacidade 0) sem nunca responder.
+  if (isQwenLoginFlowActive()) {
+    throw new Error('Login do Qwen em andamento. Conclua o login no dashboard antes de usar o chat.');
   }
 
-  // Sem página ativa (ex.: dev/testes): fallback via fetch direto do Node.
-  const response = await fetch(url, {
+  // A API do Qwen processa UMA resposta por vez na mesma sessão do browser (a
+  // 2ª completion concorrente volta 200 vazio/bloqueado pelo WAF). Por isso o
+  // pool é serializado (capacidade 1): a requisição entra na fila, pega a aba,
+  // faz handshake + stream de forma exclusiva e só então libera para a próxima.
+  const page = await acquireQwenStreamPage().catch(() => null);
+  if (page && !page.isClosed()) {
+    if (!page.url().includes('chat.qwen.ai')) {
+      await page
+        .goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => {});
+    }
+    const release = () => {
+      if (page && !page.isClosed()) releaseQwenStreamPage(page);
+    };
+    try {
+      const req = await buildQwenChatRequest(prompt, enableThinking, modelId, forcedParentId);
+      const outcome = await browserChatFetch(page, req.url, req.payloadJson, req.timeoutMs, req.headers);
+      return {
+        stream: trackStream(outcome.stream, release),
+        headers: outcome.headers,
+        uiSessionId: req.chatSessionId,
+      };
+    } catch (e) {
+      release();
+      throw e;
+    }
+  }
+  if (page) releaseQwenStreamPage(page);
+
+  // Sem Playwright ativo (dev/testes): fallback via fetch direto do Node.
+  const req = await buildQwenChatRequest(prompt, enableThinking, modelId, forcedParentId);
+  const response = await fetch(req.url, {
     method: 'POST',
     headers: {
       'accept': 'application/json',
       'accept-language': 'pt-BR,pt;q=0.9',
       'content-type': 'application/json',
-      'cookie': headers['cookie'],
+      'cookie': req.headers['cookie'],
       'origin': 'https://chat.qwen.ai',
-      'referer': chatSessionId ? `https://chat.qwen.ai/c/${chatSessionId}` : 'https://chat.qwen.ai/',
+      'referer': req.chatSessionId ? `https://chat.qwen.ai/c/${req.chatSessionId}` : 'https://chat.qwen.ai/',
       'sec-fetch-dest': 'empty',
       'sec-fetch-mode': 'cors',
       'sec-fetch-site': 'same-origin',
       'timezone': new Date().toString().split(' (')[0],
-      'user-agent': headers['user-agent'],
+      'user-agent': req.headers['user-agent'],
       'x-accel-buffering': 'no',
       'x-request-id': uuidv4(),
-      'bx-ua': headers['bx-ua'],
-      'bx-umidtoken': headers['bx-umidtoken'],
-      'bx-v': headers['bx-v']
+      'bx-ua': req.headers['bx-ua'],
+      'bx-umidtoken': req.headers['bx-umidtoken'],
+      'bx-v': req.headers['bx-v']
     },
-    body: payloadJson
+    body: req.payloadJson
   });
 
   if (!response.ok || !response.body) {
@@ -405,5 +481,5 @@ async function createQwenStreamInner(
     throw new Error(`Failed to fetch from Qwen: ${response.status} ${response.statusText} - ${errText}`);
   }
 
-  return { stream: trackStream(response.body), headers, uiSessionId: chatSessionId };
+  return { stream: trackStream(response.body), headers: req.headers, uiSessionId: req.chatSessionId };
 }

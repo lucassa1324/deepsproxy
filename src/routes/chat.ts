@@ -37,6 +37,8 @@ interface DeepSeekAccumulated {
   messageId: number | null;
 }
 
+const STREAM_TIMEOUT_MS = 3 * 60 * 1000;
+
 /**
  * Lê o stream SSE do backend DeepSeek e acumula raciocínio, conteúdo e
  * tokens — mesmo parsing usado no streaming, mas sem emitir chunks. Usado
@@ -47,90 +49,104 @@ async function consumeDeepSeekStream(stream: ReadableStream, debug = false): Pro
   const decoder = new TextDecoder();
   let buffer = '';
   let currentAppendPath = '';
+  let timedOut = false;
   const acc: DeepSeekAccumulated = { reasoning: '', content: '', completionTokens: 0, messageId: null };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    reader.cancel().catch(() => {});
+  }, STREAM_TIMEOUT_MS);
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done || timedOut) break;
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || !trimmed.startsWith('data: ')) continue;
-      const dataStr = trimmed.slice(6);
-      if (dataStr === '[DONE]') continue;
-      if (debug) console.log('[ds-image]', dataStr);
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-      try {
-        const chunk = JSON.parse(dataStr);
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith('data: ')) continue;
+        const dataStr = trimmed.slice(6);
+        if (dataStr === '[DONE]') continue;
+        if (debug) console.log('[ds-image]', dataStr);
 
-        let dsMessageId: any = null;
-        if (chunk.p === 'response/message' && chunk.v && typeof chunk.v === 'object' && typeof chunk.v.id === 'number') {
-          dsMessageId = chunk.v.id;
-        } else if (chunk.response_message_id) {
-          dsMessageId = chunk.response_message_id;
-        } else if (chunk.v && typeof chunk.v === 'object') {
-          if (chunk.v.response && chunk.v.response.message_id) {
-            dsMessageId = chunk.v.response.message_id;
-          } else if (chunk.v.message_id) {
-            dsMessageId = chunk.v.message_id;
-          }
-        } else if (chunk.message_id) {
-          dsMessageId = chunk.message_id;
-        }
-        if (dsMessageId) acc.messageId = dsMessageId;
+        try {
+          const chunk = JSON.parse(dataStr);
 
-        let vStr = '';
-        let foundStr = false;
-        let isThinkingChunk = false;
-
-        if (typeof chunk.p === 'string') {
-          currentAppendPath = chunk.p;
-          if (chunk.p === 'response/accumulated_token_usage' && typeof chunk.v === 'number') {
-            acc.completionTokens = chunk.v;
-          }
-        }
-
-        if (typeof chunk.v === 'string') {
-          vStr = chunk.v;
-          foundStr = true;
-        } else if (chunk.v && typeof chunk.v === 'object') {
-          if (chunk.v.response && chunk.v.response.fragments && chunk.v.response.fragments.length > 0) {
-            const frag = chunk.v.response.fragments[0];
-            if (typeof frag.content === 'string') {
-              vStr = frag.content;
-              foundStr = true;
-              currentAppendPath = frag.type === 'THINK' ? 'response/thinking_content' : 'response/content';
+          let dsMessageId: any = null;
+          if (chunk.p === 'response/message' && chunk.v && typeof chunk.v === 'object' && typeof chunk.v.id === 'number') {
+            dsMessageId = chunk.v.id;
+          } else if (chunk.response_message_id) {
+            dsMessageId = chunk.response_message_id;
+          } else if (chunk.v && typeof chunk.v === 'object') {
+            if (chunk.v.response && chunk.v.response.message_id) {
+              dsMessageId = chunk.v.response.message_id;
+            } else if (chunk.v.message_id) {
+              dsMessageId = chunk.v.message_id;
             }
-          } else if (Array.isArray(chunk.v) && chunk.v.length > 0) {
-            const firstObj = chunk.v[0];
-            if (typeof firstObj.content === 'string') {
-              vStr = firstObj.content;
-              foundStr = true;
-              currentAppendPath = firstObj.type === 'THINK' ? 'response/thinking_content' : 'response/content';
+          } else if (chunk.message_id) {
+            dsMessageId = chunk.message_id;
+          }
+          if (dsMessageId) acc.messageId = dsMessageId;
+
+          let vStr = '';
+          let foundStr = false;
+          let isThinkingChunk = false;
+
+          if (typeof chunk.p === 'string') {
+            currentAppendPath = chunk.p;
+            if (chunk.p === 'response/accumulated_token_usage' && typeof chunk.v === 'number') {
+              acc.completionTokens = chunk.v;
             }
           }
-        }
 
-        if (currentAppendPath.includes('thinking_content') || currentAppendPath.includes('THINK')) {
-          isThinkingChunk = true;
-        }
-
-        if (foundStr && vStr !== '') {
-          if (vStr === 'FINISHED') continue;
-          if (isThinkingChunk) {
-            acc.reasoning += vStr;
-          } else {
-            acc.content += vStr;
+          if (typeof chunk.v === 'string') {
+            vStr = chunk.v;
+            foundStr = true;
+          } else if (chunk.v && typeof chunk.v === 'object') {
+            if (chunk.v.response && chunk.v.response.fragments && chunk.v.response.fragments.length > 0) {
+              const frag = chunk.v.response.fragments[0];
+              if (typeof frag.content === 'string') {
+                vStr = frag.content;
+                foundStr = true;
+                currentAppendPath = frag.type === 'THINK' ? 'response/thinking_content' : 'response/content';
+              }
+            } else if (Array.isArray(chunk.v) && chunk.v.length > 0) {
+              const firstObj = chunk.v[0];
+              if (typeof firstObj.content === 'string') {
+                vStr = firstObj.content;
+                foundStr = true;
+                currentAppendPath = firstObj.type === 'THINK' ? 'response/thinking_content' : 'response/content';
+              }
+            }
           }
+
+          if (currentAppendPath.includes('thinking_content') || currentAppendPath.includes('THINK')) {
+            isThinkingChunk = true;
+          }
+
+          if (foundStr && vStr !== '') {
+            if (vStr === 'FINISHED') continue;
+            if (isThinkingChunk) {
+              acc.reasoning += vStr;
+            } else {
+              acc.content += vStr;
+            }
+          }
+        } catch (e) {
+          // parse error, ignore partial chunk
         }
-      } catch (e) {
-        // parse error, ignore partial chunk
       }
     }
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (timedOut) {
+    console.warn(`[ds-image] stream DeepSeek nao terminou em ${STREAM_TIMEOUT_MS / 1000}s; devolvendo resposta parcial (${acc.content.length} chars)`);
   }
 
   return acc;

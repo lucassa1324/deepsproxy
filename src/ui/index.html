@@ -116,6 +116,11 @@
     line-height: 1;
   }
   .model-chip button:hover { color: var(--accent); background: var(--panel); }
+  .model-chip .chip-cat {
+    font-size: 10.5px; font-weight: 600; color: var(--accent);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 999px; padding: 1px 7px; text-transform: capitalize;
+  }
   .method {
     font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
     color: #0b0f17; background: var(--green); min-width: 44px; text-align: center;
@@ -434,6 +439,11 @@
         <div class="value" id="stApiKey">—</div>
         <div class="sub">Autenticação da API</div>
       </div>
+      <div class="card">
+        <h3>Fila de requisições</h3>
+        <div class="value" id="stQueue" style="font-size:20px;">—</div>
+        <div class="sub" id="stQueueSub">—</div>
+      </div>
     </div>
 
     <div class="grid" style="margin-top:14px; grid-template-columns: 1fr 1fr;">
@@ -723,7 +733,10 @@
         const bk = status.backend || {};
         $("#stBackend").textContent = bk.ok ? "Conectado" : "Offline";
         $("#stBackend").style.color = bk.ok ? "var(--green)" : "var(--red)";
-        const modelTxt = providerInfo.model || (status.models && status.models[0]) || "";
+        const modelTxt =
+          providerInfo.model ||
+          (status.models && status.models[0] && (status.models[0].id || status.models[0])) ||
+          "";
         $("#stBackendSub").textContent = bk.ok
           ? modelTxt ? "Modelo: " + modelTxt : (status.models || []).length + " modelo(s) disponível(eis)"
           : bk.baseUrl || "—";
@@ -737,6 +750,17 @@
           ? login.cookieCount + " cookie(s) da sessão"
           : "Nenhuma sessão salva";
       }
+
+      // ---- Fila de requisições ----
+      const qPool = (status.qwen && status.qwen.pool) || { capacity: 0, active: 0, waiting: 0 };
+      const dsQueue = (status.deepseek && status.deepseek.queue) || { active: 0, waiting: 0 };
+      const totalWaiting = (qPool.waiting || 0) + (dsQueue.waiting || 0);
+      const totalActive = (qPool.active || 0) + (dsQueue.active || 0);
+      $("#stQueue").textContent = totalActive + " em uso · " + totalWaiting + " na fila";
+      $("#stQueue").style.color = totalWaiting > 0 ? "var(--yellow)" : "var(--green)";
+      $("#stQueueSub").textContent =
+        "Qwen: " + (qPool.active || 0) + "/" + (qPool.capacity || 0) + " aba(s) · " + (qPool.waiting || 0) + " na fila | " +
+        "DeepSeek: " + (dsQueue.active || 0) + " ativo · " + (dsQueue.waiting || 0) + " na fila";
 
       // ---- Login / banner / campos ----
       const isQwen = providerInfo.type === "qwen";
@@ -813,11 +837,12 @@
       loadProviders();
 
       // ---- Modelos (chat/test) ----
-      const modelIds = (status.models || []).map((m) => (typeof m === "string" ? m : m.id || m));
+      const statusModels = status.models || [];
+      const modelIds = statusModels.map((m) => (typeof m === "string" ? m : m.id || m));
       if (lastModelIds === null || JSON.stringify(lastModelIds) !== JSON.stringify(modelIds)) {
         lastModelIds = modelIds;
-        applyModelsToSelectors(modelIds);
-        renderModelChips(modelIds);
+        applyModelsToSelectors(statusModels);
+        renderModelChips(statusModels);
       }
 
       renderPills(status);
@@ -887,9 +912,13 @@
     if (!list || !input) return;
     const current = input.value;
     list.innerHTML = "";
-    (ids || []).forEach((id) => {
+    (ids || []).forEach((m) => {
       const o = document.createElement("option");
+      const id = typeof m === "string" ? m : m.id;
       o.value = id;
+      if (typeof m === "object" && (m.label || m.category_label)) {
+        o.label = (m.label || id) + (m.category_label ? " (" + m.category_label + ")" : "");
+      }
       list.appendChild(o);
     });
     // Mantém o que o usuário digitou/escolheu (o datalist só oferece sugestões).
@@ -901,14 +930,17 @@
     if (!sel) return;
     const current = sel.value;
     sel.innerHTML = "";
-    (ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).forEach((id) => {
+    const list = (ids && ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).map((m) =>
+      typeof m === "string" ? { id: m, label: m } : m
+    );
+    list.forEach((m) => {
       const o = document.createElement("option");
-      o.value = id;
-      o.textContent = id;
+      o.value = m.id;
+      o.textContent = (m.label || m.id) + (m.category_label ? " (" + m.category_label + ")" : "");
       sel.appendChild(o);
     });
-    if (ids.indexOf(current) !== -1) sel.value = current;
-    else sel.value = ids[0] || "deepseek-thinking";
+    if (list.some((m) => m.id === current)) sel.value = current;
+    else sel.value = list[0] ? list[0].id : "deepseek-thinking";
   }
 
   async function copyText(text, btn, doneLabel) {
@@ -937,20 +969,28 @@
     const chips = $("#modelsChips");
     if (!chips) return;
     chips.innerHTML = "";
-    const list = ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"];
-    list.forEach((id) => {
+    const list = (ids && ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).map((m) =>
+      typeof m === "string" ? { id: m, label: m } : m
+    );
+    list.forEach((m) => {
       const chip = document.createElement("span");
       chip.className = "model-chip";
       const code = document.createElement("code");
-      code.textContent = id;
+      code.textContent = m.label || m.id;
       const btn = document.createElement("button");
       btn.type = "button";
       btn.title = "Copiar nome do modelo";
-      btn.setAttribute("aria-label", "Copiar nome do modelo " + id);
-      btn.textContent = "⧉";
-      btn.addEventListener("click", () => copyText(id, btn));
+      btn.setAttribute("aria-label", "Copiar nome do modelo " + m.id);
+      btn.textContent = "\u29c9";
+      btn.addEventListener("click", () => copyText(m.id, btn));
       chip.appendChild(code);
       chip.appendChild(btn);
+      if (m.category_label) {
+        const cat = document.createElement("span");
+        cat.className = "chip-cat";
+        cat.textContent = m.category_label;
+        chip.insertBefore(cat, btn);
+      }
       chips.appendChild(chip);
     });
   }
@@ -1165,10 +1205,11 @@
   });
 
   function applyModelsToSelectors(ids) {
-    populateModelSelect(ids);
-    populateTestModels(ids);
+    const ms = (ids || []).map((m) => (typeof m === "string" ? { id: m, label: m } : m));
+    populateModelSelect(ms);
+    populateTestModels(ms);
     if (window.deepsproxyChat && window.deepsproxyChat.setModels) {
-      window.deepsproxyChat.setModels(ids.map((id) => ({ id: id, label: id })));
+      window.deepsproxyChat.setModels(ms);
     }
   }
 
@@ -1185,8 +1226,7 @@
       const res = await fetch("/api/models?" + qs);
       const data = await res.json();
       if (res.ok && Array.isArray(data.data)) {
-        const ids = data.data.map((m) => m.id || m);
-        applyModelsToSelectors(ids);
+        applyModelsToSelectors(data.data);
         fb.textContent =
           data.data.length + " modelo(s) encontrado(s) — agora disponíveis no chat e nos testes.";
       } else {
@@ -1307,6 +1347,10 @@
       const data = await res.json();
       if (!res.ok) {
         alert("Erro ao iniciar login no Qwen: " + (data.error || res.status));
+      } else {
+        // Flip otimista: mostra "Concluir login" imediatamente, sem esperar o
+        // próximo poll de status (que pode demorar até 10s).
+        setLoginCard($("#qwenLoginCard"), $("#qwenLoginHint"), btn, $("#btnQwenLoginFinish"), { inProgress: true, loggedIn: false }, "Qwen", "chat.qwen.ai");
       }
     } catch (e) {
       alert("Erro ao iniciar login no Qwen: " + e.message);
@@ -1362,10 +1406,11 @@
       const res = await fetch("/api/models/refresh", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
-      const ids = Array.isArray(data.data) ? data.data.map((m) => m.id || m) : [];
+      const models = Array.isArray(data.data) ? data.data : [];
+      const ids = models.map((m) => (m.id || m));
       lastModelIds = ids;
-      applyModelsToSelectors(ids);
-      renderModelChips(ids);
+      applyModelsToSelectors(models);
+      renderModelChips(models);
       const prov = (data.providers || []).map((p) => {
         const label = escapeHtml(p.name || p.id);
         if (p.error) return label + ": <b class=\"err\">erro</b> (" + escapeHtml(p.error) + ")";
@@ -1698,9 +1743,9 @@ for await (const chunk of stream) {
   // ---------- Init ----------
   loadStatus();
   // Polling: atualiza status e modelos (aba Testar API) automaticamente.
-  // A cada 30s evita requisições excessivas; o SSE abaixo torna a atualização
-  // imediata quando o registro de provedores muda.
-  setInterval(loadStatus, 30000);
+  // A cada 10s mantém o card de fila de requisições razoavelmente atualizado;
+  // o SSE abaixo torna a atualização imediata quando o registro muda.
+  setInterval(loadStatus, 10000);
 
   // SSE: ao salvar/ligar/desligar provedores no dashboard, atualiza na hora
   // os seletores de modelo (chat, teste e editor). Reconecta automaticamente

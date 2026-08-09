@@ -443,6 +443,24 @@ const CSS = `
 }
 .ds-chat__meta button:hover { color: var(--ds-text); }
 
+.ds-chat__msg-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.ds-chat__resend {
+  background: none;
+  border: none;
+  color: var(--ds-muted);
+  cursor: pointer;
+  font-size: 11.5px;
+  font-family: inherit;
+  padding: 2px 0;
+  opacity: 0.75;
+}
+.ds-chat__resend:hover { color: var(--ds-text); opacity: 1; text-decoration: underline; }
+
 .ds-chat__composer {
   display: flex;
   flex-direction: column;
@@ -751,8 +769,28 @@ class ChatComponent {
     return true;
   }
 
-  clearChat() {
-    if (this._abort) {
+  /**
+   * Reenvia um prompt do usuário para a IA processar novamente. O prompt é
+   * reenviado como um novo turno (com o histórico completo até o momento),
+   * preservando as imagens anexadas quando houver.
+   */
+  resendMessage(idx) {
+    const msg = this.messages[idx];
+    if (!msg || msg.role !== "user") return false;
+    if (this._busy) return false;
+    const text = msg.content || "";
+    const images = (msg.images || [])
+      .filter((im) => im && im.dataUrl)
+      .map((im) => ({ dataUrl: im.dataUrl, mime: im.mime }));
+    if (!text && !images.length) return false;
+    const saved = this._attachments;
+    this._attachments = images;
+    const ok = this.sendMessage(text);
+    if (!ok) this._attachments = saved;
+    return ok;
+  }
+
+  clearChat() {    if (this._abort) {
       try { this._abort.abort(); } catch (e) { /* ignore */ }
       this._abort = null;
     }
@@ -796,12 +834,7 @@ class ChatComponent {
     if (this._select) {
       const prev = this._model;
       this._select.innerHTML = "";
-      for (const m of this._modelOptions()) {
-        const o = document.createElement("option");
-        o.value = m.id;
-        o.textContent = m.label;
-        this._select.appendChild(o);
-      }
+      this._renderModelOptions(this._select);
       if (this._modelOptions().some((m) => m.id === prev)) this._model = prev;
       else this._model = this._modelOptions()[0]?.id || "";
       this._select.value = this._model;
@@ -857,13 +890,56 @@ class ChatComponent {
   _modelOptions() {
     const list = Array.isArray(this.options.models) ? this.options.models : [];
     return list.map((m) =>
-      typeof m === "string" ? { id: m, label: m } : { id: m.id, label: m.label || m.id }
+      typeof m === "string"
+        ? { id: m, label: m }
+        : {
+            id: m.id,
+            label: m.label || m.id,
+            category: m.category,
+            category_label: m.category_label,
+          }
     );
   }
 
   _modelLabel(id) {
     const found = this._modelOptions().find((m) => m.id === id);
-    return found ? found.label : id;
+    if (!found) return id;
+    return found.category_label ? found.label + " \u00b7 " + found.category_label : found.label;
+  }
+
+  _renderModelOptions(select) {
+    const list = this._modelOptions();
+    const hasCat = list.some((m) => m.category_label);
+    const order = ["visao", "programacao", "matematica", "chat"];
+    const rank = (c) => (c && order.indexOf(c) !== -1 ? order.indexOf(c) : 99);
+    const sorted = [...list].sort(
+      (a, b) =>
+        rank(a.category) - rank(b.category) ||
+        String(a.label).localeCompare(String(b.label))
+    );
+    if (!hasCat) {
+      for (const m of sorted) {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.label;
+        select.appendChild(o);
+      }
+      return;
+    }
+    let group = null;
+    for (const m of sorted) {
+      const cat = m.category_label || "Outros";
+      if (cat !== group) {
+        group = cat;
+        const g = document.createElement("optgroup");
+        g.label = cat;
+        select.appendChild(g);
+      }
+      const o = document.createElement("option");
+      o.value = m.id;
+      o.textContent = m.label;
+      select.lastChild.appendChild(o);
+    }
   }
 
   _injectStyles() {
@@ -953,12 +1029,7 @@ class ChatComponent {
 
     const select = el("select", "ds-chat__select");
     select.setAttribute("aria-label", "Modelo");
-    for (const m of this._modelOptions()) {
-      const o = document.createElement("option");
-      o.value = m.id;
-      o.textContent = m.label;
-      select.appendChild(o);
-    }
+    this._renderModelOptions(select);
     select.value = this._model;
     this._select = select;
 
@@ -1144,6 +1215,16 @@ class ChatComponent {
           setTimeout(() => (btn.textContent = old), 1500);
         })
         .catch(() => {});
+    });
+
+    on(thread, "click", (e) => {
+      const btn = e.target.closest('[data-action="resend"]');
+      if (!btn) return;
+      const row = btn.closest(".ds-chat__row");
+      if (!row) return;
+      const idx = parseInt(row.dataset.idx, 10);
+      if (!isFinite(idx)) return;
+      this.resendMessage(idx);
     });
 
     if (typeof ResizeObserver !== "undefined") {
@@ -1453,6 +1534,17 @@ class ChatComponent {
         const textDiv = document.createElement("div");
         textDiv.textContent = msg.content;
         bubble.appendChild(textDiv);
+      }
+      if (msg.done && (msg.content || (msg.images && msg.images.length))) {
+        const actions = el("div", "ds-chat__msg-actions");
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.dataset.action = "resend";
+        btn.className = "ds-chat__resend";
+        btn.textContent = "Reenviar";
+        btn.setAttribute("aria-label", "Reenviar este prompt para a IA processar novamente");
+        actions.appendChild(btn);
+        bubble.appendChild(actions);
       }
       wrap.appendChild(bubble);
       return wrap;

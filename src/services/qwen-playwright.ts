@@ -13,6 +13,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 
 let context: BrowserContext | null = null;
+/** Página de controle (handshake de headers, login, checks). Não serve streams. */
 export let activeQwenPage: Page | null = null;
 let currentHeaders: Record<string, string> = {};
 let cachedQwenHeaders: { headers: Record<string, string>, chatSessionId: string, parentMessageId: string | null } | null = null;
@@ -23,6 +24,112 @@ let loginFlowActive = false;
 
 export function isQwenLoginFlowActive(): boolean {
   return loginFlowActive;
+}
+
+/* --------------------------------------------------------------------------
+ * Pool de abas para streams de chat concorrentes.
+ *
+ * As abas compartilham o MESMO contexto/perfil (cookies da sessão), então
+ * cada aba consegue fazer o fetch de chat dentro do browser sem relogin.
+ * Cada conversa ocupa uma aba; quando todas estão ocupadas, as próximas
+ * requisições ficam na fila (waiting) até sobrar uma aba.
+ * ------------------------------------------------------------------------ */
+let qwenStreamPages: Page[] = [];
+const qwenStreamPagesBusy = new Set<Page>();
+let qwenStreamWaiters: Array<{ resolve: (page: Page) => void; reject: (err: Error) => void }> = [];
+
+export function getQwenPoolSize(): number {
+  // A API do Qwen processa UMA resposta por vez na mesma sessão do browser (a
+  // 2ª completion concorrente volta 200 vazio/bloqueado pelo WAF). O pool fica
+  // fixo em 1: a fila é garantida pelo acquire/wait e o chat roda serializado.
+  return 1;
+}
+
+export function getQwenPoolState(): { capacity: number; active: number; waiting: number } {
+  return {
+    capacity: qwenStreamPages.length,
+    active: qwenStreamPagesBusy.size,
+    waiting: qwenStreamWaiters.length,
+  };
+}
+
+/** Cria as abas do pool (capacidade - já existentes), todas na home do Qwen. */
+async function ensurePoolPages(): Promise<void> {
+  if (!context) return;
+  const needed = getQwenPoolSize();
+  for (let i = qwenStreamPages.length; i < needed; i++) {
+    try {
+      const page = await context.newPage();
+      await page
+        .goto('https://chat.qwen.ai/', { waitUntil: 'domcontentloaded', timeout: 30000 })
+        .catch(() => {});
+      qwenStreamPages.push(page);
+    } catch (e: any) {
+      console.warn('[qwen-playwright] Falha ao criar aba do pool:', e.message);
+      break;
+    }
+  }
+}
+
+/** Pega uma aba livre para um stream de chat; espera se todas estiverem ocupadas. */
+export function acquireQwenStreamPage(): Promise<Page> {
+  if (!context) return Promise.reject(new Error('Playwright not initialized'));
+
+  const ready = qwenStreamPages.find((p) => !qwenStreamPagesBusy.has(p) && !p.isClosed());
+  if (ready) {
+    qwenStreamPagesBusy.add(ready);
+    return Promise.resolve(ready);
+  }
+
+  // Recria abas que fecharam (ex.: navegação/exceção) para não perder capacidade.
+  const closedCount = qwenStreamPages.filter((p) => p.isClosed()).length;
+  if (closedCount > 0) {
+    qwenStreamPages = qwenStreamPages.filter((p) => !p.isClosed());
+    for (const p of qwenStreamPages) qwenStreamPagesBusy.delete(p);
+    return ensurePoolPages().then(() => acquireQwenStreamPage());
+  }
+
+  // Pool vazio (ex.: contexto reaberto depois do login concluído): recria o
+  // pool em vez de deixar o request esperando para sempre com capacidade 0.
+  if (qwenStreamPages.length === 0 && !loginFlowActive) {
+    return ensurePoolPages().then(() => acquireQwenStreamPage());
+  }
+
+  return new Promise<Page>((resolve, reject) => {
+    let waiter: { resolve: (p: Page) => void, reject: (e: Error) => void };
+    // A fila nunca fica sem teto: se ninguém liberar a aba no prazo, falha com
+    // erro claro em vez de pendurar a requisição para sempre.
+    const timer = setTimeout(() => {
+      const i = qwenStreamWaiters.indexOf(waiter);
+      if (i >= 0) qwenStreamWaiters.splice(i, 1);
+      reject(new Error('Timeout esperando aba livre do Qwen (fila lotada ou login em andamento)'));
+    }, 90000);
+    waiter = {
+      resolve: (page) => {
+        clearTimeout(timer);
+        qwenStreamPagesBusy.add(page);
+        resolve(page);
+      },
+      reject: (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    };
+    qwenStreamWaiters.push(waiter);
+  });
+}
+
+/** Devolve uma aba ao pool, repassando para o primeiro da fila. */
+export function releaseQwenStreamPage(page: Page) {
+  qwenStreamPagesBusy.delete(page);
+  const w = qwenStreamWaiters.shift();
+  if (w) {
+    if (!page.isClosed()) {
+      w.resolve(page);
+    } else {
+      acquireQwenStreamPage().then(w.resolve, w.reject);
+    }
+  }
 }
 
 /**
@@ -50,6 +157,7 @@ export function getQwenPlaywrightState() {
   return {
     initialized: context !== null,
     hasActivePage: activeQwenPage !== null,
+    pool: getQwenPoolState(),
   };
 }
 
@@ -63,9 +171,20 @@ export async function getQwenLoginStatus(): Promise<{ loggedIn: boolean; cookieC
     }
   }
 
+  // Durante o fluxo de login NÃO navega a janela visível (o poll do dashboard
+  // não pode tirar o usuário da tela de autenticação).
+  if (loginFlowActive) {
+    return { loggedIn: false, cookieCount };
+  }
+
   let loggedIn = false;
   if (activeQwenPage) {
-    const url = activeQwenPage.url();
+    let url = '';
+    try {
+      url = activeQwenPage.url();
+    } catch {
+      // página/contexto fechado; não derruba o /api/status
+    }
     if (url.startsWith('https://chat.qwen.ai')) {
       loggedIn = !(url.includes('auth') || url.includes('login')) && cookieCount > 0;
     } else {
@@ -94,17 +213,33 @@ export async function startQwenLoginFlow(): Promise<void> {
     return;
   }
   loginFlowActive = true;
+  await reopenQwenForLogin();
+}
+
+/**
+ * Reabre o browser do Qwen em modo visível e navega para a tela de login.
+ * Usado pelo início do fluxo de login e quando a janela de login morre no
+ * meio do processo (para o usuário conseguir concluir).
+ */
+async function reopenQwenForLogin(): Promise<Page> {
   await closeQwenPlaywright();
+  // Espera o Chrome liberar o perfil antes de reabrir (evita "profile in use"
+  // / contexto que fecha imediatamente no Windows).
+  await new Promise((r) => setTimeout(r, 800));
   await initQwenPlaywright(false); // visível para o usuário logar
   if (activeQwenPage) {
-    await activeQwenPage.goto('https://chat.qwen.ai/auth', { waitUntil: 'domcontentloaded' });
+    await activeQwenPage
+      .goto('https://chat.qwen.ai/auth', { waitUntil: 'domcontentloaded' })
+      .catch(() => {});
   }
+  return activeQwenPage!;
 }
 
 export async function finishQwenLoginFlow(): Promise<void> {
   if (process.env.TEST_MOCK_PLAYWRIGHT) return;
   loginFlowActive = false;
   await closeQwenPlaywright();
+  await new Promise((r) => setTimeout(r, 800));
   await initQwenPlaywright(true); // volta para headless
 }
 
@@ -131,11 +266,16 @@ export async function ensureQwenPage(): Promise<Page> {
   }
   if (pageClosed) {
     if (loginFlowActive) {
-      console.warn('[Qwen] Janela de login fechada sem concluir; voltando para headless.');
-      loginFlowActive = false;
+      // A janela de login morreu; reabre visível para o usuário concluir o
+      // login em vez de voltar silenciosamente para headless.
+      console.warn('[Qwen] Janela de login fechada; reabrindo visível para concluir o login.');
+      return reopenQwenForLogin();
     }
     await closeQwenPlaywright();
     await initQwenPlaywright(true);
+  }
+  if (qwenStreamPages.length === 0 && !loginFlowActive) {
+    await ensurePoolPages();
   }
   return activeQwenPage!;
 }
@@ -189,6 +329,15 @@ export async function initQwenPlaywright(headless = true) {
 
   // Keep an active page to fetch PoW headers on demand
   activeQwenPage = await context.newPage();
+  // Não cria abas do pool durante o fluxo de login: o chat fica bloqueado
+  // enquanto o login estiver em andamento e as abas extras só atrapalham
+  // a navegação da janela visível de login.
+  if (!loginFlowActive) {
+    await ensurePoolPages();
+    console.log(
+      `[qwen-playwright] Pool: ${qwenStreamPages.length} aba(s) para chat concorrente (QWEN_POOL_SIZE).`
+    );
+  }
 }
 
 export async function closeQwenPlaywright() {
@@ -204,6 +353,22 @@ export async function closeQwenPlaywright() {
     cachedQwenHeaders = null;
     lastHeadersTime = 0;
   }
+  // Remove locks obsoletos do perfil (Chrome/Windows) para permitir reabrir o
+  // browser imediatamente sem erro de "profile in use" ou contexto que morre.
+  try {
+    for (const f of fs.readdirSync(getQwenProfileDir())) {
+      if (f.startsWith('Singleton')) {
+        fs.unlinkSync(path.join(getQwenProfileDir(), f));
+      }
+    }
+  } catch {
+    // perfil inexistente ou sem permissão
+  }
+  const waiters = qwenStreamWaiters;
+  qwenStreamWaiters = [];
+  for (const w of waiters) w.reject(new Error('Qwen Playwright fechado'));
+  qwenStreamPages = [];
+  qwenStreamPagesBusy.clear();
 }
 
 export async function loginToQwen(email: string, password: string): Promise<boolean> {
@@ -345,74 +510,26 @@ async function _getQwenHeadersInternal(forceNew = false): Promise<{ headers: Rec
   });
 
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
+    const overallTimeout = setTimeout(() => {
       console.error('[Qwen] Timeout waiting for Qwen headers. Current URL:', activeQwenPage!.url());
       reject(new Error('Timeout waiting for Qwen headers'));
     }, 60000);
 
-    console.log('[Qwen] Setting up route interception...');
-    const routeHandler = async (route: any, request: any) => {
-      clearTimeout(timeout);
+    const MAX_SKIPS = 3;
+    let skips = 0;
+    let requestSeen = false;
+    let fallbackTimer: NodeJS.Timeout | null = null;
+    let fallbackAttempts = 0;
+    const MAX_FALLBACK_ATTEMPTS = 3;
 
-      const reqHeaders = request.headers();
-      let uiSessionId = '';
-      let uiParentMessageId: string | null = null;
-
-      const postData = request.postData();
-      if (postData) {
-        try {
-          const payload = JSON.parse(postData);
-          if (payload.chat_id) {
-            uiSessionId = payload.chat_id;
-          }
-          if (payload.parent_id !== undefined) {
-            uiParentMessageId = payload.parent_id;
-          }
-        } catch (e) {
-          // ignore parsing error
-        }
-      }
-
-      const extractedHeaders = {
-        'cookie': reqHeaders['cookie'] || '',
-        'bx-ua': reqHeaders['bx-ua'] || '',
-        'bx-umidtoken': reqHeaders['bx-umidtoken'] || '',
-        'bx-v': reqHeaders['bx-v'] || '',
-        'x-request-id': reqHeaders['x-request-id'] || '',
-        'user-agent': reqHeaders['user-agent'] || ''
-      };
-
-      // Ensure we have at least cookies and bx-ua (which are critical)
-      if (!extractedHeaders.cookie || !extractedHeaders['bx-ua']) {
-        console.log('[Qwen] Intercepted request missing critical headers, skipping...');
-        await route.continue();
-        return;
-      }
-
-      console.log('[Qwen] Successfully intercepted headers.');
-      currentHeaders = extractedHeaders;
-      cachedQwenHeaders = { headers: extractedHeaders, chatSessionId: uiSessionId, parentMessageId: uiParentMessageId };
-      lastHeadersTime = Date.now();
-
-      // Trigger native tools disabling on first header interception
-      import('./qwen.ts').then(m => m.disableNativeTools().catch(() => {}));
-
-      // Abort to prevent polluting chat history
-      await route.abort('aborted');
-
-      // Cleanup route
-      await activeQwenPage!.unroute('**/api/v2/chat/completions*', routeHandler);
-
-      resolve(cachedQwenHeaders);
-    };
-
-    activeQwenPage!.route('**/api/v2/chat/completions*', routeHandler).then(async () => {
+    const triggerSend = async () => {
+      requestSeen = false;
       console.log('[Qwen] Triggering request...');
       const inputSelector = 'textarea:visible, [contenteditable="true"]:visible';
 
-      await activeQwenPage!.focus(inputSelector);
-      await activeQwenPage!.fill(inputSelector, '');
-      await activeQwenPage!.type(inputSelector, 'a', { delay: 100 });
+      await activeQwenPage!.focus(inputSelector).catch(() => {});
+      await activeQwenPage!.fill(inputSelector, '').catch(() => {});
+      await activeQwenPage!.type(inputSelector, 'a', { delay: 100 }).catch(() => {});
       console.log('[Qwen] Typed char, waiting for UI to update...');
       await activeQwenPage!.waitForTimeout(2000);
 
@@ -450,9 +567,94 @@ async function _getQwenHeadersInternal(forceNew = false): Promise<{ headers: Rec
 
       if (!clicked) {
         console.log('[Qwen] No send button found/clicked, fallback to Enter...');
-        await activeQwenPage!.focus(inputSelector);
-        await activeQwenPage!.keyboard.press('Enter');
+        await activeQwenPage!.focus(inputSelector).catch(() => {});
+        await activeQwenPage!.keyboard.press('Enter').catch(() => {});
       }
+
+      armFallback();
+    };
+
+    const armFallback = () => {
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      fallbackTimer = setTimeout(() => {
+        if (requestSeen) return;
+        fallbackAttempts++;
+        if (fallbackAttempts > MAX_FALLBACK_ATTEMPTS) {
+          console.error('[Qwen] Fallback attempts esgotados; aguardando timeout geral...');
+          return;
+        }
+        console.log(`[Qwen] Nenhum request interceptado apos o envio (tentativa ${fallbackAttempts}/${MAX_FALLBACK_ATTEMPTS}); re-enviando...`);
+        triggerSend().catch(() => {});
+      }, 8000);
+    };
+
+    console.log('[Qwen] Setting up route interception...');
+    const routeHandler = async (route: any, request: any) => {
+      requestSeen = true;
+      if (fallbackTimer) clearTimeout(fallbackTimer);
+      const reqHeaders = request.headers();
+      let uiSessionId = '';
+      let uiParentMessageId: string | null = null;
+
+      const postData = request.postData();
+      if (postData) {
+        try {
+          const payload = JSON.parse(postData);
+          if (payload.chat_id) {
+            uiSessionId = payload.chat_id;
+          }
+          if (payload.parent_id !== undefined) {
+            uiParentMessageId = payload.parent_id;
+          }
+        } catch (e) {
+          // ignore parsing error
+        }
+      }
+
+      const extractedHeaders = {
+        'cookie': reqHeaders['cookie'] || '',
+        'bx-ua': reqHeaders['bx-ua'] || '',
+        'bx-umidtoken': reqHeaders['bx-umidtoken'] || '',
+        'bx-v': reqHeaders['bx-v'] || '',
+        'x-request-id': reqHeaders['x-request-id'] || '',
+        'user-agent': reqHeaders['user-agent'] || ''
+      };
+
+      // Ensure we have at least cookies and bx-ua (which are critical)
+      if (!extractedHeaders.cookie || !extractedHeaders['bx-ua']) {
+        skips++;
+        // Abort (instead of continue) so the message is not really sent to Qwen,
+        // and re-trigger the send to retry the handshake.
+        await route.abort('aborted').catch(() => {});
+        if (skips <= MAX_SKIPS) {
+          console.log(`[Qwen] Intercepted request missing critical headers (attempt ${skips}/${MAX_SKIPS}), re-triggering...`);
+          setTimeout(() => { triggerSend().catch(() => {}); }, 1200);
+        } else {
+          console.error('[Qwen] Too many handshake retries without valid headers.');
+        }
+        return;
+      }
+
+      clearTimeout(overallTimeout);
+      console.log('[Qwen] Successfully intercepted headers.');
+      currentHeaders = extractedHeaders;
+      cachedQwenHeaders = { headers: extractedHeaders, chatSessionId: uiSessionId, parentMessageId: uiParentMessageId };
+      lastHeadersTime = Date.now();
+
+      // Trigger native tools disabling on first header interception
+      import('./qwen.ts').then(m => m.disableNativeTools().catch(() => {}));
+
+      // Abort to prevent polluting chat history
+      await route.abort('aborted').catch(() => {});
+
+      // Cleanup route
+      await activeQwenPage!.unroute('**/api/v2/chat/completions*', routeHandler).catch(() => {});
+
+      resolve(cachedQwenHeaders);
+    };
+
+    activeQwenPage!.route('**/api/v2/chat/completions*', routeHandler).then(async () => {
+      await triggerSend();
     });
   });
 }

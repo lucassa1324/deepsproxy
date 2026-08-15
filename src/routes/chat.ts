@@ -16,20 +16,41 @@ import { uploadDeepSeekImages, prepareDeepSeekVisionFiles, DeepSeekImageInput } 
 import { forwardChatCompletions, findProviderForModel, isDeepseekModel } from '../services/local.ts';
 import { isQwenModel } from '../services/qwen.ts';
 import { qwenChatCompletions } from './qwen.ts';
+import { geminiChatCompletions } from './gemini.ts';
 import {
   resolveRegistry,
   resolveActiveProvider,
   enabledProviders,
   isDeepseekProvider,
   isQwenProvider,
+  isGeminiWebProvider,
   normalizeModelId,
 } from '../services/config.ts';
 import type { Provider } from '../services/config.ts';
+import { resolveModelEntry, providerFromCatalogEntry } from '../services/modelCatalog.ts';
+import type { GatewayApp } from '../services/gateway.ts';
+import { dispatchAdapterChat, isAdapterProvider } from '../services/adapters/index.ts';
+import {
+  getTokenEconomy,
+  applyTokenEconomy,
+  cachePayloadKey,
+  responseCacheGet,
+  responseCacheSet,
+  buildSummaryDigest,
+  SUMMARY_MAX_TOKENS,
+} from '../services/token-economy.ts';
+import type { TokenEconomySettings } from '../services/token-economy.ts';
 import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
+import {
+  isServerAgentSupported,
+  listServerTools,
+  runServerAgent,
+  respondAgentResult,
+} from '../services/agent.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 
 interface DeepSeekAccumulated {
@@ -252,42 +273,222 @@ async function handleDeepSeekNonStreaming(
   });
 }
 
+/**
+ * Resumo dos turnos descartados pelo truncamento (modo economia). Tenta a
+ * chamada de resumo com o provedor ativo (adapter ou openai-compatible); se
+ * não for possível (deepseek/qwen por browser, sem API), usa o digest local.
+ */
+async function summarizeDropped(dropped: any[], target: Provider): Promise<string> {
+  const digest = buildSummaryDigest(dropped);
+  const sys =
+    'Você é um compressor de contexto. Produza um resumo objetivo e conciso, no mesmo idioma das mensagens. Mantenha decisões, fatos, nomes de arquivos e código relevantes. Responda apenas com o resumo.';
+  const user = `Resuma o histórico abaixo:\n\n${digest}`;
+  try {
+    if (isAdapterProvider(target)) {
+      const resp = await dispatchAdapterChat(
+        {
+          model: target.model || 'default',
+          stream: false,
+          max_tokens: SUMMARY_MAX_TOKENS,
+          messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: user },
+          ],
+        },
+        target
+      );
+      if (resp && resp.status === 200) {
+        const j: any = await resp.clone().json();
+        const c = j?.choices?.[0]?.message?.content;
+        if (c) return c;
+      }
+    } else if (target.type === 'openai-compatible' && target.baseUrl && target.apiKey) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 10_000);
+      try {
+        const resp = await fetch(`${target.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer ' + target.apiKey,
+          },
+          body: JSON.stringify({
+            model: target.model || 'default',
+            stream: false,
+            max_tokens: SUMMARY_MAX_TOKENS,
+            messages: [
+              { role: 'system', content: sys },
+              { role: 'user', content: user },
+            ],
+          }),
+          signal: controller.signal,
+        });
+        if (resp.ok) {
+          const j: any = await resp.json();
+          const c = j?.choices?.[0]?.message?.content;
+          if (c) return c;
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  } catch {
+    // fallback para digest
+  }
+  return digest;
+}
+
 export async function chatCompletions(c: Context) {
   const startedAt = Date.now();
   try {
-    const body: OpenAIRequest = await c.req.json();
+    let body: OpenAIRequest = await c.req.json();
     // Normaliza o id do modelo (ex.: cliente envia "models/gemini-2.5-flash"
     // com prefixo da REST do Google). Sem isso o roteamento e os adapters
     // falham ao montar a URL (ex.: /models/models/...).
     body.model = normalizeModelId(body.model);
     const isStream = body.stream ?? false;
+    const economy: TokenEconomySettings = getTokenEconomy();
 
-    // Roteamento multi-provedor: vários provedores podem estar ativos.
-    //  - nome de modelo deepseek -> backend DeepSeek (se houver um habilitado);
-    //  - modelo conhecido por um provedor habilitado -> esse provedor;
-    //  - senão -> o provedor principal (fallback).
+    // Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE pelo
+    // catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
+    //  - porta 3006 (gateway): o model enviado pelo cliente é ignorado; vale o
+    //    modelo configurado na aplicação da chave virtual (painel);
+    //  - porta 3005 (direta): o model do cliente define o provedor.
     const registry = resolveRegistry(c.req.header('Cookie'));
     const enabled = enabledProviders(registry);
     const primary = resolveActiveProvider(c.req.header('Cookie'));
 
-    const deepseekEnabled = enabled.some((p) => isDeepseekProvider(p));
-    const qwenEnabled = enabled.some((p) => isQwenProvider(p));
     let target: Provider = primary;
-    if (isDeepseekModel(body.model) && deepseekEnabled) {
-      target = enabled.find((p) => isDeepseekProvider(p)) ?? primary;
-    } else if (isQwenModel(body.model) && qwenEnabled) {
-      target = enabled.find((p) => isQwenProvider(p)) ?? primary;
-    } else if (!isDeepseekModel(body.model) && !isQwenModel(body.model)) {
-      const owner = await findProviderForModel(enabled, body.model);
-      if (owner) target = owner;
+
+    // AI Gateway (porta 3006): o middleware do gatewayApp já validou a chave
+    // virtual e guardou a aplicação no contexto. Injeta o modelo do painel e
+    // resolve o provedor pelo catálogo.
+    const gwEntry = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
+    if (gwEntry) {
+      const appModel = (gwEntry.model || '').trim();
+      if (!appModel) {
+        return c.json(
+          {
+            error: {
+              message: `Aplicação "${gwEntry.name}" não tem modelo configurado. Selecione um modelo na aba Apps do dashboard.`,
+            },
+          },
+          400
+        );
+      }
+      body.model = appModel;
+      const entry = await resolveModelEntry(appModel, registry);
+      if (!entry) {
+        return c.json(
+          {
+            error: {
+              message: `Modelo "${appModel}" não encontrado no catálogo. Configure o provedor na aba Conexão (a lista de modelos é carregada automaticamente).`,
+            },
+          },
+          404
+        );
+      }
+      target = providerFromCatalogEntry(entry);
+    } else {
+      // Porta 3005 (direta): o model enviado pelo cliente decide o provedor.
+      const entry = await resolveModelEntry(body.model, registry);
+      if (entry) {
+        target = providerFromCatalogEntry(entry);
+      } else {
+        // Fallback: roteamento por nome de modelo conhecido (DeepSeek/Qwen)
+        // ou, se nada reconhecer, o provedor principal.
+        const deepseekEnabled = enabled.some((p) => isDeepseekProvider(p));
+        const qwenEnabled = enabled.some((p) => isQwenProvider(p));
+        if (isDeepseekModel(body.model) && deepseekEnabled) {
+          target = enabled.find((p) => isDeepseekProvider(p)) ?? primary;
+        } else if (isQwenModel(body.model) && qwenEnabled) {
+          target = enabled.find((p) => isQwenProvider(p)) ?? primary;
+        } else if (!isDeepseekModel(body.model) && !isQwenModel(body.model)) {
+          const owner = await findProviderForModel(enabled, body.model);
+          if (owner) target = owner;
+        }
+      }
     }
 
+    // Modo economia de tokens: aplica as transformações configuradas ANTES de
+    // encaminhar ao provedor (truncar/resumir histórico, remover raciocínio,
+    // limitar saída de tools, marcar cache de prefixo).
+    if (economy.enabled) {
+      const { payload: ecoPayload, actions, estimatedTokens } = await applyTokenEconomy(body, economy, {
+        summarize: async (dropped: any[]) => summarizeDropped(dropped, target),
+      });
+      body = ecoPayload;
+      if (economy.tokenEstimation) {
+        console.log(
+          `[economy] tokens~${estimatedTokens} janela=${economy.maxContextTokens} msgs=${body.messages.length} [${actions.join(', ') || 'sem ações'}]`
+        );
+      }
+    }
+
+    // Modo agente nativo: o proxy executa as tools de servidor (web_search)
+    // num loop agêntico, sem depender da IDE. Só funciona com provedores HTTP
+    // (adapters e openai-compatible); deepseek/qwen respondem 400.
+    if (body.agent === true) {
+      try {
+        if (!isServerAgentSupported(target)) {
+          return c.json(
+            {
+              error: {
+                message: `Modo agente não é suportado para o provedor "${target.type}". Use um provedor HTTP (Gemini, Anthropic, OpenAI-compatível).`,
+              },
+            },
+            400
+          );
+        }
+        const toolList = listServerTools();
+        if (toolList.length === 0) {
+          return c.json({ error: { message: 'Nenhuma tool de servidor registrada.' } }, 400);
+        }
+        const agentResult = await runServerAgent(body, target);
+        console.log(
+          `[agent] done model=${body.model} turns=${agentResult.turns} tools=[${toolList.map((t) => t.name).join(', ')}] ${Date.now() - startedAt}ms`
+        );
+        return respondAgentResult(c, body, agentResult);
+      } catch (err: any) {
+        console.error('[agent] erro:', err);
+        return c.json({ error: { message: `[agent] ${err?.message || String(err)}` } }, 502);
+      }
+    }
+
+    // Cache de respostas idênticas (apenas non-streaming): hash do payload
+    // final (após economia). Se o mesmo request voltar, responde do cache.
+    const cacheKey =
+      economy.enabled && economy.responseCache && !isStream ? cachePayloadKey(body) : null;
+    if (cacheKey) {
+      const hit = responseCacheGet(cacheKey);
+      if (hit) {
+        console.log(`[economy] cache HIT ${cacheKey.slice(0, 10)}… (${hit.body.choices?.[0]?.message?.content?.length ?? 0} chars)`);
+        return c.json(hit.body, hit.status as any);
+      }
+    }
+
+    const maybeStoreCache = async (res: Response): Promise<Response> => {
+      if (cacheKey && res.status === 200) {
+        try {
+          const json = await res.clone().json();
+          responseCacheSet(cacheKey, res.status, json);
+        } catch {
+          // stream ou corpo não-JSON: não cacheia
+        }
+      }
+      return res;
+    };
+
     if (isQwenProvider(target)) {
-      return qwenChatCompletions(c, body);
+      return maybeStoreCache(await qwenChatCompletions(c, body));
+    }
+
+    if (isGeminiWebProvider(target)) {
+      return maybeStoreCache(await geminiChatCompletions(c, body));
     }
 
     if (!isDeepseekProvider(target)) {
-      return forwardChatCompletions(c, body, target);
+      return maybeStoreCache(await forwardChatCompletions(c, body, target));
     }
 
     const finalPrompt = buildAgentPrompt(body);

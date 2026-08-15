@@ -107,3 +107,50 @@ export function buildAgentPrompt(body: OpenAIRequest): string {
 
   return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
 }
+
+/**
+ * Mesma conversão de mensagens para texto, mas achatando TODAS as mensagens do
+ * histórico (não só a última). Usado por backends que não mantêm sessão no
+ * servidor (ex.: Gemini Web, que abre uma conversa nova por requisição) — o
+ * multi-turno só funciona se o histórico completo for reenviado no prompt.
+ */
+export function buildFullHistoryPrompt(body: OpenAIRequest): string {
+  const messages = body.messages || [];
+  let prompt = '';
+  let systemPrompt = '';
+
+  for (const msg of messages) {
+    const contentStr = messageContentToText(msg.content);
+
+    if (msg.role === 'system') {
+      systemPrompt += contentStr + '\n\n';
+      continue;
+    }
+
+    if (msg.role === 'user') {
+      prompt += `User: ${contentStr}\n\n`;
+    } else if (msg.role === 'assistant') {
+      let assistantContent = contentStr;
+      if ((msg as any).reasoning_content) {
+        assistantContent = `<think>\n${(msg as any).reasoning_content}\n</think>\n${assistantContent}`;
+      }
+      if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) {
+          let args = tc.function?.arguments || '{}';
+          if (typeof args !== 'string') args = JSON.stringify(args);
+          assistantContent += `\n<tool_call>{"name": "${tc.function?.name}", "arguments": ${args}}</tool_call>`;
+        }
+      }
+      prompt += `Assistant: ${assistantContent.trim()}\n\n`;
+    } else if (msg.role === 'tool' || msg.role === 'function') {
+      prompt += `Tool Response (${msg.name || 'tool'}): ${contentStr}\n\n`;
+    }
+  }
+
+  const toolsInstructions = buildToolsInstructions(body);
+  if (toolsInstructions) {
+    systemPrompt += toolsInstructions;
+  }
+
+  return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
+}

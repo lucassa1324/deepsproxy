@@ -79,6 +79,42 @@ test('gemini: buildGeminiBody traduz system/tool/assistant para Gemini', () => {
   assert.deepStrictEqual(body.contents[2].parts[2], { text: 'o que é?' });
 });
 
+test('gemini: buildGeminiBody remove keywords não suportados do schema das tools (Trae/Cursor)', () => {
+  const body = buildGeminiBody({
+    model: 'gemini-2.0-flash',
+    messages: [{ role: 'user', content: 'oi' }],
+    tools: [
+      {
+        type: 'function',
+        function: {
+          name: 'buscar',
+          description: 'Busca',
+          parameters: {
+            type: 'object',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            additionalProperties: false,
+            properties: {
+              q: { type: 'string', minLength: 1 },
+              n: { type: 'integer', anyOf: [{ type: 'integer' }, { type: 'null' }], default: 5 },
+            },
+            required: ['q'],
+            nullable: true,
+          } as any,
+        },
+      },
+    ],
+  });
+  const decl = body.tools[0].functionDeclarations[0];
+  assert.deepStrictEqual(decl.parameters, {
+    type: 'object',
+    properties: {
+      q: { type: 'string', minLength: 1 },
+      n: { type: 'integer' },
+    },
+    required: ['q'],
+  });
+});
+
 test('gemini: chatCompletion traduz resposta REST para OpenAI', async () => {
   const adapter = new GeminiAdapter(100000);
   const restore = mockFetch((url, init) => {

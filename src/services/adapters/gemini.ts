@@ -70,13 +70,67 @@ function parseToolResult(content: any): any {
   return content || {};
 }
 
+// O Gemini (function_declarations.parameters) aceita apenas um subconjunto do
+// JSON Schema. IDEs como Trae/Cursor enviam keywords que a API rejeita
+// (additionalProperties, anyOf/oneOf, $schema, default, const, nullable...).
+// Remove recursivamente o que o Gemini não entende para não estourar 400.
+const GEMINI_SCHEMA_KEYS = new Set([
+  'type',
+  'description',
+  'properties',
+  'required',
+  'items',
+  'enum',
+  'minimum',
+  'maximum',
+  'exclusiveMinimum',
+  'exclusiveMaximum',
+  'minLength',
+  'maxLength',
+  'pattern',
+  'format',
+  'title',
+]);
+
+function sanitizeGeminiSchema(node: any): any {
+  if (Array.isArray(node)) {
+    const out: any[] = [];
+    for (const item of node) {
+      const s = sanitizeGeminiSchema(item);
+      if (s !== undefined) out.push(s);
+    }
+    return out;
+  }
+  if (node && typeof node === 'object') {
+    const out: any = {};
+    for (const key of Object.keys(node)) {
+      if (!GEMINI_SCHEMA_KEYS.has(key)) continue;
+      const value = node[key];
+      if (key === 'properties') {
+        const props: any = {};
+        for (const pkey of Object.keys(value || {})) {
+          const s = sanitizeGeminiSchema(value[pkey]);
+          if (s !== undefined && Object.keys(s).length) props[pkey] = s;
+        }
+        out.properties = props;
+      } else if (key === 'items') {
+        out.items = sanitizeGeminiSchema(value);
+      } else {
+        out[key] = value;
+      }
+    }
+    return out;
+  }
+  return node;
+}
+
 function toGeminiTools(payload: OpenAIRequest): { tools: any[]; toolConfig?: any } | null {
   const fnTools = (payload.tools || []).filter((t: any) => t && t.type === 'function');
   if (!fnTools.length) return null;
   const functionDeclarations = fnTools.map((t: any) => ({
     name: t.function?.name,
     description: t.function?.description,
-    parameters: t.function?.parameters,
+    parameters: sanitizeGeminiSchema(t.function?.parameters),
   }));
   const out: { tools: any[]; toolConfig?: any } = { tools: [{ functionDeclarations }] };
   const choice: any = payload.tool_choice;

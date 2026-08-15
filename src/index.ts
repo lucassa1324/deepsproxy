@@ -17,25 +17,39 @@ import { initPlaywright } from './services/playwright.ts';
 import { checkLogin } from './services/playwright.ts';
 import { initQwenPlaywright, checkQwenLogin, loginToQwen, ensureQwenPage, isQwenLoginFlowActive, activeQwenPage } from './services/qwen-playwright.ts';
 import { fetchQwenModels, QWEN_KNOWN_MODELS, qwenStreamsActive } from './services/qwen.ts';
+import { initGeminiPlaywright, checkGeminiLogin } from './services/gemini-playwright.ts';
+import { GEMINI_KNOWN_MODELS } from './services/gemini-web.ts';
 import { dashboard } from './ui/dashboard.ts';
 import { attachLogger } from './ui/logger.ts';
 import { fetchModels, findProviderForModel } from './services/local.ts';
 import { isAdapterProvider, fetchProviderModels } from './services/adapters/index.ts';
 import { attachVnc, attachVncWs } from './ui/vnc.ts';
 import { webSearch, registerWebSearchTool } from './tools/web-search.ts';
+import { listServerTools } from './services/agent.ts';
 import {
   resolveRegistry,
   enabledProviders,
   isDeepseekProvider,
   isQwenProvider,
+  isGeminiWebProvider,
   resolveActiveProvider,
   normalizeModelId,
 } from './services/config.ts';
 import type { Provider } from './services/config.ts';
+import {
+  extractBearerToken,
+  getAppByKey,
+  isVirtualKeyFormat,
+} from './services/gateway.ts';
 
 dotenv.config();
 
 export const app = new Hono();
+
+// AI Gateway: segunda porta (GATEWAY_PORT, padrão 3006). Aqui as rotas OpenAI
+// (/v1/*) só respondem com uma chave virtual de aplicação — o modelo que o app
+// recebe é controlado pelo painel (aba Apps), não pela ferramenta cliente.
+export const gatewayApp = new Hono();
 
 // Registra a tool nativa de busca na web (agentes que usam o registry).
 registerWebSearchTool();
@@ -54,7 +68,12 @@ const PUBLIC_PATHS = new Set([
   '/api/login/finish',
   '/api/qwen/login/start',
   '/api/qwen/login/finish',
+  '/api/gemini/login/start',
+  '/api/gemini/login/finish',
 ]);
+
+// Rotas do gateway (OpenAI-compatível): autenticáveis por chave virtual de app.
+const GATEWAY_PATHS = new Set(['/v1/chat/completions', '/v1/models', '/v1/embeddings', '/v1/web/search', '/v1/tools']);
 
 app.use('*', cors());
 
@@ -68,13 +87,21 @@ app.use('*', async (c, next) => {
       const xApiKey = c.req.header('X-API-Key');
       const providedKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : xApiKey;
       if (!providedKey || providedKey !== apiKey) {
-        return c.json({ error: 'Unauthorized' }, 401);
+        // Chaves virtuais do gateway só autorizam as rotas OpenAI (/v1/*);
+        // o restante (dashboard/admin) exige a API_KEY mestre do .env.
+        const token = extractBearerToken(authHeader);
+        const isGatewayAuthed =
+          GATEWAY_PATHS.has(p) && !!token && isVirtualKeyFormat(token) && !!getAppByKey(token);
+        if (!isGatewayAuthed) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
       }
     }
   }
   await next();
 });
 
+/* ------------------------- Modo direto (PORT, padrão 3005) ------------------------- */
 // Dashboard (interface gráfica)
 app.route('/', dashboard);
 
@@ -84,16 +111,80 @@ attachVnc(app);
 // Basic health check
 app.get('/health', (c) => c.json({ status: 'ok' }));
 
-// OpenAI compatible routes
-app.post('/v1/chat/completions', chatCompletions);
+// Rotas OpenAI-compatíveis compartilhadas (chat/models/embeddings/web search).
+registerOpenAIRoutes(app);
 
-app.get('/v1/models', async (c) => {
-  const registry = resolveRegistry(c.req.header('Cookie'));
-  const enabled = enabledProviders(registry);
+/* ------------------------- AI Gateway (GATEWAY_PORT, padrão 3006) ------------------------- */
+// No gateway, /v1/* só responde com chave virtual de aplicação — o controle do
+// modelo fica no painel (aba Apps), a IDE só aponta para a URL e envia a chave.
+// As rotas do dashboard seguem a mesma proteção do modo direto (API_KEY do
+// .env, quando configurada).
+gatewayApp.use('*', cors());
+gatewayApp.use('*', async (c, next) => {
+  const p = c.req.path;
+  const isVncPath = p === '/vnc' || p.startsWith('/vnc/');
+  if (PUBLIC_PATHS.has(p) || isVncPath) return next();
+
+  if (GATEWAY_PATHS.has(p)) {
+    const token = extractBearerToken(c.req.header('Authorization'));
+    const entry = token ? getAppByKey(token) : null;
+    if (!entry) {
+      return c.json(
+        { error: { message: 'API key inválida. Crie uma chave virtual na aba Apps do dashboard.' } },
+        401
+      );
+    }
+    if (entry.enabled === false) {
+      return c.json({ error: { message: `Aplicação "${entry.name}" desativada no painel.` } }, 403);
+    }
+    // Guarda a aplicação no contexto: o handler de chat (porta 3006) lê daqui
+    // o modelo configurado no painel e ignora o model enviado pelo cliente.
+    (c as any).set('gatewayAppEntry', entry);
+    return next();
+  }
+
+  const apiKey = process.env.API_KEY;
+  if (apiKey) {
+    const authHeader = c.req.header('Authorization');
+    const xApiKey = c.req.header('X-API-Key');
+    const providedKey = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : xApiKey;
+    if (!providedKey || providedKey !== apiKey) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+  }
+  await next();
+});
+
+gatewayApp.route('/', dashboard);
+attachVnc(gatewayApp);
+gatewayApp.get('/health', (c) => c.json({ status: 'ok', mode: 'gateway' }));
+registerOpenAIRoutes(gatewayApp);
+
+/**
+ * Registra as rotas OpenAI-compatíveis (/v1/*) em um app Hono. O mesmo conjunto
+ * é montado no modo direto (PORT) e no AI Gateway (GATEWAY_PORT) — a diferença
+ * entre as portas está apenas na camada de autenticação de cada app.
+ */
+function registerOpenAIRoutes(h: Hono) {
+  // OpenAI compatible routes
+  h.post('/v1/chat/completions', chatCompletions);
+
+  h.get('/v1/models', async (c) => {
+    const registry = resolveRegistry(c.req.header('Cookie'));
+    const enabled = enabledProviders(registry);
+    return listModelsForProviders(enabled);
+  });
+}
+
+// Helper: monta a lista deduplicada de modelos de um conjunto de provedores.
+// Também exportado para reuso (rota do dashboard já usa outra via).
+export async function listModelsForProviders(providers: Provider[]): Promise<Response> {
   const seen = new Set<string>();
   const data: any[] = [];
+  const hasGeminiWeb = providers.some(isGeminiWebProvider);
+  const geminiWebIds = new Set(GEMINI_KNOWN_MODELS.map((m) => m.id));
 
-  for (const provider of enabled) {
+  for (const provider of providers) {
     if (isDeepseekProvider(provider)) {
       data.push(
         {
@@ -133,9 +224,34 @@ app.get('/v1/models', async (c) => {
         }));
       }
       data.push(...qwenModels);
+    } else if (isGeminiWebProvider(provider)) {
+      data.push(
+        ...GEMINI_KNOWN_MODELS.map((m) => ({
+          id: m.id,
+          name: m.name,
+          object: 'model',
+          created: Math.floor(Date.now() / 1000),
+          owned_by: 'gemini-web',
+          permission: [],
+          root: m.id,
+          parent: null,
+        }))
+      );
     } else {
       const models = isAdapterProvider(provider) ? await fetchProviderModels(provider) : await fetchModels(provider);
-      if (models) data.push(...models);
+      if (models) data.push(...models.filter((m: any) => !(hasGeminiWeb && geminiWebIds.has(normalizeModelId(m.id)))));
+    }
+    // Inclui o modelo de override do provedor, se configurado.
+    if (provider.model) {
+      data.push({
+        id: provider.model,
+        object: 'model',
+        created: Math.floor(Date.now() / 1000),
+        owned_by: provider.name,
+        permission: [],
+        root: provider.model,
+        parent: null,
+      });
     }
   }
 
@@ -148,37 +264,41 @@ app.get('/v1/models', async (c) => {
       return true;
     });
 
-  return c.json({
-    object: 'list',
-    data: deduped.length
-      ? deduped
-      : [
-          {
-            id: 'deepseek-thinking',
-            object: 'model',
-            created: Math.floor(Date.now() / 1000),
-            owned_by: 'deepseek',
-            permission: [],
-            root: 'deepseek-thinking',
-            parent: null,
-          },
-          {
-            id: 'deepseek-no-thinking',
-            object: 'model',
-            created: Math.floor(Date.now() / 1000),
-            owned_by: 'deepseek',
-            permission: [],
-            root: 'deepseek-no-thinking',
-            parent: null,
-          },
-        ],
-  });
-});
+  return new Response(
+    JSON.stringify({
+      object: 'list',
+      data: deduped.length
+        ? deduped
+        : [
+            {
+              id: 'deepseek-thinking',
+              object: 'model',
+              created: Math.floor(Date.now() / 1000),
+              owned_by: 'deepseek',
+              permission: [],
+              root: 'deepseek-thinking',
+              parent: null,
+            },
+            {
+              id: 'deepseek-no-thinking',
+              object: 'model',
+              created: Math.floor(Date.now() / 1000),
+              owned_by: 'deepseek',
+              permission: [],
+              root: 'deepseek-no-thinking',
+              parent: null,
+            },
+          ],
+    }),
+    { headers: { 'Content-Type': 'application/json' } }
+  );
+}
 
 // OpenAI compatible embeddings. Roteia pelo nome do modelo para o provedor
 // que "dona" dele (openai-compatible/ollama/gemini). DeepSeek e Qwen (browser)
 // e Anthropic não têm endpoint de embeddings — respondem 501 com mensagem.
-app.post('/v1/embeddings', async (c) => {
+[app, gatewayApp].forEach((h) => {
+  h.post('/v1/embeddings', async (c) => {
   let body: any;
   try {
     body = await c.req.json();
@@ -203,7 +323,7 @@ app.post('/v1/embeddings', async (c) => {
   const owner = await findProviderForModel(enabled, model);
   if (owner) target = owner;
 
-  if (isDeepseekProvider(target) || isQwenProvider(target)) {
+  if (isDeepseekProvider(target) || isQwenProvider(target) || isGeminiWebProvider(target)) {
     return c.json(
       {
         error: {
@@ -266,12 +386,15 @@ app.post('/v1/embeddings', async (c) => {
     });
   }
 
-  return c.json(data);
-});
+    return c.json(data);
+  });
 
-// Busca na web (backend da tool web_search). Retorna títulos, URLs e trechos
-// no formato JSON — útil para agentes e scripts.
-app.post('/v1/web/search', async (c) => {
+  // Lista as tools nativas que o proxy executa no modo agente (agent:true).
+  h.get('/v1/tools', (c) => c.json({ tools: listServerTools() }));
+
+  // Busca na web (backend da tool web_search). Retorna títulos, URLs e trechos
+  // no formato JSON — útil para agentes e scripts.
+  h.post('/v1/web/search', async (c) => {
   let body: any;
   try {
     body = await c.req.json();
@@ -288,6 +411,7 @@ app.post('/v1/web/search', async (c) => {
   } catch (err: any) {
     return c.json({ error: { message: err?.message || String(err) } }, 502);
   }
+  });
 });
 
 // Initialize playwright when server starts
@@ -306,21 +430,31 @@ function openDashboard(port: number) {
   exec(command, () => {});
 }
 
-function startServer(port: number) {
-  console.log(`Server is running on port ${port}`);
-  console.log(`Dashboard: http://localhost:${port}`);
+function serveApp(label: string, honoApp: Hono, port: number, opts: { openUi?: boolean } = {}) {
+  console.log(`[${label}] ${label === 'gateway' ? 'AI Gateway' : 'Modo direto'} rodando em http://localhost:${port}`);
+  console.log(`[${label}] Dashboard: http://localhost:${port}`);
   if (process.env.ENABLE_VNC === 'true') {
-    console.log('VNC remoto habilitado em /vnc (login do DeepSeek pelo navegador).');
+    console.log(`[${label}] VNC remoto habilitado em /vnc (login do DeepSeek pelo navegador).`);
   }
 
   const server = serve({
-    fetch: app.fetch,
+    fetch: honoApp.fetch,
     port
   });
 
   attachVncWs(server);
 
-  openDashboard(port);
+  if (opts.openUi) openDashboard(port);
+  return server;
+}
+
+function startGatewayServer(port: number) {
+  if (process.env.ENABLE_GATEWAY === 'false') {
+    console.log('[gateway] Desativado (ENABLE_GATEWAY=false). Usando apenas o modo direto (PORT).');
+    return;
+  }
+  serveApp('gateway', gatewayApp, port);
+  console.log(`[gateway] Para controlar o modelo pelo painel, configure suas IDEs com http://localhost:${port}/v1 + uma chave virtual (aba Apps).`);
 }
 
 /**
@@ -364,19 +498,22 @@ function startQwenRevalidationCron() {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   attachLogger();
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3005;
+  const gatewayPort = process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006;
 
   const startupProvider = resolveActiveProvider();
   const registry = resolveRegistry();
   const enabled = enabledProviders(registry);
   const needsDeepseekPlaywright = enabled.some((p) => isDeepseekProvider(p));
   const needsQwenPlaywright = enabled.some((p) => isQwenProvider(p));
+  const needsGeminiPlaywright = enabled.some((p) => isGeminiWebProvider(p));
 
-  if (!needsDeepseekPlaywright && !needsQwenPlaywright) {
+  if (!needsDeepseekPlaywright && !needsQwenPlaywright && !needsGeminiPlaywright) {
     console.log(`Provedor principal: ${startupProvider.name}`);
     console.log(`LLM_BASE_URL=${startupProvider.baseUrl}`);
     if (startupProvider.model) console.log(`LLM_MODEL=${startupProvider.model}`);
-    console.log('Playwright desativado (para usar a DeepSeek ou o Qwen, não defina PROVIDER=local no .env).');
-    startServer(port);
+    console.log('Playwright desativado (para usar a DeepSeek, o Qwen ou o Gemini Web, não defina PROVIDER=local no .env).');
+    serveApp('direct', app, port, { openUi: true });
+    startGatewayServer(gatewayPort);
   } else {
     const boot = async () => {
       if (needsDeepseekPlaywright) await initPlaywright();
@@ -396,13 +533,16 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
           }
         }
       }
+      if (needsGeminiPlaywright) await initGeminiPlaywright();
     };
 
     boot()
       .then(() => {
         if (needsDeepseekPlaywright) console.log('Playwright (DeepSeek) initialized.');
         if (needsQwenPlaywright) console.log('Playwright (Qwen) initialized.');
-        startServer(port);
+        if (needsGeminiPlaywright) console.log('Playwright (Gemini Web) initialized.');
+        serveApp('direct', app, port, { openUi: true });
+        startGatewayServer(gatewayPort);
         if (needsQwenPlaywright) startQwenRevalidationCron();
 
         // Avisos de login no startup
@@ -429,6 +569,21 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
                 console.log('Login no Qwen detectado. Tudo pronto para o chat.');
               } else {
                 console.warn('Não foi detectado login no Qwen. Use o botão "Fazer login" do dashboard antes de usar o chat.');
+              }
+            } catch {
+              // ignora falhas no check de login
+            }
+          })();
+        }
+
+        if (needsGeminiPlaywright) {
+          (async () => {
+            try {
+              const loggedIn = await checkGeminiLogin();
+              if (loggedIn) {
+                console.log('Login no Gemini (Web) detectado. Tudo pronto para o chat.');
+              } else {
+                console.warn('Não foi detectado login no Gemini. Use o botão "Fazer login" do dashboard antes de usar o chat.');
               }
             } catch {
               // ignora falhas no check de login

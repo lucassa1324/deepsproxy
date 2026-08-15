@@ -215,6 +215,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     }
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     const { system, messages } = toAnthropicMessages(payload);
+    const wantCache = !!(payload as any)._eco?.cachePrefix;
 
     const body: any = {
       model,
@@ -222,7 +223,19 @@ export class AnthropicAdapter implements ProviderAdapter {
       stream: isStream,
       messages,
     };
-    if (system) body.system = system;
+    if (system) {
+      // cache_control exige system como array de blocos e um breakpoint no
+      // primeiro content block da primeira mensagem (modo economia de tokens).
+      body.system = wantCache
+        ? [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }]
+        : system;
+    }
+    if (wantCache && Array.isArray(messages) && messages.length) {
+      const first = messages[0];
+      if (first?.content && Array.isArray(first.content) && first.content.length && !first.content[0].cache_control) {
+        first.content[0].cache_control = { type: 'ephemeral' };
+      }
+    }
     if ((payload as any).temperature !== undefined) body.temperature = (payload as any).temperature;
     if ((payload as any).top_p !== undefined) body.top_p = (payload as any).top_p;
     if (payload.tools?.length) {

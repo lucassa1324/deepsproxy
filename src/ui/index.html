@@ -121,6 +121,10 @@
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 999px; padding: 1px 7px; text-transform: capitalize;
   }
+  .models-group-label {
+    width: 100%; font-size: 11.5px; font-weight: 700; color: var(--muted);
+    letter-spacing: .4px; margin: 6px 0 6px;
+  }
   .method {
     font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
     color: #0b0f17; background: var(--green); min-width: 44px; text-align: center;
@@ -386,6 +390,17 @@
   }
 
   .note { font-size: 12.5px; color: var(--muted); line-height: 1.5; margin-top: 8px; }
+  .hint {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 16px; height: 16px; border-radius: 50%;
+    border: 1px solid var(--border); color: var(--muted);
+    font-size: 11px; font-weight: 700; cursor: help; user-select: none; flex-shrink: 0;
+  }
+  .hint:hover { color: var(--text); border-color: var(--text); background: var(--panel-2); }
+  .eco-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  .eco-row:last-of-type { border-bottom: none; }
+  .eco-row .checkbox { flex: 1; min-width: 0; color: var(--text); }
+  .eco-row .checkbox input:disabled { opacity: 0.45; cursor: not-allowed; }
   .spinner {
     width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--accent);
     border-radius: 50%; animation: spin 0.8s linear infinite; display: inline-block;
@@ -408,6 +423,7 @@
 
 <nav class="tabs">
   <button class="active" data-tab="connect">Conexão</button>
+  <button data-tab="apps">Apps (Gateway)</button>
   <button data-tab="chat">Chat</button>
   <button data-tab="test">Testar API</button>
   <button data-tab="examples">Exemplos</button>
@@ -470,6 +486,7 @@
               <option value="ollama">Ollama (local)</option>
               <option value="deepseek">DeepSeek (via Playwright)</option>
               <option value="qwen">Qwen (via Playwright)</option>
+              <option value="gemini-web">Gemini (via Playwright — gemini.google.com)</option>
             </select>
           </label>
           <div id="pvOpenAiFields">
@@ -574,6 +591,156 @@
           <button class="btn" id="btnQwenLoginStart">Fazer login</button>
           <button class="btn ghost" id="btnQwenLoginFinish" style="display:none;">Concluir login</button>
         </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;" id="geminiLoginCard">
+      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+        <div style="min-width:220px;">
+          <h3 style="margin:0;">Login no Gemini (Web)</h3>
+          <div class="sub" id="geminiLoginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
+            A sessão do navegador (gemini.google.com) é necessária para o chat com modelos Gemini.
+          </div>
+        </div>
+        <div class="row">
+          <button class="btn" id="btnGeminiLoginStart">Fazer login</button>
+          <button class="btn ghost" id="btnGeminiLoginFinish" style="display:none;">Concluir login</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ APPS (AI GATEWAY) ============ -->
+  <section class="tab" id="tab-apps">
+    <div class="grid" style="grid-template-columns: 1fr 1fr;">
+      <div class="card">
+        <h3>Nova aplicação (API Key virtual)</h3>
+        <p class="note" style="margin:0 0 12px;">
+          Cada cliente (Trae, Cursor, VS Code, N8N...) usa a mesma Base URL do
+          gateway e a própria chave. O modelo e o provedor são controlados aqui,
+          em tempo real, sem mexer nas configurações da ferramenta.
+        </p>
+        <p class="note" style="margin:0 0 12px;">
+          <b>Como funcionam as portas:</b> a porta <b>direta</b>
+          (porta <code class="inline">3005</code>) deixa cada ferramenta escolher o modelo
+          livremente. A porta <b>gateway</b>
+          (porta <code class="inline" id="gatewayPortLabel">3006</code>) ignora o modelo enviado
+          pelo cliente e usa o modelo definido aqui no painel — o provedor é
+          resolvido automaticamente, sem seleção manual.
+          Configure suas IDEs com a <b>Base URL do gateway</b> + a chave virtual.
+        </p>
+        <label class="field">
+          <span>Nome da aplicação</span>
+          <input id="appName" placeholder="Ex.: Trae Work, Cursor, N8N, Script" />
+        </label>
+        <label class="field">
+          <span>Modelo (o provedor é resolvido automaticamente)</span>
+          <select id="appModel"></select>
+          <div class="row" style="margin-top:8px;">
+            <input id="appModelCustom" list="appModelList" style="flex:1;" placeholder="ou digite um modelo customizado..." />
+            <datalist id="appModelList"></datalist>
+          </div>
+        </label>
+        <div class="row">
+          <button class="btn" id="btnCreateApp" type="button">Criar chave</button>
+          <button class="btn ghost" id="btnRefreshCatalog" type="button" title="Recarrega a lista de modelos do catálogo (fixos + cache)">⟳ Modelos</button>
+        </div>
+        <div id="appFeedback" class="note"></div>
+
+        <div id="appKeyBox" class="hidden" style="margin-top:14px; border-top:1px solid var(--border); padding-top:14px;">
+          <h3>Chave criada — copie agora</h3>
+          <p class="note" style="margin:0 0 8px;">
+            A chave só é exibida uma vez. Guarde-a; ela não pode ser recuperada depois.
+          </p>
+          <div class="row">
+            <input id="appKeyValue" readonly style="flex:1; font-family:'Cascadia Code',Consolas,monospace; color:var(--green);" />
+            <button class="btn" id="btnCopyAppKey" type="button">⧉ Copiar</button>
+          </div>
+          <div class="output" id="appConfigSnippet" style="margin-top:10px; min-height:0;"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Aplicações</h3>
+        <div id="appList"></div>
+        <div class="note" style="margin-top:8px;">
+          Trocar o <b>modelo</b> de uma app aplica imediatamente em todas as
+          próximas requisições dela — sem interromper as em andamento.
+        </div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <h3 style="margin:0;">⚡ Modo Economia de Tokens</h3>
+        <label class="checkbox">
+          <input type="checkbox" id="ecoMaster" />
+          Ativado
+        </label>
+        <span class="hint" title="Liga ou desliga TODAS as opções de economia de tokens de uma vez. Quando desativado, nenhuma das opções abaixo é aplicada, mesmo que estejam marcadas. As escolhas individuais são preservadas para quando você reativar.">?</span>
+      </div>
+      <p class="note" style="margin:8px 0 4px;">
+        Reduz o gasto de tokens antes de encaminhar cada requisição ao provedor.
+        Marque apenas o que fizer sentido para o seu uso — cada opção funciona
+        de forma independente. Passe o mouse no <span class="hint">?</span> de
+        cada opção para ver a explicação detalhada.
+      </p>
+
+      <div style="margin-top:10px;">
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="cachePrefix" /> Prompt caching (prefixo estável)
+          </label>
+          <span class="hint" title="Prompt caching: marca pontos de cache automático no Anthropic (cache_control: ephemeral) e mantém o prefixo do prompt (system + tools + início da conversa) em ordem estável para o cache automático do Gemini/OpenAI. Em conversas longas o provedor cobra de 10% a 25% do preço normal pelos tokens lidos em cache — a economia cresce com o tamanho do histórico repetido. Não altera o conteúdo da resposta.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="truncateHistory" /> Truncar histórico pela janela
+          </label>
+          <span class="hint" title="Truncar histórico: estima os tokens de todas as mensagens (aprox. 4 caracteres por token) e, quando o total passa da 'Janela máxima de contexto' configurada abaixo, descarta os turnos MAIS ANTIGOS — preservando sempre as mensagens de sistema e a última mensagem. Evita estourar o limite do modelo e reduz o custo de cada requisição em conversas longas. Desative se o seu cliente (Trae/Cursor) já controla o tamanho do histórico.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="summarizeHistory" /> Resumir histórico antigo
+          </label>
+          <span class="hint" title="Resumir histórico: em vez de simplesmente descartar os turnos antigos quando a janela estoura, o proxy cria um RESUMO deles (usando o provedor ativo quando há API configurada; caso contrário, um digest compacto local) e coloca esse resumo no início do histórico. Mantém o contexto importante com muito menos tokens. Só age quando o histórico estoura a janela e costuma ser usado junto com 'Truncar histórico'.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="stripReasoning" /> Remover raciocínio do histórico
+          </label>
+          <span class="hint" title="Remover raciocínio: não reenvia o campo reasoning_content (o 'pensamento' de modelos de raciocínio como o deepseek-thinking) nas mensagens de histórico que vão ao provedor. Em conversas longas esse pensamento reenviado é muito pesado e quase sempre desnecessário. Pode reduzir levemente a coerência do raciocínio nos turnos seguintes — teste em casos reais.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="truncateToolOutput" /> Limitar resultado de ferramentas
+          </label>
+          <span class="hint" title="Limitar ferramentas: trunca o conteúdo de mensagens de ferramenta (role tool/function) para no máximo 4.000 caracteres antes de enviar ao modelo. Resultados de arquivos grandes, buscas e comandos deixam de lotar o contexto. Quando um resultado é cortado, o modelo vê um aviso '…[truncado: N chars]' no final.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="responseCache" /> Cache de respostas idênticas
+          </label>
+          <span class="hint" title="Cache de respostas: guarda em memória (TTL de 60s, limite de 200 entradas) a resposta de requisições NÃO-streaming cujo payload final (modelo + mensagens + ferramentas + parâmetros) seja idêntico ao de uma requisição recente. Se o mesmo request voltar, responde direto do cache SEM chamar o provedor — evita gasto em retries, testes e chamadas repetidas. Só afeta respostas em JSON único, não streaming.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="tokenEstimation" /> Estimar tokens (log no servidor)
+          </label>
+          <span class="hint" title="Estimar tokens: calcula o total estimado de tokens do histórico de cada requisição (aprox. 4 caracteres por token) e registra no console do servidor uma linha como: [economy] tokens~12000 janela=56000 msgs=14 [truncate(9 mantidas, 5 descartadas)]. Não altera as respostas — serve para medir o impacto das outras opções.">?</span>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <label class="field" style="flex:0 0 230px;">
+          <span>
+            Janela máxima de contexto (tokens)
+            <span class="hint" title="Limite de tokens usado pelo 'Truncar histórico' e pelo 'Resumir histórico' para decidir quando cortar. Padrão: 56.000. Ajuste conforme a janela do modelo que você usa (ex.: 64.000 para o deepseek-thinking R1). Se o valor for maior que a janela real do modelo, o provedor pode estourar o limite; se for menor, o histórico é cortado mais cedo (economia maior).">?</span>
+          </span>
+          <input id="ecoMaxContext" type="number" min="1000" step="1000" />
+        </label>
+        <button class="btn" id="btnSaveEconomy" type="button">Salvar</button>
+        <span id="ecoFeedback" class="note" style="margin:0;"></span>
       </div>
     </div>
   </section>
@@ -714,7 +881,7 @@
       status = await res.json();
       const port = status.port || 3005;
       const providerInfo = status.provider || {};
-      const isBrowser = providerInfo.type === "deepseek" || providerInfo.type === "qwen";
+      const isBrowser = providerInfo.type === "deepseek" || providerInfo.type === "qwen" || providerInfo.type === "gemini-web";
       const isLocal = !isBrowser;
       baseUrlInput.value = location.origin || "http://localhost:" + port;
       $("#testUrl").textContent = location.origin + "/v1/chat/completions";
@@ -728,7 +895,7 @@
       // ---- Provedor (principal) ----
       const providerName = isLocal
         ? (providerInfo.name || "OpenAI-compatível")
-        : (providerInfo.name || (providerInfo.type === "qwen" ? "Qwen" : "DeepSeek"));
+        : (providerInfo.name || (providerInfo.type === "qwen" ? "Qwen" : providerInfo.type === "gemini-web" ? "Gemini" : "DeepSeek"));
       $("#stProvider").textContent = providerName;
       $("#stProvider").style.color = isLocal ? "var(--purple)" : "var(--accent)";
       const extraActive =
@@ -737,7 +904,11 @@
           : "";
       $("#stProviderSub").textContent = isLocal
         ? (providerInfo.baseUrl || "—") + extraActive
-        : (providerInfo.type === "qwen" ? "Playwright + chat.qwen.ai" : "Playwright + chat.deepseek.com") + extraActive;
+        : (providerInfo.type === "qwen"
+            ? "Playwright + chat.qwen.ai"
+            : providerInfo.type === "gemini-web"
+              ? "Playwright + gemini.google.com"
+              : "Playwright + chat.deepseek.com") + extraActive;
 
       // ---- Backend ----
       if (isLocal) {
@@ -752,9 +923,9 @@
           ? modelTxt ? "Modelo: " + modelTxt : (status.models || []).length + " modelo(s) disponível(eis)"
           : bk.baseUrl || "—";
       } else {
-        const isQwen = providerInfo.type === "qwen";
-        const pw = isQwen ? (status.qwen && status.qwen.playwright) || {} : (status.playwright || {});
-        const login = isQwen ? (status.qwen && status.qwen.login) || {} : (status.login || {});
+        const browserKey = providerInfo.type === "qwen" ? "qwen" : providerInfo.type === "gemini-web" ? "geminiWeb" : null;
+        const pw = browserKey ? (status[browserKey] && status[browserKey].playwright) || {} : (status.playwright || {});
+        const login = browserKey ? (status[browserKey] && status[browserKey].login) || {} : (status.login || {});
         $("#stBackend").textContent = pw.initialized ? (login.loggedIn ? "Logado" : "Sessão aberta") : "Não inicializado";
         $("#stBackend").style.color = pw.initialized ? (login.loggedIn ? "var(--green)" : "var(--yellow)") : "var(--red)";
         $("#stBackendSub").textContent = login.cookieCount
@@ -777,10 +948,12 @@
         "Gemini: " + (geminiQueue.waiting || 0) + " aguardando throttle";
 
       // ---- Login / banner / campos ----
+      const isGeminiWeb = providerInfo.type === "gemini-web";
       const isQwen = providerInfo.type === "qwen";
       const dsLogin = status.login || {};
       const qLogin = (status.qwen && status.qwen.login) || {};
-      const activeLogin = isQwen ? qLogin : dsLogin;
+      const gLogin = (status.geminiWeb && status.geminiWeb.login) || {};
+      const activeLogin = isQwen ? qLogin : isGeminiWeb ? gLogin : dsLogin;
       const loginHint = $("#loginHint");
       const loginBanner = $("#chatLoginBanner");
       const btnLoginStart = $("#btnLoginStart");
@@ -790,25 +963,36 @@
       const btnQLoginStart = $("#btnQLoginStart");
       const btnQLoginFinish = $("#btnQLoginFinish");
       const qLoginCard = $("#qwenLoginCard");
+      const gLoginHint = $("#geminiLoginHint");
+      const btnGLoginStart = $("#btnGeminiLoginStart");
+      const btnGLoginFinish = $("#btnGeminiLoginFinish");
+      const gLoginCard = $("#geminiLoginCard");
 
-      // Os dois cards de login (DeepSeek e Qwen) aparecem juntos, cada um com
-      // status independente, sempre que houver algum provedor de navegador.
+      // Os cards de login (DeepSeek, Qwen e Gemini) aparecem juntos, cada um
+      // com status independente, sempre que houver algum provedor de navegador.
       const hasDs = (status.providers || []).some((p) => p.type === "deepseek" && p.enabled !== false);
       const hasQwen = (status.providers || []).some((p) => p.type === "qwen" && p.enabled !== false);
-      const anyBrowser = hasDs || hasQwen;
+      const hasGemini = (status.providers || []).some((p) => p.type === "gemini-web" && p.enabled !== false);
+      const anyBrowser = hasDs || hasQwen || hasGemini;
       loginCard.style.display = anyBrowser ? "" : "none";
       qLoginCard.style.display = anyBrowser ? "" : "none";
-      if (hasDs || hasQwen) {
+      gLoginCard.style.display = anyBrowser ? "" : "none";
+      if (hasDs || hasQwen || hasGemini) {
         setLoginCard(loginCard, loginHint, btnLoginStart, btnLoginFinish, dsLogin, "DeepSeek", "chat.deepseek.com");
       }
-      if (hasQwen || hasDs) {
+      if (hasQwen || hasDs || hasGemini) {
         setLoginCard(qLoginCard, qLoginHint, btnQLoginStart, btnQLoginFinish, qLogin, "Qwen", "chat.qwen.ai");
+      }
+      if (hasGemini || hasDs || hasQwen) {
+        setLoginCard(gLoginCard, gLoginHint, btnGLoginStart, btnGLoginFinish, gLogin, "Gemini", "gemini.google.com");
       }
 
       // Banner do chat: avisa quando o provedor ativo (browser) não está logado.
       const bannerMsg = isQwen
         ? '<span><b>Você não está logado no Qwen.</b> O chat só funciona com uma sessão válida em chat.qwen.ai.</span>'
-        : '<span><b>Você não está logado na DeepSeek.</b> O chat só funciona com uma sessão válida.</span>';
+        : isGeminiWeb
+          ? '<span><b>Você não está logado no Gemini.</b> O chat só funciona com uma sessão válida em gemini.google.com.</span>'
+          : '<span><b>Você não está logado na DeepSeek.</b> O chat só funciona com uma sessão válida.</span>';
       if (!isBrowser) {
         loginBanner.classList.add("hidden");
       } else if (activeLogin.inProgress) {
@@ -853,11 +1037,25 @@
           ? "Multi-turno preservado pelo servidor (histórico enviado na requisição). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
           : (isQwen
             ? "Multi-turno preservado via sessão do Qwen (parent_id). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
-            : "Multi-turno preservado via sessão da DeepSeek (<code class=\"inline\">parent_message_id</code>). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.");
+            : isGeminiWeb
+              ? "Cada conversa usa uma aba do navegador com o histórico completo reenviado no prompt (multi-turno funciona direto na API). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>."
+              : "Multi-turno preservado via sessão da DeepSeek (<code class=\"inline\">parent_message_id</code>). Se <code class=\"inline\">API_KEY</code> estiver configurada, cole-a no campo <b>API Key</b> da aba <b>Conexão</b>.");
       }
 
       // ---- Config do provedor ----
       loadProviders();
+      refreshAppForm();
+      loadApps();
+      loadCatalog();
+      loadEconomy();
+
+      const gwLabel = $("#gatewayPortLabel");
+      if (gwLabel && status.gateway) {
+        gwLabel.textContent = String(status.gateway.port);
+        gwLabel.title = status.gateway.enabled
+          ? "AI Gateway ativo — Base URL " + status.gateway.baseUrl
+          : "AI Gateway desativado (ENABLE_GATEWAY=false no .env)";
+      }
 
       // ---- Modelos (chat/test) ----
       const statusModels = status.models || [];
@@ -892,6 +1090,12 @@
           "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
           "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
         ]
+      : type === "gemini-web"
+      ? [
+          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">gemini.google.com</code> e clique em <b>Concluir login</b>.",
+          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
+          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
+        ]
       : [
           "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.deepseek.com</code> e clique em <b>Concluir login</b>.",
           "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
@@ -910,10 +1114,11 @@
   function renderPills(st) {
     const pills = $("#pills");
     const type = (st.provider || {}).type;
-    const isLocal = type !== "deepseek" && type !== "qwen";
+    const isLocal = type !== "deepseek" && type !== "qwen" && type !== "gemini-web";
     const isQwen = type === "qwen";
-    const pw = isQwen ? (st.qwen && st.qwen.playwright) || {} : (st.playwright || {});
-    const login = isQwen ? (st.qwen && st.qwen.login) || {} : (st.login || {});
+    const isGeminiWeb = type === "gemini-web";
+    const pw = isQwen ? (st.qwen && st.qwen.playwright) || {} : isGeminiWeb ? (st.geminiWeb && st.geminiWeb.playwright) || {} : (st.playwright || {});
+    const login = isQwen ? (st.qwen && st.qwen.login) || {} : isGeminiWeb ? (st.geminiWeb && st.geminiWeb.login) || {} : (st.login || {});
     const items = [
       { label: "Servidor", cls: st.server === "online" ? "ok" : "err" },
       isLocal
@@ -988,6 +1193,7 @@
   }
 
   // Card "Modelos disponíveis": chip por modelo com botão de copiar o nome.
+  // Os modelos do proxy (Gemini Web, navegador) ficam num bloco separado.
   function renderModelChips(ids) {
     const chips = $("#modelsChips");
     if (!chips) return;
@@ -995,27 +1201,40 @@
     const list = (ids && ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).map((m) =>
       typeof m === "string" ? { id: m, label: m } : m
     );
-    list.forEach((m) => {
-      const chip = document.createElement("span");
-      chip.className = "model-chip";
-      const code = document.createElement("code");
-      code.textContent = m.label || m.id;
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.title = "Copiar nome do modelo";
-      btn.setAttribute("aria-label", "Copiar nome do modelo " + m.id);
-      btn.textContent = "\u29c9";
-      btn.addEventListener("click", () => copyText(m.id, btn));
-      chip.appendChild(code);
-      chip.appendChild(btn);
-      if (m.category_label) {
-        const cat = document.createElement("span");
-        cat.className = "chip-cat";
-        cat.textContent = m.category_label;
-        chip.insertBefore(cat, btn);
+    const proxyModels = list.filter((m) => m.category_label === "Web (proxy)");
+    const others = list.filter((m) => m.category_label !== "Web (proxy)");
+    const renderGroup = (label, models) => {
+      if (!models.length) return;
+      if (label) {
+        const h = document.createElement("div");
+        h.className = "models-group-label";
+        h.textContent = label;
+        chips.appendChild(h);
       }
-      chips.appendChild(chip);
-    });
+      models.forEach((m) => {
+        const chip = document.createElement("span");
+        chip.className = "model-chip";
+        const code = document.createElement("code");
+        code.textContent = m.label || m.id;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.title = "Copiar nome do modelo";
+        btn.setAttribute("aria-label", "Copiar nome do modelo " + m.id);
+        btn.textContent = "\u29c9";
+        btn.addEventListener("click", () => copyText(m.id, btn));
+        chip.appendChild(code);
+        chip.appendChild(btn);
+        if (m.category_label) {
+          const cat = document.createElement("span");
+          cat.className = "chip-cat";
+          cat.textContent = m.category_label;
+          chip.insertBefore(cat, btn);
+        }
+        chips.appendChild(chip);
+      });
+    };
+    renderGroup("Gemini (Web) — do proxy (navegador, sem API key)", proxyModels);
+    renderGroup("", others);
   }
 
   $("#btnCopyAllModels").addEventListener("click", () => {
@@ -1099,6 +1318,7 @@
     },
     deepseek: { label: "DeepSeek", sub: () => "chat.deepseek.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
     qwen: { label: "Qwen", sub: () => "chat.qwen.ai via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
+    "gemini-web": { label: "Gemini (Web)", sub: () => "gemini.google.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "Modelos: gemini-2.5-flash, gemini-3-flash, etc. O chat usa a sessão do navegador (gemini.google.com) — sem API key." },
   };
 
   function renderProviderList() {
@@ -1162,7 +1382,7 @@
 
   function toggleEditorType() {
     const type = $("#pvType").value;
-    const isBrowser = type === "deepseek" || type === "qwen";
+    const isBrowser = type === "deepseek" || type === "qwen" || type === "gemini-web";
     const meta = TYPE_META[type] || TYPE_META["openai-compatible"];
     $("#pvOpenAiFields").classList.toggle("hidden", isBrowser);
     $("#pvBaseUrl").placeholder = meta.baseUrlPh || "";
@@ -1257,7 +1477,7 @@
   $("#btnSaveProvider").addEventListener("click", async () => {
     const fb = $("#pvFeedback");
     const type = $("#pvType").value;
-    const isBrowser = type === "deepseek" || type === "qwen";
+    const isBrowser = type === "deepseek" || type === "qwen" || type === "gemini-web";
     const defaultName = (TYPE_META[type] && TYPE_META[type].label) || "Novo provedor";
     const name = $("#pvName").value.trim() || defaultName;
     if (type === "openai-compatible" && !$("#pvBaseUrl").value.trim()) {
@@ -1465,6 +1685,8 @@
     document.querySelector('[data-tab="connect"]').click();
     if (status.provider && status.provider.type === "qwen") {
       startQwenLogin();
+    } else if (status.provider && status.provider.type === "gemini-web") {
+      startGeminiLogin();
     } else {
       startLogin();
     }
@@ -1512,6 +1734,49 @@
 
   $("#btnQwenLoginStart").addEventListener("click", startQwenLogin);
   $("#btnQwenLoginFinish").addEventListener("click", finishQwenLogin);
+
+  // ---------- Login no Gemini (Web) ----------
+  async function startGeminiLogin() {
+    const btn = $("#btnGeminiLoginStart");
+    btn.disabled = true;
+    try {
+      const res = await fetch("/api/gemini/login/start", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao iniciar login no Gemini: " + (data.error || res.status));
+      } else {
+        // Flip otimista: mostra "Concluir login" imediatamente, sem esperar o
+        // próximo poll de status (que pode demorar até 10s).
+        setLoginCard($("#geminiLoginCard"), $("#geminiLoginHint"), btn, $("#btnGeminiLoginFinish"), { inProgress: true, loggedIn: false }, "Gemini", "gemini.google.com");
+      }
+    } catch (e) {
+      alert("Erro ao iniciar login no Gemini: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  async function finishGeminiLogin() {
+    const btn = $("#btnGeminiLoginFinish");
+    btn.disabled = true;
+    btn.textContent = "Concluindo...";
+    try {
+      const res = await fetch("/api/gemini/login/finish", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        alert("Erro ao concluir login no Gemini: " + (data.error || res.status));
+      } else if (data.login && !data.login.loggedIn) {
+        alert("Login concluído, mas não detectamos uma sessão válida. Tente novamente.");
+      }
+    } catch (e) {
+      alert("Erro ao concluir login no Gemini: " + e.message);
+    }
+    btn.disabled = false;
+    loadStatus();
+  }
+
+  $("#btnGeminiLoginStart").addEventListener("click", startGeminiLogin);
+  $("#btnGeminiLoginFinish").addEventListener("click", finishGeminiLogin);
 
   // ---------- Testar API ----------
   const testOutput = $("#testOutput");
@@ -1871,6 +2136,274 @@ for await (const chunk of stream) {
       setTimeout(connectLogs, 2000);
     };
   }
+
+  // ---------- Apps (AI Gateway) ----------
+  let apps = [];
+  let catalogModels = []; // [{ id, name, provider, providerName, ... }]
+
+  // ---------- Modo Economia de Tokens ----------
+  let economy = null;
+  const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation"];
+
+  function renderEconomy() {
+    const master = $("#ecoMaster");
+    if (!economy) return;
+    master.checked = !!economy.enabled;
+    ECO_FIELDS.forEach((key) => {
+      const el = document.querySelector('[data-eco="' + key + '"]');
+      if (el) el.checked = !!economy[key];
+    });
+    const w = $("#ecoMaxContext");
+    if (w) w.value = economy.maxContextTokens || "";
+    const disabled = !economy.enabled;
+    document.querySelectorAll("[data-eco]").forEach((el) => (el.disabled = disabled));
+  }
+
+  async function loadEconomy() {
+    try {
+      const res = await fetch("/api/settings/token-economy");
+      const data = await res.json();
+      if (!res.ok) return;
+      economy = data.settings || {};
+      renderEconomy();
+    } catch (e) {
+      // offline
+    }
+  }
+
+  $("#ecoMaster").addEventListener("change", () => {
+    const disabled = !$("#ecoMaster").checked;
+    document.querySelectorAll("[data-eco]").forEach((el) => (el.disabled = disabled));
+  });
+
+  $("#btnSaveEconomy").addEventListener("click", async () => {
+    const fb = $("#ecoFeedback");
+    const patch = { enabled: $("#ecoMaster").checked };
+    ECO_FIELDS.forEach((key) => {
+      const el = document.querySelector('[data-eco="' + key + '"]');
+      patch[key] = el ? el.checked : false;
+    });
+    patch.maxContextTokens = parseInt($("#ecoMaxContext").value, 10) || 56000;
+    fb.textContent = "Salvando...";
+    try {
+      const res = await fetch("/api/settings/token-economy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      economy = data.settings || {};
+      renderEconomy();
+      fb.textContent = "Salvo ✓";
+    } catch (e) {
+      fb.textContent = "Erro: " + e.message;
+    }
+  });
+
+  function groupedModelOptions(selected) {
+    const groups = {};
+    (catalogModels || []).forEach((m) => {
+      const key = m.providerName || m.provider || "outros";
+      (groups[key] = groups[key] || []).push(m);
+    });
+    const opts = [];
+    Object.keys(groups)
+      .sort()
+      .forEach((key) => {
+        opts.push('<optgroup label="' + escapeHtml(key.toUpperCase()) + '">');
+        groups[key].forEach((m) => {
+          opts.push(
+            '<option value="' + escapeHtml(m.id) + '"' + (m.id === selected ? " selected" : "") + ">" +
+            escapeHtml(m.name || m.id) + "</option>"
+          );
+        });
+        opts.push("</optgroup>");
+      });
+    // Preserva o modelo atual da app mesmo se ele não estiver mais no catálogo.
+    if (selected && !catalogModels.some((m) => m.id === selected)) {
+      opts.push('<optgroup label="ATUAL">');
+      opts.push('<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + "</option>");
+      opts.push("</optgroup>");
+    }
+    return opts.join("");
+  }
+
+  function refreshAppForm() {
+    const sel = $("#appModel");
+    if (sel) {
+      const current = sel.value && catalogModels.some((m) => m.id === sel.value) ? sel.value : "";
+      sel.innerHTML = groupedModelOptions(current);
+    }
+    const dl = $("#appModelList");
+    if (dl) {
+      dl.innerHTML = "";
+      (catalogModels || []).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        dl.appendChild(o);
+      });
+    }
+  }
+
+  async function loadCatalog() {
+    try {
+      const res = await fetch("/api/models/catalog");
+      const data = await res.json();
+      if (!res.ok) return;
+      catalogModels = data.models || [];
+      refreshAppForm();
+      renderAppList();
+    } catch (e) {
+      // offline
+    }
+  }
+
+  function renderAppList() {
+    const list = $("#appList");
+    if (!list) return;
+    if (!apps.length) {
+      list.innerHTML = '<div class="note" style="margin:0;">Nenhuma aplicação ainda. Crie a primeira ao lado.</div>';
+      return;
+    }
+    list.innerHTML = "";
+    apps.forEach((a) => {
+      const row = document.createElement("div");
+      row.className = "provider-row" + (a.enabled === false ? " disabled" : "");
+      const modelVal = a.model || "";
+      row.innerHTML =
+        '<div style="flex:1;min-width:0;">' +
+          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            '<b style="font-size:14px;">' + escapeHtml(a.name) + '</b>' +
+            '<code class="mono" style="font-size:12px;color:var(--muted);">' + escapeHtml(a.keyHint || "") + '</code>' +
+            (a.providerName
+              ? '<span class="pill' + (a.providerEnabled ? " ok" : "") + '" style="font-size:11px;padding:2px 8px;"><span class="s"></span>' + escapeHtml(a.providerName) + '</span>'
+              : '<span class="pill err" style="font-size:11px;padding:2px 8px;"><span class="s"></span>modelo não está no catálogo</span>') +
+          '</div>' +
+          '<div class="row" style="margin-top:8px;">' +
+            '<select data-act="model" data-id="' + a.id + '" style="flex:1;min-width:120px;">' + groupedModelOptions(modelVal) + '</select>' +
+          '</div>' +
+        '</div>' +
+        '<div class="row" style="flex-shrink:0;align-items:center;">' +
+          '<label class="checkbox" title="Ligar/desligar esta aplicação"><input type="checkbox" data-act="toggle" data-id="' + a.id + '"' + (a.enabled === false ? "" : " checked") + ' /> Ativa</label>' +
+          '<button class="btn ghost" data-act="key" data-id="' + a.id + '" title="Gera uma nova chave (a anterior é revogada)">Nova chave</button>' +
+          '<button class="btn ghost danger" data-act="delete" data-id="' + a.id + '">Excluir</button>' +
+        '</div>';
+      list.appendChild(row);
+    });
+  }
+
+  async function loadApps() {
+    try {
+      const res = await fetch("/api/apps");
+      const data = await res.json();
+      if (!res.ok) return;
+      apps = data.apps || [];
+      renderAppList();
+    } catch (e) {
+      // offline
+    }
+  }
+
+  async function patchApp(id, body) {
+    const res = await fetch("/api/apps/" + encodeURIComponent(id), {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+    return data;
+  }
+
+  function gatewayBase() {
+    if (status.gateway && status.gateway.baseUrl) return status.gateway.baseUrl;
+    return (location.origin || "http://localhost:" + (status.port || 3005)) + "/v1";
+  }
+
+  $("#btnRefreshCatalog").addEventListener("click", loadCatalog);
+
+  $("#btnCreateApp").addEventListener("click", async () => {
+    const fb = $("#appFeedback");
+    const name = $("#appName").value.trim();
+    const model = ($("#appModel").value || "").trim() || ($("#appModelCustom").value || "").trim();
+    if (!name) { fb.textContent = "Informe o nome da aplicação."; return; }
+    if (!model) { fb.textContent = "Selecione um modelo (ou digite um modelo customizado)."; return; }
+    fb.textContent = "Criando...";
+    try {
+      const res = await fetch("/api/apps", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, model }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      $("#appKeyValue").value = data.apiKey;
+      $("#appConfigSnippet").textContent =
+        'Base URL: ' + gatewayBase() + "\n" +
+        "API Key:  " + data.apiKey + "\n" +
+        "Model ID: \"" + (data.app.model || "") + "\"  (obrigatório na IDE; o gateway usa o modelo configurado no painel, ignorando o valor enviado)";
+      $("#appKeyBox").classList.remove("hidden");
+      fb.textContent = "Aplicação \"" + data.app.name + "\" criada com sucesso.";
+      $("#appName").value = "";
+      $("#appModel").value = "";
+      $("#appModelCustom").value = "";
+      apps = [data.app].concat(apps);
+      renderAppList();
+    } catch (e) {
+      fb.textContent = "Erro: " + e.message;
+    }
+  });
+
+  $("#btnCopyAppKey").addEventListener("click", () => {
+    copyText($("#appKeyValue").value, $("#btnCopyAppKey"), "Chave copiada!");
+  });
+
+  $("#appList").addEventListener("change", async (e) => {
+    const el = e.target.closest("[data-act][data-id]");
+    if (!el) return;
+    const id = el.dataset.id;
+    try {
+      if (el.dataset.act === "toggle") {
+        await patchApp(id, { enabled: el.checked });
+      } else if (el.dataset.act === "model") {
+        await patchApp(id, { model: el.value });
+      }
+      loadApps();
+    } catch (err) {
+      alert("Erro: " + err.message);
+      loadApps();
+    }
+  });
+
+  $("#appList").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-act][data-id]");
+    if (!btn) return;
+    const id = btn.dataset.id;
+    try {
+      if (btn.dataset.act === "delete") {
+        const target = apps.find((a) => a.id === id) || {};
+        if (!confirm('Excluir a aplicação "' + target.name + '"? A chave será revogada imediatamente.')) return;
+        const res = await fetch("/api/apps/" + encodeURIComponent(id), { method: "DELETE" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        loadApps();
+      } else if (btn.dataset.act === "key") {
+        const res = await fetch("/api/apps/" + encodeURIComponent(id) + "/key", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        $("#appKeyValue").value = data.apiKey;
+        $("#appConfigSnippet").textContent =
+          'Base URL: ' + gatewayBase() + "\n" +
+          "API Key:  " + data.apiKey + "\n" +
+          "Model:    default  (o gateway usa \"" + (data.app.model || "") + "\" — a chave anterior foi revogada)";
+        $("#appKeyBox").classList.remove("hidden");
+        loadApps();
+      }
+    } catch (err) {
+      alert("Erro: " + err.message);
+    }
+  });
 
   // ---------- Init ----------
   loadStatus();

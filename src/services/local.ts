@@ -21,6 +21,7 @@ import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { startKeepAlive } from '../utils/sse.ts';
+import { GEMINI_KNOWN_MODELS } from './gemini-web.ts';
 
 const TOOL_START = '<tool_call>';
 const TOOL_END = '</tool_call>';
@@ -79,14 +80,25 @@ export async function findProviderForModel(
   }
 
   // 2. Heurística por prefixo de modelo para provedores com namespace claro.
+  //    Para os modelos conhecidos do Gemini Web (navegador, sem API key), o
+  //    provedor gemini-web tem prioridade sobre o Gemini por API — assim não
+  //    caem na API (que pode marcar o modelo como deprecated/404).
+  const geminiKnown = new Set(GEMINI_KNOWN_MODELS.map((m) => m.id));
+  const isKnownGeminiWeb = normalized.startsWith('gemini-') && geminiKnown.has(normalized);
   for (const p of providers) {
-    if (normalized.startsWith('gemini-') && p.type === 'gemini') return p;
+    if (normalized.startsWith('gemini-') && (p.type === 'gemini' || p.type === 'gemini-web')) {
+      if (isKnownGeminiWeb) {
+        if (p.type === 'gemini-web') return p;
+      } else if (p.type === 'gemini') {
+        return p;
+      }
+    }
     if (normalized.startsWith('claude-') && p.type === 'anthropic') return p;
   }
 
   // 3. Match pela lista real de modelos do provedor (openai-compatible e adapters).
   for (const p of providers) {
-    if (p.type === 'deepseek' || p.type === 'qwen') continue;
+    if (p.type === 'deepseek' || p.type === 'qwen' || p.type === 'gemini-web') continue;
     const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
     if (models && models.some((m: any) => m.id === model)) return p;
   }

@@ -36,8 +36,12 @@ npx playwright install
 Create a `.env` file in the project root:
 
 ```env
-PORT=3000
+PORT=3005
 ```
+
+O servidor sobe **duas portas** ao mesmo tempo: a porta **direta** (`PORT`,
+padrão `3005`) e a porta do **AI Gateway** (`GATEWAY_PORT`, padrão `3006`) —
+veja a seção [AI Gateway](#ai-gateway-duas-portas-direta-e-gateway) abaixo.
 
 ---
 
@@ -83,9 +87,11 @@ O roteamento do `/v1/chat/completions` é feito **pelo nome do modelo**:
 
 1. modelo `deepseek-thinking` / `deepseek-no-thinking` → backend DeepSeek (se
    habilitado);
-2. modelo conhecido por um provedor habilitado (via `provider.model` ou pela
+2. modelo `gemini-2.5-flash` / `gemini-2.5-pro` / `gemini-3-flash` /
+   `gemini-3-pro` → Gemini Web (se habilitado);
+3. modelo conhecido por um provedor habilitado (via `provider.model` ou pela
    lista `/models` do provedor) → esse provedor;
-3. senão → provedor **principal**.
+4. senão → provedor **principal**.
 
 O modelo enviado pelo cliente é sempre respeitado (não é sobrescrito); o campo
 `model` do provedor é usado apenas quando o cliente não envia modelo.
@@ -113,7 +119,7 @@ Tool nativa `web_search` registrada no registry do proxy, com backend
 DuckDuckGo HTML (gratuito, sem API key). Também exposta como endpoint REST:
 
 ```bash
-curl -X POST http://localhost:3000/v1/web/search \
+curl -X POST http://localhost:3005/v1/web/search \
   -H 'Content-Type: application/json' \
   -d '{"query": "preço do dólar hoje", "max_results": 5}'
 ```
@@ -128,10 +134,25 @@ via `/v1/embeddings` e Gemini via `:embedContent`). DeepSeek, Qwen e Anthropic
 não oferecem embeddings e respondem 501 com mensagem.
 
 ```bash
-curl -X POST http://localhost:3000/v1/embeddings \
+curl -X POST http://localhost:3005/v1/embeddings \
   -H 'Content-Type: application/json' \
   -d '{"model": "nomic-embed-text", "input": ["frase um", "frase dois"]}'
 ```
+
+### Gemini Web (sem API key)
+
+Além da API key, o Gemini pode ser usado pela web (gemini.google.com) por
+automação de UI, igual à DeepSeek/Qwen. No dashboard (aba **Conexão**), escolha
+o subtipo **gemini-web**, salve e clique em **Login Gemini** para autenticar o
+Google num perfil Playwright persistente (`gemini_profile/`). O status do
+login aparece no painel.
+
+- Modelos do catálogo: `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3-flash`,
+  `gemini-3-pro`.
+- Cada requisição abre uma conversa nova no Gemini (o histórico completo é
+  reenviado no prompt).
+- Envs: `GEMINI_POOL_SIZE` (abas simultâneas por conversa, padrão 2),
+  `GEMINI_PROFILE_DIR` (pasta do perfil, padrão `gemini_profile/`).
 
 ### SSE keep-alive
 
@@ -140,6 +161,72 @@ SSE (`: ping`) a cada 15s enquanto o modelo "pensa", evitando que proxies e
 clientes com timeout cortem respostas longas no meio.
 
 ---
+
+## AI Gateway: duas portas (direta e gateway)
+
+O servidor sobe **duas portas** ao mesmo tempo, cada uma com um papel:
+
+| Porta | Modo | Controle do modelo | Uso típico |
+| --- | --- | --- | --- |
+| **3005** (`PORT`) | Direto | A ferramenta escolhe o modelo | Desenvolvimento, teste, uso pessoal |
+| **3006** (`GATEWAY_PORT`) | Gateway | O painel escolhe o modelo | Vários clientes/apps com controle central |
+
+- **Porta direta (3005):** mantém o comportamento atual. Cada cliente envia o
+  modelo que quiser e o proxy roteia pelo nome do modelo, resolvendo o provedor
+  automaticamente pelo **catálogo de modelos** (fixos + lista `/models` dos
+  provedores habilitados, em cache).
+- **Porta gateway (3006):** feita para compartilhar o proxy com várias
+  ferramentas (Trae, Cursor, VS Code, N8N, scripts...) sem que cada uma escolha
+  o modelo. Na porta 3006:
+  - `/v1/*` (chat, models, embeddings, web search) **exige** uma **chave
+    virtual** — sem chave ou com chave inválida, responde `401`;
+  - cada aplicação cadastrada no painel tem a própria chave e **modelo** — o
+    provedor é resolvido automaticamente a partir do modelo escolhido;
+  - o modelo enviado pelo cliente é **ignorado**; o proxy usa o modelo
+    definido na aba **Apps (Gateway)** do dashboard;
+  - desligar uma aplicação revoga o acesso dela na hora (`403`).
+
+### Configuração
+
+```env
+PORT=3005
+GATEWAY_PORT=3006
+# ENABLE_GATEWAY=false   # desliga a porta do gateway (opcional)
+```
+
+### Tutorial: como um cliente se conecta ao gateway
+
+1. **Inicie o servidor**: `npm start` (as duas portas sobem juntas).
+2. Abra o dashboard em `http://localhost:3005` → aba **Apps (Gateway)**.
+3. **Crie uma aplicação**: dê um nome (ex.: "Trae Work") e escolha o **modelo**
+   que a ferramenta deve usar (o provedor é resolvido automaticamente pelo
+   catálogo). Clique em **Criar chave**.
+4. **Copie a chave virtual** exibida — ela aparece apenas uma vez.
+5. Configure a ferramenta/IDE com:
+   - **Base URL:** `http://localhost:3006/v1`
+   - **API Key:** a chave virtual copiada
+   - **Modelo:** qualquer valor (ex.: `default`) — o gateway usa o modelo
+     definido no painel
+
+Exemplo com `curl`:
+
+```bash
+curl http://localhost:3006/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer app_meu-app_abc123' \
+  -d '{"model": "default", "messages": [{"role": "user", "content": "oi"}]}'
+```
+
+O `model` enviado é ignorado; o proxy usa o modelo configurado na aplicação.
+
+6. **Para mudar o modelo** de uma ferramenta sem tocar nela: abra o dashboard,
+   aba **Apps**, altere o modelo da aplicação e salve. Vale para as
+   próximas requisições.
+
+> **Segurança:** na porta 3005, se houver `API_KEY` no `.env`, todas as rotas
+> (exceto as públicas do dashboard) exigem a API Key mestre. Na porta 3006 o
+> dashboard usa essa mesma proteção; as rotas `/v1/*` usam apenas as chaves
+> virtuais.
 
 ## Usage
 
@@ -158,7 +245,8 @@ npm start
 The server runs by default at:
 
 ```txt
-http://localhost:3000
+http://localhost:3005   (porta direta)
+http://localhost:3006   (AI Gateway — chaves virtuais)
 ```
 
 ### Dashboard (Interface Gráfica)
@@ -166,12 +254,12 @@ http://localhost:3000
 Ao executar `npm start`, o servidor também serve uma interface gráfica que abre automaticamente no navegador:
 
 ```txt
-http://localhost:3000
+http://localhost:3005
 ```
 
 O dashboard oferece:
 
-- **Conexão** — status do servidor, Playwright, login na DeepSeek e API Key, além de instruções de conexão e endpoints.
+- **Conexão** — status do servidor, Playwright, login na DeepSeek/Qwen/Gemini e API Key, além de instruções de conexão e endpoints.
 - **Chat** — chat estilo ChatGPT com streaming, raciocínio (thinking) colapsável, markdown, multi-turno, atalho Enter/Shift+Enter e **imagens** (colar Ctrl+V, anexar ou arrastar/soltar; enviadas como `image_url` para modelos de visão e por upload `ref_file_ids` para a DeepSeek web).
 - **Testar API** — console para enviar mensagens e ver a resposta em streaming (incluindo raciocínio).
 - **Exemplos** — códigos prontos para consumir a API (curl, Python, Node.js e OpenAI SDK).

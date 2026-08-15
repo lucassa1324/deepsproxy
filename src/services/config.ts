@@ -27,7 +27,8 @@ export type ProviderType =
   | 'anthropic'
   | 'ollama'
   | 'deepseek'
-  | 'qwen';
+  | 'qwen'
+  | 'gemini-web';
 
 export interface Provider {
   id: string;
@@ -41,7 +42,7 @@ export interface Provider {
 }
 
 const VALID_PROVIDER_TYPES: ProviderType[] = [
-  'deepseek', 'qwen', 'gemini', 'anthropic', 'ollama', 'openai-compatible',
+  'deepseek', 'qwen', 'gemini', 'anthropic', 'ollama', 'openai-compatible', 'gemini-web',
 ];
 
 /** Converte um valor arbitrário em ProviderType válido (fallback: openai-compatible). */
@@ -50,9 +51,9 @@ export function sanitizeType(raw: unknown): ProviderType {
   return (VALID_PROVIDER_TYPES as string[]).includes(t) ? (t as ProviderType) : 'openai-compatible';
 }
 
-/** True para provedores baseados em navegador (Playwright): deepseek e qwen. */
+/** True para provedores baseados em navegador (Playwright): deepseek, qwen e gemini-web. */
 export function isBrowserType(type: ProviderType): boolean {
-  return type === 'deepseek' || type === 'qwen';
+  return type === 'deepseek' || type === 'qwen' || type === 'gemini-web';
 }
 
 /** True para tipos atendidos pelos Adapters HTTP (gemini/anthropic/ollama). */
@@ -87,6 +88,8 @@ export function providerTypeLabel(type: ProviderType): string {
       return 'DeepSeek';
     case 'qwen':
       return 'Qwen';
+    case 'gemini-web':
+      return 'Gemini (Web)';
     default:
       return 'OpenAI-compatível';
   }
@@ -121,7 +124,11 @@ export function isQwenProvider(p: Provider): boolean {
   return p.type === 'qwen';
 }
 
-/** True para provedores baseados em navegador (Playwright): deepseek e qwen. */
+export function isGeminiWebProvider(p: Provider): boolean {
+  return p.type === 'gemini-web';
+}
+
+/** True para provedores baseados em navegador (Playwright): deepseek, qwen e gemini-web. */
 export function isBrowserProvider(p: Provider): boolean {
   return isBrowserType(p.type);
 }
@@ -284,10 +291,22 @@ function providersFromEnv(): ProviderRegistry {
     model: '',
     enabled: true,
   };
+  const geminiWeb: Provider = {
+    id: 'env_gemini_web',
+    name: 'Gemini (Web)',
+    type: 'gemini-web',
+    baseUrl: '',
+    apiKey: '',
+    model: '',
+    enabled: true,
+  };
   if (providerName === 'qwen') {
-    return { active: qwen.id, providers: [qwen, deepseek] };
+    return { active: qwen.id, providers: [qwen, deepseek, geminiWeb] };
   }
-  return { active: deepseek.id, providers: [deepseek, qwen] };
+  if (providerName === 'gemini-web') {
+    return { active: geminiWeb.id, providers: [geminiWeb, deepseek, qwen] };
+  }
+  return { active: deepseek.id, providers: [deepseek, qwen, geminiWeb] };
 }
 
 /**
@@ -299,13 +318,17 @@ function providersFromEnv(): ProviderRegistry {
 function ensureBrowserProviders(registry: ProviderRegistry): ProviderRegistry {
   const hasDeepseek = registry.providers.some((p) => p.type === 'deepseek');
   const hasQwen = registry.providers.some((p) => p.type === 'qwen');
-  if (!hasDeepseek && !hasQwen) return registry;
+  const hasGeminiWeb = registry.providers.some((p) => p.type === 'gemini-web');
+  if (!hasDeepseek && !hasQwen && !hasGeminiWeb) return registry;
   const providers = [...registry.providers];
   if (!hasDeepseek) {
     providers.push({ id: 'builtin_deepseek', name: 'DeepSeek (env)', type: 'deepseek', baseUrl: '', apiKey: '', model: '', enabled: true });
   }
   if (!hasQwen) {
     providers.push({ id: 'builtin_qwen', name: 'Qwen (env)', type: 'qwen', baseUrl: '', apiKey: '', model: '', enabled: true });
+  }
+  if (!hasGeminiWeb) {
+    providers.push({ id: 'builtin_gemini_web', name: 'Gemini (Web)', type: 'gemini-web', baseUrl: '', apiKey: '', model: '', enabled: true });
   }
   if (providers.length === registry.providers.length) return registry;
   return { active: registry.active, providers };

@@ -74,6 +74,8 @@ export interface OpenAIRequest {
   top_p?: number;
   top_k?: number;
   max_tokens?: number;
+  /** Modo agente nativo: o proxy executa as tools de servidor (ex.: web_search) */
+  agent?: boolean;
 }
 
 // --- Response Types ---

@@ -107,6 +107,38 @@ injetadas no system prompt e o modelo responde com blocos `<tool_call>` que o
 proxy converte em `tool_calls` no formato OpenAI. Ou seja, um agente que já usa
 o DeepsProxy com DeepSeek funciona igual apontando para o Ollama/LM Studio.
 
+### Web search (busca na web)
+
+Tool nativa `web_search` registrada no registry do proxy, com backend
+DuckDuckGo HTML (gratuito, sem API key). Também exposta como endpoint REST:
+
+```bash
+curl -X POST http://localhost:3000/v1/web/search \
+  -H 'Content-Type: application/json' \
+  -d '{"query": "preço do dólar hoje", "max_results": 5}'
+```
+
+Resposta: `{ "query": ..., "results": [{ "title", "url", "snippet" }] }`.
+
+### Embeddings
+
+Endpoint OpenAI-compatível `POST /v1/embeddings` que roteia pelo nome do modelo
+para um provedor habilitado que suporte embeddings (OpenAI-compatível, Ollama
+via `/v1/embeddings` e Gemini via `:embedContent`). DeepSeek, Qwen e Anthropic
+não oferecem embeddings e respondem 501 com mensagem.
+
+```bash
+curl -X POST http://localhost:3000/v1/embeddings \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "nomic-embed-text", "input": ["frase um", "frase dois"]}'
+```
+
+### SSE keep-alive
+
+Os streams de chat (DeepSeek, Qwen e provedores locais) enviam um comentário
+SSE (`: ping`) a cada 15s enquanto o modelo "pensa", evitando que proxies e
+clientes com timeout cortem respostas longas no meio.
+
 ---
 
 ## Usage

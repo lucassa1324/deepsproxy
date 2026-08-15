@@ -19,19 +19,26 @@ import { initQwenPlaywright, checkQwenLogin, loginToQwen, ensureQwenPage, isQwen
 import { fetchQwenModels, QWEN_KNOWN_MODELS, qwenStreamsActive } from './services/qwen.ts';
 import { dashboard } from './ui/dashboard.ts';
 import { attachLogger } from './ui/logger.ts';
-import { fetchModels } from './services/local.ts';
+import { fetchModels, findProviderForModel } from './services/local.ts';
+import { isAdapterProvider, fetchProviderModels } from './services/adapters/index.ts';
 import { attachVnc, attachVncWs } from './ui/vnc.ts';
+import { webSearch, registerWebSearchTool } from './tools/web-search.ts';
 import {
   resolveRegistry,
   enabledProviders,
   isDeepseekProvider,
   isQwenProvider,
   resolveActiveProvider,
+  normalizeModelId,
 } from './services/config.ts';
+import type { Provider } from './services/config.ts';
 
 dotenv.config();
 
 export const app = new Hono();
+
+// Registra a tool nativa de busca na web (agentes que usam o registry).
+registerWebSearchTool();
 
 // Rotas internas do dashboard que não exigem API key
 const PUBLIC_PATHS = new Set([
@@ -127,17 +134,19 @@ app.get('/v1/models', async (c) => {
       }
       data.push(...qwenModels);
     } else {
-      const models = await fetchModels(provider);
+      const models = isAdapterProvider(provider) ? await fetchProviderModels(provider) : await fetchModels(provider);
       if (models) data.push(...models);
     }
   }
 
-  const deduped = data.filter((m) => {
-    const id = m.id;
-    if (seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
+  const deduped = data
+    .map((m: any) => ({ ...m, id: normalizeModelId(m.id) }))
+    .filter((m) => {
+      const id = m.id;
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
 
   return c.json({
     object: 'list',
@@ -164,6 +173,121 @@ app.get('/v1/models', async (c) => {
           },
         ],
   });
+});
+
+// OpenAI compatible embeddings. Roteia pelo nome do modelo para o provedor
+// que "dona" dele (openai-compatible/ollama/gemini). DeepSeek e Qwen (browser)
+// e Anthropic não têm endpoint de embeddings — respondem 501 com mensagem.
+app.post('/v1/embeddings', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: { message: 'Corpo inválido (esperado JSON).' } }, 400);
+  }
+
+  const model = normalizeModelId(body.model);
+  const input = body.input;
+  if (!model) {
+    return c.json({ error: { message: 'Informe o model de embedding.' } }, 400);
+  }
+  if (input === undefined || input === null || (Array.isArray(input) && input.length === 0)) {
+    return c.json({ error: { message: 'Informe o campo "input" (texto ou lista de textos).' } }, 400);
+  }
+
+  const registryResolved = resolveRegistry(c.req.header('Cookie'));
+  const enabled = enabledProviders(registryResolved);
+  const primary = resolveActiveProvider(c.req.header('Cookie'));
+
+  let target: Provider = primary;
+  const owner = await findProviderForModel(enabled, model);
+  if (owner) target = owner;
+
+  if (isDeepseekProvider(target) || isQwenProvider(target)) {
+    return c.json(
+      {
+        error: {
+          message: `O provedor "${target.name}" (${target.type}) não suporta embeddings. Configure um provedor OpenAI-compatível (ex.: Ollama).`,
+        },
+      },
+      501
+    );
+  }
+  if (target.type === 'anthropic') {
+    return c.json(
+      { error: { message: 'O provedor Anthropic não oferece endpoint de embeddings.' } },
+      501
+    );
+  }
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (target.apiKey) headers['authorization'] = `Bearer ${target.apiKey}`;
+
+  let url: string;
+  let payload: any = { model, input };
+  if (target.type === 'gemini') {
+    // Gemini: POST {base}/models/{model}:embedContent (chave na query string).
+    url = `${target.baseUrl}/models/${model}:embedContent`;
+    const texts = (Array.isArray(input) ? input : [input]).map((t: any) => String(t));
+    payload = { content: { parts: texts.map((t) => ({ text: t })) } };
+    delete headers['authorization'];
+    if (target.apiKey) url += `?key=${encodeURIComponent(target.apiKey)}`;
+  } else if (target.type === 'ollama') {
+    // Ollama expõe a API OpenAI-compatível sob /v1.
+    url = `${target.baseUrl}/v1/embeddings`;
+  } else {
+    url = `${target.baseUrl}/embeddings`;
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+  } catch (err: any) {
+    return c.json({ error: { message: `Falha ao conectar com ${target.name}: ${err?.message || String(err)}` } }, 502);
+  }
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    return c.json(
+      { error: { message: `Upstream ${target.name} respondeu ${resp.status}: ${errText.slice(0, 300)}` } },
+      502
+    );
+  }
+  const data: any = await resp.json();
+
+  // Gemini devolve { embedding: { values: [...] } }; converte para o formato OpenAI.
+  if (target.type === 'gemini') {
+    const embedding: number[] = data?.embedding?.values || data?.embedding || [];
+    const texts = Array.isArray(input) ? input : [input];
+    return c.json({
+      object: 'list',
+      data: texts.map((_, i) => ({ object: 'embedding', index: i, embedding })),
+      model,
+      usage: { prompt_tokens: 0, total_tokens: 0 },
+    });
+  }
+
+  return c.json(data);
+});
+
+// Busca na web (backend da tool web_search). Retorna títulos, URLs e trechos
+// no formato JSON — útil para agentes e scripts.
+app.post('/v1/web/search', async (c) => {
+  let body: any;
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: { message: 'Corpo inválido (esperado JSON).' } }, 400);
+  }
+  const query = String(body.query || '').trim();
+  if (!query) return c.json({ error: { message: 'Informe o campo "query".' } }, 400);
+  const max = Math.min(Math.max(Number(body.max_results) || 5, 1), 10);
+
+  try {
+    const results = await webSearch(query, max);
+    return c.json({ query, results });
+  } catch (err: any) {
+    return c.json({ error: { message: err?.message || String(err) } }, 502);
+  }
 });
 
 // Initialize playwright when server starts

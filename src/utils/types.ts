@@ -69,6 +69,11 @@ export interface OpenAIRequest {
   tools?: FunctionToolDefinition[];
   /** Control whether the LLM must/can call tools */
   tool_choice?: ToolChoice;
+  /** Generation parameters (used by the HTTP adapters) */
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  max_tokens?: number;
 }
 
 // --- Response Types ---

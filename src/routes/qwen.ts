@@ -14,6 +14,7 @@ import { OpenAIRequest } from '../utils/types.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
 import { robustParseJSON } from '../utils/robust-json.ts';
 import { StreamingToolParser } from '../tools/stream-parser.ts';
+import { startKeepAlive } from '../utils/sse.ts';
 
 function getIncrementalDelta(oldStr: string, newStr: string): string {
   if (!oldStr) return newStr;
@@ -254,6 +255,9 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
         await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
       };
 
+      // Mantém a conexão viva enquanto o modelo "pensa" (comentário SSE ignorado pelo cliente).
+      const stopKeepAlive = startKeepAlive((chunk) => streamWriter.write(chunk));
+
       const makeChoice = (delta: any, finishReason: string | null = null) => ({
         index: 0,
         delta,
@@ -446,6 +450,8 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
         usage: usage
       });
       await streamWriter.write('data: [DONE]\n\n');
+
+      stopKeepAlive();
 
       console.log(
         `[qwen] done model=${body.model} ${Date.now() - startedAt}ms tokens=${completionTokens + promptTokens} finish=${finalFinishReason}`

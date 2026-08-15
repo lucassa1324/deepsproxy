@@ -22,6 +22,7 @@ import {
   enabledProviders,
   isDeepseekProvider,
   isQwenProvider,
+  normalizeModelId,
 } from '../services/config.ts';
 import type { Provider } from '../services/config.ts';
 import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.ts';
@@ -29,6 +30,7 @@ import { buildAgentPrompt } from '../utils/prompt.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
+import { startKeepAlive } from '../utils/sse.ts';
 
 interface DeepSeekAccumulated {
   reasoning: string;
@@ -254,6 +256,10 @@ export async function chatCompletions(c: Context) {
   const startedAt = Date.now();
   try {
     const body: OpenAIRequest = await c.req.json();
+    // Normaliza o id do modelo (ex.: cliente envia "models/gemini-2.5-flash"
+    // com prefixo da REST do Google). Sem isso o roteamento e os adapters
+    // falham ao montar a URL (ex.: /models/models/...).
+    body.model = normalizeModelId(body.model);
     const isStream = body.stream ?? false;
 
     // Roteamento multi-provedor: vários provedores podem estar ativos.
@@ -359,6 +365,9 @@ export async function chatCompletions(c: Context) {
       const writeEvent = async (data: any) => {
         await streamWriter.write(`data: ${JSON.stringify(data)}\n\n`);
       };
+
+      // Mantém a conexão viva enquanto o modelo "pensa" (comentário SSE ignorado pelo cliente).
+      const stopKeepAlive = startKeepAlive((chunk) => streamWriter.write(chunk));
 
       const makeChoice = (delta: any, finishReason: string | null = null) => ({
         index: 0,
@@ -638,6 +647,8 @@ export async function chatCompletions(c: Context) {
         usage: usage
       });
       await streamWriter.write('data: [DONE]\n\n');
+
+      stopKeepAlive();
 
       console.log(
         `[chat] done model=${body.model} ${Date.now() - startedAt}ms tokens=${completionTokens + promptTokens} finish=${finalFinishReason}`

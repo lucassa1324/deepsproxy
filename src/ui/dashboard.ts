@@ -22,6 +22,11 @@ import {
 } from '../services/playwright.ts';
 import { fetchModels, testProviderConnection, clearModelsCache } from '../services/local.ts';
 import {
+  isAdapterProvider,
+  fetchProviderModels,
+  getAdapterQueueStates,
+} from '../services/adapters/index.ts';
+import {
   getQwenLoginStatus,
   getQwenPlaywrightState,
   isQwenLoginFlowActive,
@@ -41,6 +46,7 @@ import {
   sanitizeRegistry,
   saveRegistryToMemory,
   serializeProvidersCookie,
+  sanitizeType,
   isDeepseekProvider,
   isQwenProvider,
   PROVIDERS_COOKIE,
@@ -113,7 +119,7 @@ dashboard.get('/api/status', async (c) => {
           }
         }
       } else {
-        const models = await fetchModels(p);
+        const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
         if (models) {
           for (const m of models.map((m: any) => enrichModel(m))) {
             if (!seenModels.has(m.id)) {
@@ -140,6 +146,7 @@ dashboard.get('/api/status', async (c) => {
       port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
       uptime: Math.floor(process.uptime()),
       apiKeyConfigured: !!process.env.API_KEY,
+      apiKey: process.env.API_KEY || '',
       provider: {
         id: primary.id,
         name: primary.name,
@@ -177,6 +184,7 @@ dashboard.get('/api/status', async (c) => {
         pool: getQwenPoolState(),
         login: { ...(await getQwenLoginStatus()), inProgress: isQwenLoginFlowActive() },
       },
+      adapters: getAdapterQueueStates(),
       login: { ...login, inProgress: isLoginFlowActive() },
       vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
     });
@@ -189,6 +197,7 @@ dashboard.get('/api/status', async (c) => {
       port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
       uptime: Math.floor(process.uptime()),
       apiKeyConfigured: !!process.env.API_KEY,
+      apiKey: process.env.API_KEY || '',
       provider: { id: '', name: '', type: 'unknown', baseUrl: '', model: '', hasApiKey: false },
       enabledCount: 0,
       models: [],
@@ -200,6 +209,7 @@ dashboard.get('/api/status', async (c) => {
         pool: { capacity: 0, active: 0, waiting: 0 },
         login: { loggedIn: false, cookieCount: 0, inProgress: isQwenLoginFlowActive() },
       },
+      adapters: { gemini: { waiting: 0 }, anthropic: { waiting: 0 }, ollama: { waiting: 0 } },
       login: { loggedIn: false, cookieCount: 0, inProgress: isLoginFlowActive() },
       vnc: { enabled: false },
     });
@@ -300,7 +310,7 @@ dashboard.post('/api/models/refresh', async (c) => {
       }
     } else {
       try {
-        const models = await fetchModels(p, true); // force refresh
+        const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p, true); // force refresh
         info.models = models ? models.map((m: any) => m.id) : [];
         if (models) data.push(...models.map((m: any) => enrichModel(m)));
       } catch (e: any) {
@@ -333,16 +343,19 @@ dashboard.get('/api/models', async (c) => {
   // que está sendo editado, mesmo que ele não esteja habilitado.
   const queryBaseUrl = c.req.query('baseUrl');
   const queryApiKey = c.req.query('apiKey');
+  const queryType = c.req.query('type');
   const registry = resolveRegistry(c.req.header('Cookie'));
   const enabled = enabledProviders(registry);
 
   if (queryBaseUrl) {
     const primary = resolveActiveProvider(c.req.header('Cookie'));
-    const models = await fetchModels({
+    const probe: any = {
       ...primary,
+      type: queryType ? sanitizeType(queryType) : primary.type,
       baseUrl: queryBaseUrl,
       apiKey: queryApiKey ?? primary.apiKey,
-    });
+    };
+    const models = isAdapterProvider(probe) ? await fetchProviderModels(probe) : await fetchModels(probe);
     if (models) {
       console.log(
         `[models] ${models.length} modelo(s) carregado(s) de ${queryBaseUrl}: ${models
@@ -370,7 +383,7 @@ dashboard.get('/api/models', async (c) => {
       const models = await qwenModelsWithFallback();
       if (models) data.push(...models.map((m: any) => enrichModel(m)));
     } else {
-      const models = await fetchModels(p);
+      const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
       if (models) data.push(...models.map((m: any) => enrichModel(m)));
       // Inclui o modelo de override do provedor, se configurado e nǜo duplicado.
       if (p.model && !seen.has(p.model)) {
@@ -400,7 +413,7 @@ dashboard.get('/api/models', async (c) => {
 dashboard.post('/api/provider/test', async (c) => {
   try {
     const body: any = await c.req.json().catch(() => ({}));
-    const result = await testProviderConnection(body?.baseUrl, body?.apiKey);
+    const result = await testProviderConnection(body?.baseUrl, body?.apiKey, 5000, body?.type);
     return c.json(result);
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);

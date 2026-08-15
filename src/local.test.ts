@@ -5,6 +5,14 @@ process.env.PROVIDER = 'local';
 process.env.LLM_BASE_URL = 'http://localhost:11434/v1';
 process.env.LLM_MODEL = 'llama3.2';
 
+// Isola os testes do registro de provedores persistido no disco. Arquivo
+// próprio: outros arquivos de teste usam arquivos diferentes, pois os
+// processos rodam em paralelo e compartilhar o mesmo arquivo causa corrida.
+process.env.PROVIDERS_FILE = join(process.cwd(), '.test-providers-local.json');
+import { existsSync, rmSync } from 'fs';
+import { join } from 'path';
+if (existsSync(process.env.PROVIDERS_FILE!)) rmSync(process.env.PROVIDERS_FILE!);
+
 import { app } from './index.ts';
 
 function setupLocalFetchMock(handler: (url: string, init?: RequestInit) => Response) {

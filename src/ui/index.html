@@ -465,13 +465,16 @@
             <span>Tipo</span>
             <select id="pvType">
               <option value="openai-compatible">OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...)</option>
+              <option value="gemini">Gemini (Google — REST nativo)</option>
+              <option value="anthropic">Anthropic (Claude — REST nativo)</option>
+              <option value="ollama">Ollama (local)</option>
               <option value="deepseek">DeepSeek (via Playwright)</option>
               <option value="qwen">Qwen (via Playwright)</option>
             </select>
           </label>
           <div id="pvOpenAiFields">
             <label class="field">
-              <span>Base URL</span>
+              <span id="pvBaseUrlLabel">Base URL</span>
               <input id="pvBaseUrl" placeholder="http://localhost:1234/v1" />
             </label>
             <label class="field">
@@ -483,9 +486,13 @@
               </div>
             </label>
             <label class="field">
-              <span>API Key (opcional)</span>
-              <input id="pvApiKey" type="password" autocomplete="off" placeholder="Deixe vazio se não for necessária" />
+              <span id="pvApiKeyLabel">API Key (opcional)</span>
+              <div class="row">
+                <input id="pvApiKey" type="password" autocomplete="off" placeholder="Deixe vazio se não for necessária" style="flex:1;" />
+                <button class="btn ghost" id="btnCopyPvApiKey" type="button" title="Copia a API Key digitada acima" disabled>⧉ Copiar</button>
+              </div>
             </label>
+            <div id="pvTypeHint" class="note" style="margin:0 0 10px;"></div>
           </div>
           <div class="row">
             <button class="btn" id="btnSaveProvider" type="button">Salvar provedor</button>
@@ -506,7 +513,10 @@
     <div class="card" style="margin-top:14px;">
       <div class="row" style="justify-content:space-between; align-items:center; gap:10px;">
         <h3 style="margin:0;">Modelos disponíveis</h3>
-        <button class="btn ghost" id="btnCopyAllModels" type="button" title="Copia todos os nomes de modelo (separados por vírgula)">Copiar todos</button>
+        <div class="row" style="gap:8px;">
+          <button class="btn ghost" id="btnLoadAllModels" type="button" title="Força nova busca de modelos em todos os provedores ativos de uma vez">↻ Carregar todos</button>
+          <button class="btn ghost" id="btnCopyAllModels" type="button" title="Copia todos os nomes de modelo (separados por vírgula)">Copiar todos</button>
+        </div>
       </div>
       <div id="modelsChips" class="row wrap" style="margin-top:10px;"></div>
       <div class="note" style="margin-top:8px;">
@@ -527,6 +537,7 @@
           <span>API Key (opcional se <code class="inline">API_KEY</code> não estiver configurada no .env)</span>
           <input id="apiKey" placeholder="Cole sua API_KEY aqui..." autocomplete="off" />
         </label>
+        <button class="btn ghost" id="btnCopyToken" type="button" style="margin-bottom:1px;" title="Copia o token de autenticação do servidor (API_KEY do .env)">⧉ Copiar token</button>
       </div>
       <h3 style="margin-top:6px;">Endpoints</h3>
       <div id="endpoints"></div>
@@ -754,13 +765,16 @@
       // ---- Fila de requisições ----
       const qPool = (status.qwen && status.qwen.pool) || { capacity: 0, active: 0, waiting: 0 };
       const dsQueue = (status.deepseek && status.deepseek.queue) || { active: 0, waiting: 0 };
-      const totalWaiting = (qPool.waiting || 0) + (dsQueue.waiting || 0);
+      const adaptersQueue = status.adapters || {};
+      const geminiQueue = adaptersQueue.gemini || { waiting: 0 };
+      const totalWaiting = (qPool.waiting || 0) + (dsQueue.waiting || 0) + (geminiQueue.waiting || 0);
       const totalActive = (qPool.active || 0) + (dsQueue.active || 0);
       $("#stQueue").textContent = totalActive + " em uso · " + totalWaiting + " na fila";
       $("#stQueue").style.color = totalWaiting > 0 ? "var(--yellow)" : "var(--green)";
       $("#stQueueSub").textContent =
         "Qwen: " + (qPool.active || 0) + "/" + (qPool.capacity || 0) + " aba(s) · " + (qPool.waiting || 0) + " na fila | " +
-        "DeepSeek: " + (dsQueue.active || 0) + " ativo · " + (dsQueue.waiting || 0) + " na fila";
+        "DeepSeek: " + (dsQueue.active || 0) + " ativo · " + (dsQueue.waiting || 0) + " na fila | " +
+        "Gemini: " + (geminiQueue.waiting || 0) + " aguardando throttle";
 
       // ---- Login / banner / campos ----
       const isQwen = providerInfo.type === "qwen";
@@ -819,6 +833,15 @@
 
       $("#stApiKey").textContent = status.apiKeyConfigured ? "Configurada" : "Não configurada";
       $("#stApiKey").style.color = status.apiKeyConfigured ? "var(--green)" : "var(--yellow)";
+
+      const copyTokenBtn = $("#btnCopyToken");
+      if (copyTokenBtn) {
+        copyTokenBtn.disabled = !status.apiKeyConfigured;
+        copyTokenBtn.title = status.apiKeyConfigured
+          ? "Copia o token de autenticação do servidor (API_KEY do .env)"
+          : "Nenhuma API_KEY configurada no .env — nada para copiar";
+        copyTokenBtn.style.opacity = status.apiKeyConfigured ? "" : "0.5";
+      }
 
       if (status.apiKeyConfigured && !apiKeyInput.value) {
         apiKeyInput.placeholder = "API_KEY está no .env — deixe vazio para usá-la";
@@ -1001,16 +1024,88 @@
     copyText(ids.join(", "), btn, "Todos copiados!");
   });
 
+  // "Copiar token": copia o token de autenticação do servidor (API_KEY do .env),
+  // que clientes externos precisam enviar como "Authorization: Bearer <token>".
+  const btnCopyToken = $("#btnCopyToken");
+  if (btnCopyToken) {
+    btnCopyToken.addEventListener("click", () => {
+      copyText(status.apiKey || "", btnCopyToken, "Token copiado!");
+    });
+  }
+
+  // "Carregar todos": força nova busca em todos os provedores ativos (limpa o
+  // cache de 30s no servidor) e repopula chips + seletores de uma vez.
+  $("#btnLoadAllModels").addEventListener("click", async () => {
+    const btn = $("#btnLoadAllModels");
+    if (btn.disabled) return;
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Carregando...';
+    try {
+      const res = await fetch("/api/models/refresh", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      const models = Array.isArray(data.data) ? data.data : [];
+      const ids = models.map((m) => (m.id || m));
+      lastModelIds = ids;
+      applyModelsToSelectors(models);
+      renderModelChips(models);
+      loadStatus();
+    } catch (e) {
+      console.error("Erro ao carregar todos os modelos:", e);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = original;
+    }
+  });
+
   // ---------- Provedores (registro + cookies) ----------
   let providers = [];
   let activeProviderId = null;
   let editingId = null;
 
+  const TYPE_META = {
+    "openai-compatible": {
+      label: "OpenAI-compatível",
+      sub: (p) => (p.baseUrl + (p.model ? " · " + p.model : "")),
+      baseUrlPh: "http://localhost:1234/v1",
+      baseUrlLabel: "Base URL (obrigatória)",
+      apiKeyLabel: "API Key (opcional)",
+      hint: "Qualquer endpoint que fale o padrão OpenAI: Ollama, LM Studio, OpenAI, Groq, OpenRouter, Together, vLLM...",
+    },
+    gemini: {
+      label: "Gemini",
+      sub: (p) => "generativelanguage (Google)" + (p.model ? " · " + p.model : ""),
+      baseUrlPh: "https://generativelanguage.googleapis.com/v1beta",
+      baseUrlLabel: "Base URL (opcional — padrão da Google)",
+      apiKeyLabel: "API Key (obrigatória)",
+      hint: "Modelos: gemini-2.0-flash, gemini-1.5-flash, etc. O proxy traduz para a REST nativa do Google e respeita ~15 RPM.",
+    },
+    anthropic: {
+      label: "Anthropic",
+      sub: (p) => "api.anthropic.com (Claude)" + (p.model ? " · " + p.model : ""),
+      baseUrlPh: "https://api.anthropic.com/v1",
+      baseUrlLabel: "Base URL (opcional — padrão da Anthropic)",
+      apiKeyLabel: "API Key (obrigatória)",
+      hint: "Modelos: claude-sonnet-4-5, claude-opus-4-1, etc. O proxy traduz para a Messages API (x-api-key).",
+    },
+    ollama: {
+      label: "Ollama",
+      sub: (p) => (p.baseUrl || "http://localhost:11434") + (p.model ? " · " + p.model : ""),
+      baseUrlPh: "http://localhost:11434",
+      baseUrlLabel: "Base URL (opcional — padrão local)",
+      apiKeyLabel: "API Key (não é necessária no Ollama)",
+      hint: "Modelos: llama3.2, qwen2.5, gemma2... sem API key. Tools usam o fallback agentic (<tool_call>).",
+    },
+    deepseek: { label: "DeepSeek", sub: () => "chat.deepseek.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
+    qwen: { label: "Qwen", sub: () => "chat.qwen.ai via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
+  };
+
   function renderProviderList() {
     const list = $("#providerList");
     if (!providers.length) {
       list.innerHTML =
-        '<div class="note" style="margin:0;">Nenhum provedor salvo ainda. Clique em <b>+ Novo provedor</b> para adicionar (Ollama, LM Studio, OpenAI, Groq...).</div>';
+        '<div class="note" style="margin:0;">Nenhum provedor salvo ainda. Clique em <b>+ Novo provedor</b> para adicionar (Gemini, Anthropic, Ollama, OpenAI...).</div>';
       return;
     }
     list.innerHTML = "";
@@ -1020,12 +1115,9 @@
         "provider-row" +
         (p.enabled === false ? " disabled" : "") +
         (p.id === activeProviderId ? " active" : "");
-      const typeBadge = p.type === "deepseek" ? "DeepSeek" : (p.type === "qwen" ? "Qwen" : "OpenAI-compatível");
-      const sub = p.type === "deepseek"
-        ? "chat.deepseek.com via Playwright"
-        : (p.type === "qwen"
-          ? "chat.qwen.ai via Playwright"
-          : (p.baseUrl + (p.model ? " · " + p.model : "")));
+      const meta = TYPE_META[p.type] || TYPE_META["openai-compatible"];
+      const typeBadge = meta.label;
+      const sub = meta.sub(p) || "";
       row.innerHTML =
         '<label class="checkbox" title="Ligar/desligar este provedor">' +
           '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' /> Ativo' +
@@ -1058,6 +1150,7 @@
     $("#pvModel").value = p ? p.model : "";
     $("#pvFeedback").textContent = "";
     toggleEditorType();
+    syncCopyPvApiKeyBtn();
     $("#providerEditor").classList.remove("hidden");
     $("#providerEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -1070,7 +1163,17 @@
   function toggleEditorType() {
     const type = $("#pvType").value;
     const isBrowser = type === "deepseek" || type === "qwen";
+    const meta = TYPE_META[type] || TYPE_META["openai-compatible"];
     $("#pvOpenAiFields").classList.toggle("hidden", isBrowser);
+    $("#pvBaseUrl").placeholder = meta.baseUrlPh || "";
+    $("#pvBaseUrlLabel").textContent = meta.baseUrlLabel || "Base URL";
+    $("#pvApiKeyLabel").textContent = meta.apiKeyLabel || "API Key (opcional)";
+    const hint = $("#pvTypeHint");
+    hint.textContent = meta.hint || "";
+    hint.style.display = meta.hint ? "block" : "none";
+    const isAdapter = type === "gemini" || type === "anthropic" || type === "ollama";
+    $("#btnLoadModels").style.display = isAdapter ? "block" : "inline-block";
+    $("#btnTestProvider").style.display = isBrowser ? "none" : "inline-block";
   }
 
   async function saveProviders(newActive) {
@@ -1087,6 +1190,19 @@
   $("#btnAddProvider").addEventListener("click", () => openEditor(null));
   $("#btnCancelProvider").addEventListener("click", closeEditor);
   $("#pvType").addEventListener("change", toggleEditorType);
+
+  // Copiar a API Key digitada no editor de provedor (campo #pvApiKey).
+  const pvApiKeyInput = $("#pvApiKey");
+  const btnCopyPvApiKey = $("#btnCopyPvApiKey");
+  function syncCopyPvApiKeyBtn() {
+    if (btnCopyPvApiKey) btnCopyPvApiKey.disabled = !(pvApiKeyInput && pvApiKeyInput.value.trim());
+  }
+  if (pvApiKeyInput) pvApiKeyInput.addEventListener("input", syncCopyPvApiKeyBtn);
+  if (btnCopyPvApiKey) {
+    btnCopyPvApiKey.addEventListener("click", () => {
+      copyText((pvApiKeyInput && pvApiKeyInput.value) || "", btnCopyPvApiKey, "Chave copiada!");
+    });
+  }
 
   $("#providerList").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
@@ -1142,9 +1258,14 @@
     const fb = $("#pvFeedback");
     const type = $("#pvType").value;
     const isBrowser = type === "deepseek" || type === "qwen";
-    const name = $("#pvName").value.trim() || (type === "deepseek" ? "DeepSeek" : (type === "qwen" ? "Qwen" : "Novo provedor"));
+    const defaultName = (TYPE_META[type] && TYPE_META[type].label) || "Novo provedor";
+    const name = $("#pvName").value.trim() || defaultName;
     if (type === "openai-compatible" && !$("#pvBaseUrl").value.trim()) {
       fb.textContent = "Informe a Base URL.";
+      return;
+    }
+    if ((type === "gemini" || type === "anthropic") && !$("#pvApiKey").value.trim()) {
+      fb.textContent = "Informe a API Key (obrigatória para " + defaultName + ").";
       return;
     }
     const existing = providers.find((p) => p.id === editingId);
@@ -1179,10 +1300,16 @@
 
   $("#btnTestProvider").addEventListener("click", async () => {
     const fb = $("#pvFeedback");
+    const type = $("#pvType").value;
     const baseUrl = $("#pvBaseUrl").value.trim();
     const apiKey = $("#pvApiKey").value.trim();
-    if (!baseUrl) {
+    const isAdapter = type === "gemini" || type === "anthropic" || type === "ollama";
+    if (!baseUrl && !isAdapter) {
       fb.textContent = "Informe a Base URL para testar.";
+      return;
+    }
+    if (isAdapter && (type === "gemini" || type === "anthropic") && !apiKey) {
+      fb.textContent = "Informe a API Key para testar.";
       return;
     }
     fb.textContent = "Testando conexão...";
@@ -1190,7 +1317,7 @@
       const res = await fetch("/api/provider/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseUrl, apiKey }),
+        body: JSON.stringify({ baseUrl, apiKey, type }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -1215,14 +1342,19 @@
 
   $("#btnLoadModels").addEventListener("click", async () => {
     const fb = $("#pvFeedback");
+    const type = $("#pvType").value;
     const baseUrl = $("#pvBaseUrl").value.trim();
-    if (!baseUrl) {
+    const isAdapter = type === "gemini" || type === "anthropic" || type === "ollama";
+    if (!baseUrl && type === "openai-compatible") {
       fb.textContent = "Informe a Base URL para carregar modelos.";
       return;
     }
     fb.textContent = "Carregando modelos...";
     try {
-      const qs = "baseUrl=" + encodeURIComponent(baseUrl) + "&apiKey=" + encodeURIComponent($("#pvApiKey").value.trim());
+      const qs =
+        "type=" + encodeURIComponent(type) +
+        "&baseUrl=" + encodeURIComponent(baseUrl) +
+        "&apiKey=" + encodeURIComponent($("#pvApiKey").value.trim());
       const res = await fetch("/api/models?" + qs);
       const data = await res.json();
       if (res.ok && Array.isArray(data.data)) {

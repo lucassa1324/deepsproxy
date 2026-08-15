@@ -5,8 +5,11 @@ qwen_profile/
 qwenproxy/
 .env
 .env.local
+.env.loocal
 *.log
 .DS_Store
 coverage/
 .cache/
 .kilo
+.test-providers*.json
+providers.json

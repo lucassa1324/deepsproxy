@@ -187,6 +187,9 @@
   .typing span:nth-child(2) { animation-delay: 0.2s; }
   .typing span:nth-child(3) { animation-delay: 0.4s; }
   @keyframes blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .refresh-btn.busy i { animation: spin 0.8s linear infinite; }
+  .refresh-btn[disabled] { opacity: 0.6; cursor: wait; }
 
   /* ===== Rodapé / Input ===== */
   .chat-footer {
@@ -343,8 +346,8 @@
             <option value="DeepSeek R1">DeepSeek R1</option>
             <option value="GPT-4o">GPT-4o (mock)</option>
           </select>
-          <button class="send-btn" id="btnRefreshModels" title="Buscar modelos" style="width:auto;height:auto;padding:0 8px;font-size:12px;border-radius:8px;background:var(--green,#35d07f);color:#fff;border:none;cursor:pointer;font-family:inherit;">
-            <i class="fa-solid fa-rotate"></i>
+          <button class="send-btn refresh-btn" id="btnRefreshModels" title="Carregar todos os modelos (re-busca em todos os provedores ativos)" style="width:auto;height:auto;padding:0 10px;font-size:12px;border-radius:8px;background:var(--green,#35d07f);color:#fff;border:none;cursor:pointer;font-family:inherit;white-space:nowrap;">
+            <i class="fa-solid fa-rotate" aria-hidden="true"></i><span> Atualizar</span>
           </button>
           <button class="attach-btn" id="attachBtn" title="Anexar imagem (ou cole Ctrl+V)"><i class="fa-solid fa-paperclip"></i></button>
           <textarea id="userInput" rows="1" placeholder="Digite sua mensagem... (Enter envia, Shift+Enter quebra linha)"></textarea>
@@ -923,8 +926,14 @@
     renderHeaderModel(selectedModel);
   }
 
-  // ===== Buscar modelos =====
+  // ===== Carregar todos os modelos =====
+  // Força nova busca em todos os provedores ativos (limpa o cache de 30s do
+  // servidor) e repopula o Select. Botão fica com spinner enquanto carrega.
   async function refreshModels() {
+    const btn = $("#btnRefreshModels");
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add("busy");
     try {
       const res = await fetch("/api/models/refresh", { method: "POST" });
       if (!res.ok) throw new Error("HTTP " + res.status);
@@ -932,6 +941,9 @@
       await loadModels();
     } catch (e) {
       console.error("Erro ao buscar modelos:", e);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("busy");
     }
   }
 

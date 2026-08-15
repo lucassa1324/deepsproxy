@@ -14,10 +14,13 @@
 import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
-import type { Provider } from './config.ts';
+import type { Provider, ProviderType } from './config.ts';
+import { defaultBaseUrl, isAdapterType, normalizeModelId } from './config.ts';
+import { isAdapterProvider, fetchProviderModels, dispatchAdapterChat } from './adapters/index.ts';
 import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
+import { startKeepAlive } from '../utils/sse.ts';
 
 const TOOL_START = '<tool_call>';
 const TOOL_END = '</tool_call>';
@@ -68,15 +71,23 @@ export async function findProviderForModel(
   model: string
 ): Promise<Provider | null> {
   if (!model) return null;
+  const normalized = String(model).toLowerCase();
 
+  // 1. Match pelo override do provedor (qualquer tipo).
   for (const p of providers) {
-    if (p.type !== 'openai-compatible') continue;
     if (p.model && p.model === model) return p;
   }
 
+  // 2. Heurística por prefixo de modelo para provedores com namespace claro.
   for (const p of providers) {
-    if (p.type !== 'openai-compatible') continue;
-    const models = await fetchModels(p);
+    if (normalized.startsWith('gemini-') && p.type === 'gemini') return p;
+    if (normalized.startsWith('claude-') && p.type === 'anthropic') return p;
+  }
+
+  // 3. Match pela lista real de modelos do provedor (openai-compatible e adapters).
+  for (const p of providers) {
+    if (p.type === 'deepseek' || p.type === 'qwen') continue;
+    const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
     if (models && models.some((m: any) => m.id === model)) return p;
   }
 
@@ -84,6 +95,12 @@ export async function findProviderForModel(
 }
 
 export async function forwardChatCompletions(c: Context, body: OpenAIRequest, provider: Provider) {
+  // Provedores heterogêneos (gemini/anthropic/ollama) passam pela camada de
+  // Adapters; a resposta já vem no formato OpenAI (JSON ou SSE).
+  if (isAdapterProvider(provider)) {
+    const resp = await dispatchAdapterChat(body, provider);
+    if (resp) return resp;
+  }
   if (hasTools(body)) {
     return forwardAgentic(c, body, provider);
   }
@@ -127,6 +144,7 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
   c.header('Connection', 'keep-alive');
 
   return honoStream(c, async (streamWriter: any) => {
+    const stopKeepAlive = startKeepAlive((chunk) => streamWriter.write(chunk));
     const reader = response.body!.getReader();
     const decoder = new TextDecoder();
     try {
@@ -140,6 +158,7 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
         await streamWriter.write(tail);
       }
     } finally {
+      stopKeepAlive();
       reader.releaseLock();
     }
   });
@@ -246,6 +265,9 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
       model: model || body.model,
       choices: [{ index: 0, delta, logprobs: null, finish_reason: null }],
     });
+
+    // Mantém a conexão viva enquanto o modelo "pensa" (comentário SSE ignorado pelo cliente).
+    const stopKeepAlive = startKeepAlive((chunk) => streamWriter.write(chunk));
 
     await writeEvent(chunkObj({ role: 'assistant', content: '' }));
 
@@ -391,6 +413,8 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
       usage,
     });
     await streamWriter.write('data: [DONE]\n\n');
+
+    stopKeepAlive();
   });
 }
 
@@ -460,12 +484,32 @@ export interface ConnectionTestResult {
 export async function testProviderConnection(
   baseUrl?: string,
   apiKey?: string,
-  timeoutMs = 5000
+  timeoutMs = 5000,
+  type: ProviderType = 'openai-compatible'
 ): Promise<ConnectionTestResult> {
   const url = (baseUrl || '').replace(/\/+$/, '');
-  const key = apiKey || '';
   try {
-    const models = await fetchModelsFrom(url, key, timeoutMs);
+    if (isAdapterType(type)) {
+      const provider: Provider = {
+        id: 'test',
+        name: 'Test',
+        type,
+        baseUrl: url || defaultBaseUrl(type),
+        apiKey: apiKey || '',
+        model: '',
+        enabled: true,
+      };
+      const models = await fetchProviderModels(provider);
+      if (!models) {
+        return {
+          ok: false,
+          baseUrl: provider.baseUrl,
+          error: 'Não foi possível listar modelos (verifique Base URL e API Key).',
+        };
+      }
+      return { ok: true, baseUrl: provider.baseUrl, models: models.map((m: any) => m.id) };
+    }
+    const models = await fetchModelsFrom(url, apiKey || '', timeoutMs);
     return { ok: true, baseUrl: url, models: models.map((m: any) => m.id) };
   } catch (e: any) {
     return { ok: false, baseUrl: url, error: e?.message || String(e) };
@@ -485,11 +529,11 @@ async function fetchModelsFrom(baseUrl: string, apiKey: string, timeoutMs: numbe
     }
     const data: any = await resp.json();
     if (Array.isArray(data?.data)) {
-      return data.data;
+      return data.data.map((m: any) => ({ ...m, id: normalizeModelId(m.id) }));
     }
     if (Array.isArray(data?.models)) {
       return data.models.map((m: any) => ({
-        id: m.name || m.model || String(m),
+        id: normalizeModelId(m.name || m.model || String(m)),
         object: 'model',
         owned_by: 'local',
       }));

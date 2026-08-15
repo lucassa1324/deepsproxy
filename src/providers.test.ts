@@ -217,3 +217,112 @@ test('registry: /api/models with configured provider does NOT fall back to deeps
     restore();
   }
 });
+
+/* ------------------------- Prefixo "models/" (Gemini) ------------------------- */
+
+const GEMINI_STYLE_UPSTREAM = {
+  models: [
+    { name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', supportedGenerationMethods: ['generateContent'] },
+    { name: 'models/gemini-2.5-pro', displayName: 'Gemini 2.5 Pro', supportedGenerationMethods: ['generateContent'] },
+  ],
+};
+
+test('models: /v1/models strips "models/" prefix from Gemini-style upstream ids', async () => {
+  // Upstream openai-compatible que devolve o formato REST do Gemini
+  // ({ models: [{ name: "models/..." }] }): o id precisa sair limpo.
+  const registry = {
+    active: 'g',
+    providers: [{ id: 'g', name: 'Gemini', type: 'openai-compatible', baseUrl: 'http://localhost:9123/v1beta', apiKey: 'k', model: '' }],
+  };
+  const restore = setupFetchMock(() => new Response(JSON.stringify(GEMINI_STYLE_UPSTREAM), { status: 200 }));
+  try {
+    const res = await app.fetch(
+      new Request('http://localhost/v1/models', { headers: { Cookie: cookieFor(registry) } })
+    );
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    const ids = data.data.map((m: any) => m.id);
+    assert.ok(ids.includes('gemini-2.5-flash'), `esperava id limpo, veio: ${ids.join(', ')}`);
+    assert.ok(!ids.some((id: string) => id.startsWith('models/')), 'nenhum id pode conter o prefixo models/');
+  } finally {
+    restore();
+  }
+});
+
+test('models: /v1/models strips "models/" prefix even from OpenAI-style data', async () => {
+  const registry = {
+    active: 'g2',
+    providers: [{ id: 'g2', name: 'Proxy', type: 'openai-compatible', baseUrl: 'http://localhost:9124/v1', apiKey: '', model: '' }],
+  };
+  const restore = setupFetchMock(() =>
+    new Response(
+      JSON.stringify({ object: 'list', data: [{ id: 'models/foo', object: 'model' }, { id: 'bar', object: 'model' }] }),
+      { status: 200 }
+    )
+  );
+  try {
+    const res = await app.fetch(
+      new Request('http://localhost/v1/models', { headers: { Cookie: cookieFor(registry) } })
+    );
+    const data = await res.json();
+    const ids = data.data.map((m: any) => m.id);
+    assert.ok(ids.includes('foo'), `esperava "foo", veio: ${ids.join(', ')}`);
+    assert.ok(ids.includes('bar'));
+  } finally {
+    restore();
+  }
+});
+
+test('models: /api/status lists clean Gemini adapter model ids', async () => {
+  const registry = {
+    active: 'gemini',
+    providers: [{ id: 'gemini', name: 'Gemini', type: 'gemini', baseUrl: 'http://localhost:9125/v1beta', apiKey: 'k', model: '' }],
+  };
+  const restore = setupFetchMock(() => new Response(JSON.stringify(GEMINI_STYLE_UPSTREAM), { status: 200 }));
+  try {
+    const res = await app.fetch(
+      new Request('http://localhost/api/status', { headers: { Cookie: cookieFor(registry) } })
+    );
+    const st = await res.json();
+    const ids = (st.models || []).map((m: any) => m.id);
+    assert.ok(ids.includes('gemini-2.5-flash'), `esperava modelo Gemini limpo, veio: ${ids.join(', ')}`);
+    assert.ok(!ids.some((id: string) => id.startsWith('models/')), 'nenhum id pode conter o prefixo models/');
+  } finally {
+    restore();
+  }
+});
+
+test('chat: model com prefixo "models/" é normalizado antes de chegar ao Gemini', async () => {
+  // Cliente (ex.: Aura) manda "models/gemini-2.5-flash"; o proxy precisa
+  // limpar o prefixo antes do roteamento e da URL do adapter.
+  const registry = {
+    active: 'gemini',
+    providers: [{ id: 'gemini', name: 'Gemini', type: 'gemini', baseUrl: 'http://localhost:9126/v1beta', apiKey: 'k', model: '' }],
+  };
+  const restore = setupFetchMock((url, init) => {
+    assert.ok(
+      url.startsWith('http://localhost:9126/v1beta/models/gemini-2.5-flash:generateContent?key='),
+      `URL do Gemini deve ter id limpo, veio: ${url}`
+    );
+    const body = JSON.parse(init?.body as string || '{}');
+    assert.strictEqual(body.contents[0].role, 'user');
+    return new Response(
+      JSON.stringify({ candidates: [{ content: { parts: [{ text: 'resposta' }] }, finishReason: 'STOP' }], usageMetadata: {} }),
+      { status: 200 }
+    );
+  });
+  try {
+    const res = await app.fetch(
+      new Request('http://localhost/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookieFor(registry) },
+        body: JSON.stringify({ model: 'models/gemini-2.5-flash', messages: [{ role: 'user', content: 'oi' }], stream: false }),
+      })
+    );
+    assert.strictEqual(res.status, 200);
+    const data = await res.json();
+    assert.strictEqual(data.choices[0].message.content, 'resposta');
+  } finally {
+    restore();
+  }
+});

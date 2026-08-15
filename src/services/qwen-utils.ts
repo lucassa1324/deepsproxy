@@ -8,6 +8,8 @@
  * módulo separado para evitar dependência circular qwen.ts <-> dashboard.ts.
  */
 
+import { normalizeModelId } from './config.ts';
+
 export const CATEGORY_LABELS: Record<string, string> = {
   'visao': 'Visão',
   'programacao': 'Programação',
@@ -62,10 +64,11 @@ export function capabilitiesOf(id: string, meta?: any): string[] {
 export function enrichModel(m: any): any {
   if (!m || typeof m !== 'object') return m;
   const meta = m.meta || m.info?.meta;
-  const id = String(m.id || '');
+  const id = normalizeModelId(m.id);
   const category = m.category || classifyQwenModel(id, meta);
   return {
     ...m,
+    id,
     category,
     category_label: m.category_label || categoryLabel(category),
     capabilities: Array.isArray(m.capabilities) ? m.capabilities : capabilitiesOf(id, meta),

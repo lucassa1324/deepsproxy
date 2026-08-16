@@ -670,7 +670,7 @@
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;">
+    <div class="card" id="ecoPanel" style="margin-top:14px;">
       <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
         <h3 style="margin:0;">⚡ Modo Economia de Tokens</h3>
         <label class="checkbox">
@@ -741,6 +741,66 @@
         </label>
         <button class="btn" id="btnSaveEconomy" type="button">Salvar</button>
         <span id="ecoFeedback" class="note" style="margin:0;"></span>
+      </div>
+    </div>
+
+    <div class="card" id="boosterPanel" style="margin-top:14px;">
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <h3 style="margin:0;">🚀 Modo Booster (modelos fracos)</h3>
+        <label class="checkbox">
+          <input type="checkbox" id="boosterMaster" />
+          Ativado
+        </label>
+        <span class="hint" title="Liga ou desliga TODAS as ajudas do booster de uma vez. Quando desativado, nenhum modelo é afetado. As escolhas individuais são preservadas para quando você reativar.">?</span>
+      </div>
+      <p class="note" style="margin:8px 0 4px;">
+        Ajudas para modelos que se perdem no uso de ferramentas (não chamam as
+        tools, emitem JSON quebrado ou "narram" o que fariam). O booster só é
+        aplicado aos <b>modelos cadastrados abaixo</b> — modelos potentes
+        continuam sem nenhuma alteração. Passe o mouse no <span class="hint">?</span>
+        de cada opção para ver a explicação.
+      </p>
+
+      <div style="margin-top:10px;">
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-booster="promptReinforcement" /> Reforço de prompt (regras + exemplo de tool_call)
+          </label>
+          <span class="hint" title="Reforço de prompt: injeta no prompt de ferramentas regras duras ('não narre o que faria', 'após um <tool_call> pare') e UM exemplo pronto de <tool_call> montado com uma ferramenta REAL da requisição (nome e argumentos de exemplo). O modelo fraco vê o formato exato antes de responder, o que reduz muito os tool_calls malformados.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-booster="correctiveLoop" /> Loop corretivo (avisa quando a tool falha)
+          </label>
+          <span class="hint" title="Loop corretivo (modo agente agent:true): quando um tool_call falha (tool desconhecida, JSON inválido, validação) ou o modelo emite um <tool_call> quebrado, o proxy injeta uma mensagem de correção com o erro e dá uma nova chance — em vez de só devolver o texto 'narrado'. O modelo fraco aprende e corrige na hora.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-booster="tolerantParser" /> Parser tolerante (repara JSON de tool_call)
+          </label>
+          <span class="hint" title="Parser tolerante: usa o robustParseJSON (corrige aspas não escapadas, barras invertidas de caminhos Windows, quebras de linha dentro de strings, JSON truncado) na hora de extrair os tool_calls do texto do modelo. Modelos fracos costumam emitir JSON corrompido que antes virava texto comum — agora é recuperado como tool call. É seguro para todos: em JSON válido o resultado é idêntico.">?</span>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:12px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
+        <button class="btn" id="btnSaveBooster" type="button">Salvar opções</button>
+        <span id="boosterOptsFeedback" class="note" style="margin:0;"></span>
+      </div>
+
+      <div style="margin-top:12px;">
+        <div class="row" style="align-items:flex-end; gap:10px; flex-wrap:wrap;">
+          <label class="field" style="flex:0 0 280px;">
+            <span>
+              Modelo (id)
+              <span class="hint" title="Digite o id exato do modelo (ex.: qwen2.5-coder:3b) e clique em 'Adicionar'. Para ativar em TODOS os modelos, adicione o curinga *. Os ids disponíveis aparecem conforme você digita (catálogo de modelos da aba Conexão).">?</span>
+            </span>
+            <input id="boosterModelInput" list="boosterModelsList" placeholder="ex.: qwen2.5-coder:3b ou *" />
+            <datalist id="boosterModelsList"></datalist>
+          </label>
+          <button class="btn" id="btnAddBoosterModel" type="button">Adicionar</button>
+          <span id="boosterFeedback" class="note" style="margin:0;"></span>
+        </div>
+        <div id="boosterModels" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;"></div>
       </div>
     </div>
   </section>
@@ -1048,6 +1108,7 @@
       loadApps();
       loadCatalog();
       loadEconomy();
+      loadBooster();
 
       const gwLabel = $("#gatewayPortLabel");
       if (gwLabel && status.gateway) {
@@ -2143,9 +2204,13 @@ for await (const chunk of stream) {
 
   // ---------- Modo Economia de Tokens ----------
   let economy = null;
+  // Se o usuário mexeu no painel mas ainda não salvou, o poll de status não
+  // pode sobrescrever a edição em andamento (senão o checkbox "desmarca sozinho").
+  let economyDirty = false;
   const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation"];
 
   function renderEconomy() {
+    if (economyDirty) return;
     const master = $("#ecoMaster");
     if (!economy) return;
     master.checked = !!economy.enabled;
@@ -2157,6 +2222,12 @@ for await (const chunk of stream) {
     if (w) w.value = economy.maxContextTokens || "";
     const disabled = !economy.enabled;
     document.querySelectorAll("[data-eco]").forEach((el) => (el.disabled = disabled));
+  }
+
+  const ecoPanelEl = document.getElementById("ecoPanel");
+  if (ecoPanelEl) {
+    ecoPanelEl.addEventListener("change", () => (economyDirty = true));
+    ecoPanelEl.addEventListener("input", () => (economyDirty = true));
   }
 
   async function loadEconomy() {
@@ -2194,7 +2265,130 @@ for await (const chunk of stream) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
       economy = data.settings || {};
+      economyDirty = false;
       renderEconomy();
+      fb.textContent = "Salvo ✓";
+    } catch (e) {
+      fb.textContent = "Erro: " + e.message;
+    }
+  });
+
+  // ---------- Modo Booster (modelos fracos) ----------
+  let booster = null;
+  let boosterDirty = false;
+  const BOOSTER_FIELDS = ["promptReinforcement", "correctiveLoop", "tolerantParser"];
+
+  function renderBooster() {
+    if (boosterDirty) return;
+    if (!booster) return;
+    const master = $("#boosterMaster");
+    master.checked = !!booster.enabled;
+    BOOSTER_FIELDS.forEach((key) => {
+      const el = document.querySelector('[data-booster="' + key + '"]');
+      if (el) el.checked = !!booster[key];
+    });
+    const disabled = !booster.enabled;
+    document.querySelectorAll("[data-booster]").forEach((el) => (el.disabled = disabled));
+    const list = $("#boosterModels");
+    const models = booster.models || [];
+    if (list) {
+      list.innerHTML = models.length
+        ? models
+            .map(
+              (m) =>
+                '<div class="row" style="align-items:center; gap:8px; justify-content:space-between;">' +
+                '<code style="flex:1;">' + escapeHtml(m) + (m === "*" ? " <span class='note'>(todos os modelos)</span>" : "") + "</code>" +
+                '<button class="btn ghost" type="button" data-remove-booster="' + escapeHtml(m) + '">Remover</button>' +
+                "</div>"
+            )
+            .join("")
+        : '<div class="note">Nenhum modelo com booster. Adicione o id de um modelo fraco acima.</div>';
+      list.querySelectorAll("[data-remove-booster]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          try {
+            const res = await fetch("/api/settings/booster/models", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ model: btn.getAttribute("data-remove-booster"), enable: false }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+            booster = data.settings || {};
+            renderBooster();
+          } catch (e) {
+            $("#boosterFeedback").textContent = "Erro: " + e.message;
+          }
+        });
+      });
+    }
+  }
+
+  const boosterPanelEl = document.getElementById("boosterPanel");
+  if (boosterPanelEl) {
+    boosterPanelEl.addEventListener("change", () => (boosterDirty = true));
+    boosterPanelEl.addEventListener("input", () => (boosterDirty = true));
+  }
+
+  async function loadBooster() {
+    try {
+      const res = await fetch("/api/settings/booster");
+      const data = await res.json();
+      if (!res.ok) return;
+      booster = data.settings || {};
+      renderBooster();
+    } catch (e) {
+      // offline
+    }
+  }
+
+  $("#boosterMaster").addEventListener("change", () => {
+    const disabled = !$("#boosterMaster").checked;
+    document.querySelectorAll("[data-booster]").forEach((el) => (el.disabled = disabled));
+  });
+
+  $("#btnAddBoosterModel").addEventListener("click", async () => {
+    const input = $("#boosterModelInput");
+    const model = input.value.trim();
+    if (!model) {
+      $("#boosterFeedback").textContent = "Digite o id de um modelo.";
+      return;
+    }
+    try {
+      const res = await fetch("/api/settings/booster/models", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model, enable: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      booster = data.settings || {};
+      input.value = "";
+      renderBooster();
+      $("#boosterFeedback").textContent = "Adicionado ✓";
+    } catch (e) {
+      $("#boosterFeedback").textContent = "Erro: " + e.message;
+    }
+  });
+
+  $("#btnSaveBooster").addEventListener("click", async () => {
+    const fb = $("#boosterOptsFeedback");
+    const patch = { enabled: $("#boosterMaster").checked };
+    BOOSTER_FIELDS.forEach((key) => {
+      const el = document.querySelector('[data-booster="' + key + '"]');
+      patch[key] = el ? el.checked : false;
+    });
+    fb.textContent = "Salvando...";
+    try {
+      const res = await fetch("/api/settings/booster", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+      booster = data.settings || {};
+      boosterDirty = false;
+      renderBooster();
       fb.textContent = "Salvo ✓";
     } catch (e) {
       fb.textContent = "Erro: " + e.message;
@@ -2254,6 +2448,18 @@ for await (const chunk of stream) {
       catalogModels = data.models || [];
       refreshAppForm();
       renderAppList();
+      const dl = $("#boosterModelsList");
+      if (dl) {
+        dl.innerHTML = "";
+        const seen = new Set();
+        catalogModels.forEach((m) => {
+          if (!m.id || seen.has(m.id)) return;
+          seen.add(m.id);
+          const o = document.createElement("option");
+          o.value = m.id;
+          dl.appendChild(o);
+        });
+      }
     } catch (e) {
       // offline
     }

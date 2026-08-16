@@ -28,6 +28,12 @@ export interface MessageToolCall {
   id: string;
   type: 'function';
   function: ToolCallFunction;
+  /**
+   * Gemini: assinatura de pensamento do functionCall original. Preservada no
+   * round-trip para que o histórico reenviado não seja rejeitado pela API
+   * (400 "missing thought_signature").
+   */
+  thought_signature?: string;
 }
 
 /** Parte de texto no conteúdo multimodal (formato OpenAI) */
@@ -88,6 +94,8 @@ export interface ToolCall {
     name: string;
     arguments: string;
   };
+  /** Gemini: thought_signature do functionCall original (ver MessageToolCall). */
+  thought_signature?: string;
 }
 
 export interface ChoiceDelta {

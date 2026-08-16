@@ -18,6 +18,7 @@ import type { Provider, ProviderType } from './config.ts';
 import { defaultBaseUrl, isAdapterType, normalizeModelId } from './config.ts';
 import { isAdapterProvider, fetchProviderModels, dispatchAdapterChat } from './adapters/index.ts';
 import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
+import { isModelBoosted } from './booster.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { startKeepAlive } from '../utils/sse.ts';
@@ -216,7 +217,7 @@ function buildAgenticMessagesWithImages(body: OpenAIRequest): any[] {
     });
   }
 
-  const toolInstructions = buildToolsInstructions(body);
+  const toolInstructions = buildToolsInstructions(body, { booster: isModelBoosted(body.model) });
   if (toolInstructions) systemParts.push(toolInstructions);
   if (systemParts.length > 0) {
     messages.unshift({ role: 'system', content: systemParts.join('\n\n').trim() });
@@ -229,7 +230,7 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
   const hasImages = hasImageParts(body.messages || []);
   const messages = hasImages
     ? buildAgenticMessagesWithImages(body)
-    : [{ role: 'user', content: buildAgentPrompt(body) }];
+    : [{ role: 'user', content: buildAgentPrompt(body, { booster: isModelBoosted(body.model) }) }];
   const model = effectiveModel(provider, body);
 
   const payload: any = { ...body, messages, stream: isStream };

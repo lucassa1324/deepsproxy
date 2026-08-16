@@ -25,6 +25,7 @@ import type { OpenAIRequest } from '../utils/types.ts';
 import type { Provider } from './config.ts';
 import { dispatchAdapterChat, isAdapterProvider } from './adapters/index.ts';
 import { startKeepAlive } from '../utils/sse.ts';
+import { isModelBoosted } from './booster.ts';
 
 const LLM_CALL_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_TURNS = 6;
@@ -210,7 +211,7 @@ export async function runServerAgent(
     },
     messages,
     baseBody.model,
-    { maxTurns: opts.maxTurns ?? DEFAULT_MAX_TURNS, debug: opts.debug }
+    { maxTurns: opts.maxTurns ?? DEFAULT_MAX_TURNS, debug: opts.debug, booster: isModelBoosted(baseBody.model) }
   );
 
   return { content: content || '', reasoning, turns, usage };

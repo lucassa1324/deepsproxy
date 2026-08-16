@@ -238,6 +238,108 @@ test('gemini: fromGeminiResponse traduz functionCall para tool_calls', () => {
   assert.strictEqual(out.usage.total_tokens, 6);
 });
 
+test('gemini: fromGeminiResponse preserva thought_signature no tool_call', () => {
+  const data = {
+    candidates: [
+      {
+        content: {
+          parts: [{ functionCall: { name: 'edit_file', args: { path: 'a.txt' }, thoughtSignature: 'TS-abc-123' } }],
+        },
+        finishReason: 'STOP',
+      },
+    ],
+    usageMetadata: {},
+  };
+  const out = fromGeminiResponse(data, 'gemini-2.5-flash');
+  const tc = out.choices[0].message.tool_calls[0];
+  assert.strictEqual(tc.thought_signature, 'TS-abc-123');
+  assert.ok(tc.id.startsWith('call_ts_'), `id deve carregar a assinatura, veio: ${tc.id}`);
+});
+
+test('gemini: buildGeminiBody reenvia thoughtSignature no functionCall do histórico', () => {
+  const body = buildGeminiBody({
+    model: 'gemini-2.5-flash',
+    messages: [
+      { role: 'user', content: 'edi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call_ts_VFMxMjM0NTY', type: 'function', function: { name: 'edit_file', arguments: '{"path":"a.txt"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_ts_VFMxMjM0NTY', name: 'edit_file', content: 'ok' },
+    ],
+  });
+  assert.deepStrictEqual(body.contents[1].parts[0].functionCall, {
+    name: 'edit_file',
+    args: { path: 'a.txt' },
+    thoughtSignature: 'TS123456',
+  });
+  assert.deepStrictEqual(body.contents[2].parts[0].functionResponse, { name: 'edit_file', response: { result: 'ok' } });
+});
+
+test('gemini: buildGeminiBody usa campo thought_signature quando presente no tool_call', () => {
+  const body = buildGeminiBody({
+    model: 'gemini-2.5-flash',
+    messages: [
+      { role: 'user', content: 'edi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call_x', type: 'function', function: { name: 'edit_file', arguments: '{"path":"a"}' }, thought_signature: 'TS-direto' },
+        ],
+      },
+    ],
+  });
+  assert.deepStrictEqual(body.contents[1].parts[0].functionCall, {
+    name: 'edit_file',
+    args: { path: 'a' },
+    thoughtSignature: 'TS-direto',
+  });
+});
+
+test('gemini: buildGeminiBody converte calls sem assinatura em texto em modelos 2.5', () => {
+  const body = buildGeminiBody({
+    model: 'gemini-2.5-pro',
+    messages: [
+      { role: 'user', content: 'edi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call_legado', type: 'function', function: { name: 'default_api:Write', arguments: '{"path":"a.txt"}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_legado', name: 'default_api:Write', content: 'arquivo criado' },
+    ],
+  });
+  assert.strictEqual(body.contents.length, 2, 'assistant sem partes é descartado');
+  assert.strictEqual(body.contents[0].role, 'user');
+  assert.strictEqual(body.contents[0].parts[0].text, 'edi');
+  assert.strictEqual(body.contents[1].role, 'user');
+  assert.strictEqual(body.contents[1].parts[0].functionResponse, undefined, 'functionResponse sem functionCall não pode ir ao Gemini');
+  assert.ok(body.contents[1].parts[0].text.includes('arquivo criado'), 'resultado da tool vira texto');
+});
+
+test('gemini: buildGeminiBody mantém functionResponse para modelos sem exigência de assinatura', () => {
+  const body = buildGeminiBody({
+    model: 'gemini-2.0-flash',
+    messages: [
+      { role: 'user', content: 'edi' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'edit_file', arguments: '{"path":"a"}' } }],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'ok' },
+    ],
+  });
+  assert.deepStrictEqual(body.contents[1].parts[0].functionCall, { name: 'edit_file', args: { path: 'a' } });
+  assert.deepStrictEqual(body.contents[2].parts[0].functionResponse, { name: 'edit_file', response: { result: 'ok' } });
+});
+
 /* ------------------------- Anthropic ------------------------- */
 
 test('anthropic: toAnthropicMessages extrai system e traduz roles', () => {

@@ -13,6 +13,7 @@ import { createQwenStream, updateSessionParent } from '../services/qwen.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
 import { robustParseJSON } from '../utils/robust-json.ts';
+import { isModelBoosted } from '../services/booster.ts';
 import { StreamingToolParser } from '../tools/stream-parser.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 
@@ -213,7 +214,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
     const isStream = body.stream ?? false;
     const messages = body.messages || [];
 
-    const finalPrompt = buildAgentPrompt(body);
+    const finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
     const isThinkingModel = !body.model.includes('no-thinking');
 
     // A session is new if it doesn't have any assistant messages yet.

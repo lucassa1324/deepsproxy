@@ -20,6 +20,9 @@
 
 import type { Page } from 'playwright';
 import path from 'path';
+import { OpenAIRequest } from '../utils/types.ts';
+import { buildFullHistoryPrompt, buildToolsInstructions } from '../utils/prompt.ts';
+import { isModelBoosted } from './booster.ts';
 
 /** Modelos conhecidos do Gemini (usados no catálogo quando não há API). */
 export const GEMINI_KNOWN_MODELS = [
@@ -61,12 +64,20 @@ export const GEMINI_SCRIPT_DISMISS_ONBOARDING = `(() => {
 
 /**
  * Preenche o composer com o prompt. Retorna true quando encontrou um elemento
- * de entrada (contenteditable ou textarea). Roda como string (ver nota acima).
- * O prompt chega como `arg` (Playwright). Atravessa Shadow DOM.
+ * de entrada (contenteditable ou textarea) E o texto completo foi registrado.
+ * Roda como string (ver nota acima). O prompt chega como `arg` (Playwright).
+ * Atravessa Shadow DOM.
+ *
+ * O editor rich-text do Gemini (Lexical) mantém o modelo de texto fora do DOM:
+ * atribuir `textContent` direto mostra o texto na tela mas o estado interno
+ * pode ficar vazio/parcial — o envio então vai sem o fim do prompt (e o Gemini
+ * responde apenas o system prompt). Por isso a inserção é feita via
+ * `execCommand('insertText')` em blocos (é O(n) no renderer: um único insert
+ * de 80k chars congela a UI), com verificação final do comprimento.
  */
 export const GEMINI_SCRIPT_SET_PROMPT = `(() => {
   const MARK = '__GEMINI_SET_PROMPT__';
-  const prompt = arg;
+  const prompt = __GEMINI_PROMPT_ARG__;
   const isVisible = (el) =>
     !!el &&
     (el.getBoundingClientRect().width > 0 ||
@@ -95,17 +106,22 @@ export const GEMINI_SCRIPT_SET_PROMPT = `(() => {
     const target = all.find((el) => el.matches(sel) && isVisible(el));
     if (!target) continue;
     target.focus();
+    let committed = 0;
     if (target.isContentEditable) {
-      let ok = false;
       try {
         const sel2 = window.getSelection();
         if (sel2) sel2.selectAllChildren(target);
-        ok = document.execCommand('insertText', false, prompt);
+        const CHUNK = 4096;
+        for (let i = 0; i < prompt.length; i += CHUNK) {
+          document.execCommand('insertText', false, prompt.slice(i, i + CHUNK));
+        }
+        committed = (target.innerText || '').length;
       } catch (e) {
-        ok = false;
+        committed = 0;
       }
-      if (!ok || (target.innerText || '').length < prompt.length) {
-        target.innerText = prompt;
+      if (committed < prompt.length) {
+        target.textContent = prompt;
+        committed = (target.innerText || '').length;
       }
       target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
       target.dispatchEvent(new InputEvent('change', { bubbles: true }));
@@ -113,11 +129,246 @@ export const GEMINI_SCRIPT_SET_PROMPT = `(() => {
       target.value = prompt;
       target.dispatchEvent(new Event('input', { bubbles: true }));
       target.dispatchEvent(new Event('change', { bubbles: true }));
+      committed = target.value.length;
     }
-    return true;
+    return committed >= prompt.length;
   }
   return false;
 })()`;
+
+/**
+ * Playwright NÃO liga `arg` a strings passadas no evaluate (isFunction=false →
+ * só `eval(expression)`). O prompt precisa ir embutido no script. `__GEMINI_PROMPT_ARG__`
+ * vira o JSON do prompt; o token some do script, então não há colisão.
+ */
+export function geminiSetPromptScript(prompt: string): string {
+  return GEMINI_SCRIPT_SET_PROMPT.replace('__GEMINI_PROMPT_ARG__', JSON.stringify(prompt));
+}
+
+/**
+ * Teto de segurança HARDCODED do driver Gemini Web (não depende do dashboard):
+ * o prompt enviado ao navegador nunca deve passar disso. Injetar centenas de
+ * milhares de chars no contenteditable degrada o renderer do Gemini e faz a
+ * IDE (Trae/Cursor) dar timeout antes da primeira palavra. Override opcional
+ * via GEMINI_WEB_MAX_CHARS.
+ */
+export const MAX_GEMINI_WEB_CHARS = Number(process.env.GEMINI_WEB_MAX_CHARS) || 80000;
+
+/**
+ * Teto REAL do composer do Gemini: o editor rich-text (Lexical/GText) limita a
+ * entrada a ~32.768 chars — um prompt maior entra só até o limite (empiricamente
+ * 32.388) e o FIM do texto (onde fica a mensagem do usuário) é descartado, então
+ * o Gemini responde apenas o system prompt (saudação "Hello! I am your AI
+ * collaborator..."). Valor de segurança abaixo do limite observado. Override
+ * opcional via GEMINI_WEB_COMPOSER_SAFE_CHARS.
+ */
+export const GEMINI_WEB_COMPOSER_SAFE_CHARS = Number(process.env.GEMINI_WEB_COMPOSER_SAFE_CHARS) || 30000;
+
+/** Converte `content` (string | partes OpenAI | tool result) em texto plano. */
+function messageText(content: any): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p: any) =>
+        p && typeof p === 'object' && p.type === 'image_url' ? '[imagem]' : p?.text ?? JSON.stringify(p)
+      )
+      .join('\n');
+  }
+  return content ? String(content) : '';
+}
+
+/**
+ * Trunca o CONTEÚDO interno de uma mensagem mantendo a cabeça e a cauda
+ * (onde ficam a instrução visível e o pedido atual) com um marcador no meio.
+ * Nunca descarta a mensagem inteira.
+ */
+function clipMessageContent(msg: any, budget: number): any {
+  const text = messageText(msg.content);
+  if (text.length <= budget) return msg;
+  const headLen = Math.floor(budget * 0.6);
+  const tailLen = Math.floor(budget * 0.3);
+  const middle = text.length - headLen - tailLen;
+  return {
+    ...msg,
+    content: `${text.slice(0, headLen)}\n…[truncado: ${middle} chars]\n${text.slice(text.length - tailLen)}`,
+  };
+}
+
+/**
+ * Corte inteligente para o Gemini Web com ÂNCORAS OBRIGATÓRIAS:
+ *   1. TODAS as mensagens system (instruções da IDE — nunca se perdem);
+ *   2. A ÚLTIMA mensagem (o turno atual do usuário);
+ *   3. Se a última não for do usuário (Trae anexa tool/assistant depois), o
+ *      último user real também vira âncora;
+ *   4. Se as âncoras estouram o teto, a ÚLTIMA mensagem tem o conteúdo interno
+ *      truncado (cabeça + cauda preservam a instrução), em vez de ser cortada;
+ *   5. O orçamento restante é preenchido com o histórico intermediário, de
+ *      trás para frente (descarta só o miolo antigo).
+ * Retorna o body inalterado quando já cabe no teto.
+ */
+export function smartTruncateHistory(body: OpenAIRequest, maxChars: number = MAX_GEMINI_WEB_CHARS): OpenAIRequest {
+  const messages = body.messages || [];
+  if (messages.length === 0) return body;
+  if (buildFullHistoryPrompt(body).length <= maxChars) return body;
+
+  const systemMsgs = messages.filter((m) => m.role === 'system');
+  const rest = messages.filter((m) => m.role !== 'system');
+  if (rest.length === 0) return body;
+
+  // Âncoras: última mensagem + (se preciso) último user real.
+  const lastMsg = rest[rest.length - 1];
+  const anchorTail: any[] = [lastMsg];
+  if (lastMsg.role !== 'user') {
+    for (let i = rest.length - 2; i >= 0; i--) {
+      if (rest[i].role === 'user') {
+        anchorTail.unshift(rest[i]);
+        break;
+      }
+    }
+  }
+  const anchorIds = new Set(anchorTail);
+  const intermediates = rest.filter((m) => !anchorIds.has(m));
+
+  // Âncoras estouram o teto? Trunca o conteúdo da última mensagem em vez de
+  // descartá-la (cabeça + cauda = instrução visível).
+  let finalAnchors = anchorTail;
+  const anchorsCost = buildFullHistoryPrompt({ ...body, messages: [...systemMsgs, ...anchorTail] }).length;
+  if (anchorsCost > maxChars) {
+    const systemCost = buildFullHistoryPrompt({ ...body, messages: systemMsgs }).length;
+    const lastBudget = Math.max(1000, maxChars - systemCost - 50);
+    const clippedLast = clipMessageContent(lastMsg, lastBudget);
+    finalAnchors = [...anchorTail.filter((m) => m !== lastMsg), clippedLast];
+  }
+
+  // Preenche o orçamento restante com o histórico intermediário (de trás p/ frente).
+  let keptLen = 0;
+  for (let k = intermediates.length; k >= 1; k--) {
+    const slice = intermediates.slice(intermediates.length - k);
+    const candidate = [...systemMsgs, ...slice, ...finalAnchors];
+    if (buildFullHistoryPrompt({ ...body, messages: candidate }).length <= maxChars) {
+      keptLen = k;
+      break;
+    }
+  }
+  const kept = intermediates.slice(intermediates.length - keptLen);
+  return { ...body, messages: [...systemMsgs, ...kept, ...finalAnchors] };
+}
+
+/** Converte uma mensagem não-system em texto no formato do prompt. */
+function formatTurnForPrompt(msg: any): string {
+  const contentStr = messageText(msg.content);
+  if (msg.role === 'user') return `User: ${contentStr}`;
+  if (msg.role === 'assistant') {
+    let out = contentStr;
+    if ((msg as any).reasoning_content) {
+      out = `<think>\n${(msg as any).reasoning_content}\n</think>\n${out}`;
+    }
+    if (msg.tool_calls && Array.isArray(msg.tool_calls)) {
+      for (const tc of msg.tool_calls) {
+        let args = tc.function?.arguments || '{}';
+        if (typeof args !== 'string') args = JSON.stringify(args);
+        out += `\n<tool_call>{"name": "${tc.function?.name}", "arguments": ${args}}</tool_call>`;
+      }
+    }
+    return `Assistant: ${out.trim()}`;
+  }
+  if (msg.role === 'tool' || msg.role === 'function') {
+    return `Tool Response (${msg.name || 'tool'}): ${contentStr}`;
+  }
+  return '';
+}
+
+/**
+ * Monta o prompt do Gemini Web respeitando o TETO REAL do composer
+ * (GEMINI_WEB_COMPOSER_SAFE_CHARS). Quando o prompt completo não cabe,
+ * prioriza:
+ *   1. A CAUDA da conversa — termina na pergunta atual do usuário (se perdida,
+ *      o Gemini responde só o system prompt);
+ *   2. O bloco de TOOLS — contrato funcional do modelo (formato <tool_call> +
+ *      nomes, que ficam na cabeça do bloco; schemas detalhados no fim);
+ *   3. A CABEÇA do system prompt — persona + instruções iniciais da IDE.
+ * Retorna o prompt completo quando já cabe no teto.
+ */
+/**
+ * Contrato de ferramentas usado quando o cliente NÃO envia `tools` no
+ * request. O Trae/IDE espera que o modelo emita `<tool_call>` para criar
+ * arquivos, mas sem o contrato no prompt o Gemini Web só narra ("Criei o
+ * arquivo...") e o arquivo nunca é criado. Os nomes/schemas seguem o padrão
+ * dos agentes de IDE (Write/Edit/Read/Bash).
+ */
+export const FALLBACK_TOOLS_CONTRACT = `
+# TOOLS AVAILABLE
+You are a coding agent. To use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:
+
+<tool_call>
+{"name": "tool_name", "arguments": {"param_name": "value"}}
+</tool_call>
+
+Available tools:
+- "Write": create or overwrite a file. arguments: {"file_path": "relative path", "content": "full file text"}
+- "Edit": apply a text replacement in a file. arguments: {"file_path": "relative path", "old_string": "text to replace", "new_string": "replacement text"}
+- "Read": read a file. arguments: {"file_path": "relative path"}
+- "Bash": run a shell command. arguments: {"command": "command to run"}
+
+RULES:
+1. Call multiple tools by outputting multiple <tool_call> blocks consecutively.
+2. Do NOT output any other text after your <tool_call> blocks. Wait for the user to provide the tool response.
+3. The JSON must be valid and follow the tool's parameters exactly.
+4. When passing code/HTML inside a JSON string value (ex.: <html lang="pt-BR">), escape the inner double quotes as \\" so the JSON stays valid.
+5. Use forward slashes (/) in file_path values (ex.: "C:/Users/nome/arquivo.html"), NEVER backslashes — they break the JSON.
+`;
+
+/** Bloco de tools para o prompt: schema do cliente ou contrato fallback. */
+function webToolsBlock(body: OpenAIRequest): string {
+  const fromClient = buildToolsInstructions(body, { booster: isModelBoosted(body.model) });
+  if (fromClient) return fromClient;
+  return FALLBACK_TOOLS_CONTRACT;
+}
+
+export function buildGeminiWebPrompt(body: OpenAIRequest, maxChars: number = GEMINI_WEB_COMPOSER_SAFE_CHARS): string {
+  const messages = body.messages || [];
+  let system = '';
+  const turns: string[] = [];
+  for (const msg of messages) {
+    if (msg.role === 'system') {
+      system += messageText(msg.content) + '\n\n';
+      continue;
+    }
+    const text = formatTurnForPrompt(msg);
+    if (text) turns.push(text);
+  }
+  const conversation = turns.join('\n\n');
+  const tools = webToolsBlock(body);
+
+  const assemble = (...parts: string[]) => parts.filter((s) => s && s.trim()).join('\n');
+  const full = assemble(system, tools, conversation);
+  if (full.length <= maxChars) return full;
+
+  const toolsBudget = Math.floor(maxChars * 0.3);
+  let keepTools = '';
+  if (tools.length > 0) {
+    if (tools.length <= toolsBudget) {
+      keepTools = tools;
+    } else {
+      // O formato + regras + nomes estão na CABEÇA do bloco (ver
+      // buildToolsInstructions): o corte preserva o contrato de chamada.
+      keepTools = tools.slice(0, toolsBudget).replace(/\s+$/, '') + '\n…(schemas de mais ferramentas omitidos)\n';
+    }
+  }
+
+  const convLen = conversation.length;
+  const convBudget = Math.min(convLen, Math.floor((maxChars - keepTools.length - 64) * 0.55));
+  const sysBudget = Math.max(0, maxChars - keepTools.length - convBudget - 64);
+
+  const keepSys = sysBudget > 0 ? system.slice(0, sysBudget).replace(/\s+$/, '') : '';
+  let keepConv = convBudget > 0 ? conversation.slice(-convBudget) : '';
+  // Evita começar no meio de uma palavra: corta no início da primeira
+  // "User:"/"Assistant:"/"Tool Response" visível após o ponto de corte.
+  const boundary = keepConv.search(/\n\n(?=User:|Assistant:|Tool Response)/);
+  if (boundary > 0) keepConv = keepConv.slice(boundary + 2);
+
+  return assemble(keepSys, keepTools, keepConv);
+}
 
 /**
  * Clica no botão de enviar (aria-label "Send"/ícone send/arrow_upward), com
@@ -169,7 +420,15 @@ export const GEMINI_SCRIPT_READ_RESPONSE = `(() => {
       return out;
     };
     const all = deepAll(document);
-    const nodes = all.filter((el) => el.matches('.model-response-text'));
+    const visible = (el) => {
+      try {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 || r.height > 0;
+      } catch {
+        return false;
+      }
+    };
+    const nodes = all.filter((el) => el.matches('.model-response-text') && visible(el));
     const last = nodes[nodes.length - 1];
     const text = last ? last.innerText || '' : '';
     const stopVisible = all
@@ -184,6 +443,41 @@ export const GEMINI_SCRIPT_READ_RESPONSE = `(() => {
     return { text: text, hasStop: stopVisible };
   } catch (e) {
     return { text: '', hasStop: false };
+  }
+})()`;
+
+/** Lê o texto efetivamente registrado no composer (para verificar se o prompt
+ *  completo entrou — o editor rich-text do Gemini pode ignorar o fim do texto). */
+export const GEMINI_SCRIPT_READ_COMPOSER = `(() => {
+  const MARK = '__GEMINI_READ_COMPOSER__';
+  try {
+    const deepAll = (root) => {
+      const out = [];
+      for (const el of Array.from(root.querySelectorAll('*'))) {
+        out.push(el);
+        if (el.shadowRoot) out.push(...deepAll(el.shadowRoot));
+      }
+      return out;
+    };
+    const all = deepAll(document);
+    const selectors = [
+      'div.ql-editor[contenteditable="true"]',
+      'rich-textarea div[contenteditable="true"]',
+      'rich-textarea [contenteditable="true"]',
+      '[aria-label="Enter a prompt for Gemini"]',
+      '[aria-label="Enter a prompt"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'textarea',
+    ];
+    for (const sel of selectors) {
+      const el = all.find((x) => x.matches(sel));
+      if (!el) continue;
+      const text = el.isContentEditable ? el.innerText || '' : el.value || '';
+      return { length: text.length, tail: text.slice(-300) };
+    }
+    return { length: 0, tail: '' };
+  } catch (e) {
+    return { length: 0, tail: '' };
   }
 })()`;
 
@@ -290,6 +584,9 @@ export interface GeminiTurnOptions {
   pollIntervalMs?: number;
   timeoutMs?: number;
   stablePolls?: number;
+  /** Quando aborta (ex.: cliente Trae/Cursor pausou o request), o turno
+   *  termina o quanto antes para devolver a aba ao pool. */
+  abortSignal?: AbortSignal;
 }
 
 /** Interface mínima de página aceita pelo runGeminiTurn (testes usam fake).
@@ -451,9 +748,10 @@ export async function createGeminiWebStream(
   prompt: string,
   opts: GeminiTurnOptions = {}
 ): Promise<ReadableStream<Uint8Array>> {
-  const pollIntervalMs = opts.pollIntervalMs ?? 400;
+  const pollIntervalMs = opts.pollIntervalMs ?? 200;
   const timeoutMs = opts.timeoutMs ?? 5 * 60 * 1000;
   const stablePolls = opts.stablePolls ?? 4;
+  const abortSignal = opts.abortSignal;
 
   return new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -463,6 +761,17 @@ export async function createGeminiWebStream(
         } catch {
           // controller já fechado
         }
+      };
+
+      // Cliente (Trae/Cursor) pausou o request: encerra o turno e devolve a
+      // aba ao pool sem esperar a resposta acabar.
+      const bailIfAborted = (): boolean => {
+        if (abortSignal?.aborted) {
+          push({ type: 'done' });
+          controller.close();
+          return true;
+        }
+        return false;
       };
 
       try {
@@ -478,12 +787,14 @@ export async function createGeminiWebStream(
         }
         // Deixa a SPA do Gemini montar o composer antes de digitar.
         await page.waitForTimeout(1500);
+        if (bailIfAborted()) return;
         await page.evaluate(GEMINI_SCRIPT_DISMISS_ONBOARDING).catch(() => {});
 
-        let setOk = await page.evaluate(GEMINI_SCRIPT_SET_PROMPT, prompt).catch((e: any) => {
+        let setOk = await page.evaluate(geminiSetPromptScript(prompt)).catch((e: any) => {
           console.log('[gemini-web] setPrompt evaluate error:', e?.message);
           return false;
         });
+        if (bailIfAborted()) return;
         if (!setOk) {
           // Shadow DOM: document.querySelector não atravessa shadowRoot; o
           // locator nativo do Playwright atravessa.
@@ -492,11 +803,39 @@ export async function createGeminiWebStream(
         if (!setOk) {
           // Retry: hidratação lenta da SPA pode atrasar o composer.
           await page.waitForTimeout(2000);
-          setOk = await page.evaluate(GEMINI_SCRIPT_SET_PROMPT, prompt).catch((e: any) => {
+          if (bailIfAborted()) return;
+          setOk = await page.evaluate(geminiSetPromptScript(prompt)).catch((e: any) => {
             console.log('[gemini-web] setPrompt evaluate error (retry):', e?.message);
             return false;
           });
+          if (bailIfAborted()) return;
           if (!setOk) setOk = await tryGeminiLocatorPrompt(page, prompt);
+        }
+        if (setOk) {
+          console.log(`[gemini-web] composer preenchido chars=${prompt.length}`);
+        }
+        // Verifica se o texto COMPLETO entrou no composer. O editor rich-text do
+        // Gemini (Lexical) às vezes registra só parte do texto (o fim do prompt,
+        // onde fica a mensagem do usuário, fica de fora) e o Gemini então responde
+        // apenas o system prompt — ex.: saudação "Hello! I am your AI collaborator".
+        if (setOk) {
+          const rb: any = await page.evaluate(GEMINI_SCRIPT_READ_COMPOSER).catch(() => null);
+          if (rb && typeof rb.length === 'number' && rb.length < prompt.length) {
+            console.warn(
+              `[gemini-web] composer INCOMPLETO: ${rb.length}/${prompt.length} chars. Tail=${JSON.stringify(rb.tail)}. Re-tentando preenchimento...`
+            );
+            const reOk = await tryGeminiLocatorPrompt(page, prompt);
+            if (reOk) {
+              const rb2: any = await page.evaluate(GEMINI_SCRIPT_READ_COMPOSER).catch(() => null);
+              console.log(
+                `[gemini-web] composer re-preenchido via locator: ${
+                  rb2 && typeof rb2.length === 'number' ? rb2.length + '/' + prompt.length + ' chars' : 'verificação indisponível'
+                }`
+              );
+            } else {
+              console.warn(`[gemini-web] re-preenchimento via locator falhou; continuando com ${rb.length} chars.`);
+            }
+          }
         }
         if (!setOk) {
           const state = await page.evaluate(GEMINI_SCRIPT_PAGE_STATE).catch((e: any) => {
@@ -524,6 +863,7 @@ export async function createGeminiWebStream(
           return;
         }
         const sendOk = await page.evaluate(GEMINI_SCRIPT_CLICK_SEND).catch(() => false);
+        if (bailIfAborted()) return;
         if (!sendOk) await tryGeminiLocatorSend(page);
 
         let lastText = '';
@@ -531,6 +871,7 @@ export async function createGeminiWebStream(
         const startedAt = Date.now();
 
         while (true) {
+          if (bailIfAborted()) return;
           if (page.isClosed()) {
             push({ type: 'error', message: 'A aba do Gemini foi fechada durante o chat.' });
             break;
@@ -630,7 +971,9 @@ export class FakeGeminiPage implements GeminiPageLike {
       return true;
     }
     if (src.includes('__GEMINI_SET_PROMPT__')) {
-      this.prompts.push(String(arg ?? ''));
+      const m = src.match(/const prompt = ("[\s\S]*?");/);
+      const embedded = m ? JSON.parse(m[1]) : undefined;
+      this.prompts.push(embedded !== undefined ? embedded : String(arg ?? ''));
       return this.setPromptResult;
     }
     if (src.includes('__GEMINI_HAS_COMPOSER__')) {

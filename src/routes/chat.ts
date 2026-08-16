@@ -43,6 +43,8 @@ import type { TokenEconomySettings } from '../services/token-economy.ts';
 import { OpenAIRequest, ChoiceDelta, Message } from '../utils/types.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
+import { robustParseJSON } from '../utils/robust-json.ts';
+import { isModelBoosted } from '../services/booster.ts';
 import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
 import {
@@ -491,7 +493,7 @@ export async function chatCompletions(c: Context) {
       return maybeStoreCache(await forwardChatCompletions(c, body, target));
     }
 
-    const finalPrompt = buildAgentPrompt(body);
+    const finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
     const messages = body.messages || [];
 
     // DeepSeek web enxerga imagens via upload (ref_file_ids), mas imagens só
@@ -764,7 +766,7 @@ export async function chatCompletions(c: Context) {
                           toolJsonStr = toolJsonStr.substring(startJ, endJ + 1);
                         }
 
-                        const toolCallObj = JSON.parse(toolJsonStr);
+                        const toolCallObj = robustParseJSON(toolJsonStr);
                         const toolId = 'call_' + uuidv4();
                         
                         await writeEvent({

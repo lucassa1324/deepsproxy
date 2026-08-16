@@ -7,7 +7,7 @@
  * conexão viva sem que o cliente enxergue nada (comentários são ignorados).
  */
 
-export const SSE_KEEPALIVE_MS = 15_000;
+export const SSE_KEEPALIVE_MS = 3_000;
 
 /**
  * Inicia um intervalo que escreve `: ping` a cada `SSE_KEEPALIVE_MS`.

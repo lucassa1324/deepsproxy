@@ -20,6 +20,7 @@ import {
 } from './base.ts';
 import { withRetry, HttpError } from './throttle.ts';
 import { buildAgentPrompt } from '../../utils/prompt.ts';
+import { isModelBoosted } from '../booster.ts';
 import { parseToolCallsFromContent } from '../../tools/executor.ts';
 import { StreamingToolParser } from '../../tools/stream-parser.ts';
 
@@ -124,7 +125,7 @@ export class OllamaAdapter implements ProviderAdapter {
     // Com tools: fallback agentic — a resposta sai como texto com blocos
     // <tool_call>; o agente real é o executor de ferramentas da API.
     const messages = hasTools
-      ? [{ role: 'user', content: buildAgentPrompt(payload) }]
+      ? [{ role: 'user', content: buildAgentPrompt(payload, { booster: isModelBoosted(payload.model) }) }]
       : toOllamaMessages(payload);
 
     const body = buildOllamaBody(payload, messages);

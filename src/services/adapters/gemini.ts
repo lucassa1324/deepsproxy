@@ -29,6 +29,32 @@ function defaultGeminiRpm(): number {
   return env > 0 ? env : 15;
 }
 
+/*
+ * thought_signature: o Gemini exige que um functionCall do histórico (turnos
+ * anteriores) seja reenviado com a mesma `thoughtSignature` da resposta
+ * original; sem ela a API responde 400 ("Function call is missing a
+ * thought_signature"). O formato OpenAI não tem esse campo, então a assinatura
+ * é codificada no id do tool_call (que o cliente ecoa de volta) e também
+ * exposta como `thought_signature` no próprio tool_call.
+ */
+const TS_ID_PREFIX = 'call_ts_';
+
+function encodeThoughtSignature(sig: string): string {
+  return Buffer.from(String(sig), 'utf-8').toString('base64url');
+}
+
+function thoughtSignatureFromId(id: string | undefined | null): string | null {
+  if (!id || !id.startsWith(TS_ID_PREFIX)) return null;
+  const encoded = id.slice(TS_ID_PREFIX.length);
+  if (!encoded) return null;
+  try {
+    const decoded = Buffer.from(encoded, 'base64url').toString('utf-8');
+    return decoded || null;
+  } catch {
+    return null;
+  }
+}
+
 /* ------------------------- OpenAI → Gemini ------------------------- */
 
 function contentToParts(content: any): any[] {
@@ -68,6 +94,30 @@ function parseToolResult(content: any): any {
     return { result: content.map((p: any) => p?.text || '').join('') };
   }
   return content || {};
+}
+
+/** Resultado de tool como texto puro (para histórico sem assinatura). */
+function toolContentToText(content: any): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p: any) => (typeof p?.text === 'string' ? p.text : typeof p === 'string' ? p : JSON.stringify(p)))
+      .join('\n');
+  }
+  if (content && typeof content === 'object') return JSON.stringify(content);
+  return String(content ?? '');
+}
+
+/**
+ * Modelos com raciocínio (2.5+, 3.x) exigem `thoughtSignature` em todo
+ * functionCall do histórico. Para eles, um call sem assinatura recuperável é
+ * convertido em texto (em vez de mandar o functionCall e tomar 400). Modelos
+ * antigos (2.0/1.5) não exigem — seguem com functionResponse normalmente.
+ */
+function requiresThoughtSignature(model: string): boolean {
+  const id = normalizeModelId(model);
+  if (!id) return true;
+  return /(^|[-_/])(2\.[4-9]|3(\.|-|$))/.test(id);
 }
 
 // O Gemini (function_declarations.parameters) aceita apenas um subconjunto do
@@ -150,6 +200,26 @@ export function buildGeminiBody(payload: OpenAIRequest): any {
   const systemParts: string[] = [];
   const contents: any[] = [];
 
+  // Gemini exige `thoughtSignature` em todo functionCall do histórico. Calls
+  // gerados por outro caminho (gemini-web/Playwright) ou antes desta correção
+  // não têm assinatura recuperável. Para modelos que exigem a assinatura,
+  // esses calls são descartados e o resultado da tool vira texto do usuário —
+  // sem isso a API responde 400.
+  const requiresSig = requiresThoughtSignature(payload.model);
+  const unsignedCallIds = new Set<string>();
+  const callNameById = new Map<string, string>();
+  for (const msg of payload.messages || []) {
+    if (msg.role !== 'assistant' || !Array.isArray(msg.tool_calls)) continue;
+    for (const tc of msg.tool_calls) {
+      if (!tc?.id) continue;
+      callNameById.set(tc.id, tc.function?.name || '');
+      if (requiresSig) {
+        const sig = (tc as any).thought_signature || thoughtSignatureFromId(tc.id);
+        if (!sig) unsignedCallIds.add(tc.id);
+      }
+    }
+  }
+
   for (const msg of payload.messages || []) {
     if (msg.role === 'system') {
       const text = Array.isArray(msg.content)
@@ -159,16 +229,25 @@ export function buildGeminiBody(payload: OpenAIRequest): any {
       continue;
     }
     if (msg.role === 'tool' || msg.role === 'function') {
-      contents.push({
-        role: 'user',
-        parts: [{ functionResponse: { name: msg.name || 'function', response: parseToolResult(msg.content) } }],
-      });
+      if (msg.tool_call_id && unsignedCallIds.has(msg.tool_call_id)) {
+        const label = callNameById.get(msg.tool_call_id) || msg.name || 'ferramenta';
+        const result = toolContentToText(msg.content);
+        contents.push({ role: 'user', parts: [{ text: `[Resultado da tool ${label}: ${result}]` }] });
+      } else {
+        const name = callNameById.get(msg.tool_call_id || '') || msg.name || 'function';
+        contents.push({
+          role: 'user',
+          parts: [{ functionResponse: { name, response: parseToolResult(msg.content) } }],
+        });
+      }
       continue;
     }
     const role = msg.role === 'assistant' ? 'model' : 'user';
     const parts = contentToParts(msg.content);
     if (msg.role === 'assistant' && Array.isArray(msg.tool_calls)) {
       for (const tc of msg.tool_calls) {
+        const sig = (tc as any).thought_signature || thoughtSignatureFromId(tc.id);
+        if (requiresSig && !sig) continue; // sem assinatura: não envia o functionCall
         let args: any = {};
         try {
           args =
@@ -178,7 +257,9 @@ export function buildGeminiBody(payload: OpenAIRequest): any {
         } catch {
           args = {};
         }
-        parts.push({ functionCall: { name: tc.function?.name || '', args } });
+        const fc: any = { name: tc.function?.name || '', args };
+        if (sig) fc.thoughtSignature = sig;
+        parts.push({ functionCall: fc });
       }
     }
     if (parts.length === 0) continue;
@@ -246,11 +327,16 @@ function messageFromGeminiParts(parts: any[]): any {
       else texts.push(part.text);
     } else if (part?.functionCall) {
       const fc = part.functionCall;
-      toolCalls.push({
+      const tc: any = {
         id: 'call_' + (fc.id || uuidv4().slice(0, 8)),
         type: 'function',
         function: { name: fc.name || '', arguments: JSON.stringify(fc.args || {}) },
-      });
+      };
+      if (fc.thoughtSignature) {
+        tc.thought_signature = fc.thoughtSignature;
+        tc.id = TS_ID_PREFIX + encodeThoughtSignature(fc.thoughtSignature);
+      }
+      toolCalls.push(tc);
     }
   }
   if (toolCalls.length) {

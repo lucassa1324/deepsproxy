@@ -9,10 +9,17 @@ import { v4 as uuidv4 } from 'uuid';
 import type { ParsedToolCall, ToolCallResult, ToolContext } from './types.ts';
 import { SchemaValidationError } from './schema.ts';
 import { registry } from './registry.ts';
+import { robustParseJSON } from '../utils/robust-json.ts';
 
 export interface ExecutionLoopConfig {
   maxTurns?: number;
   debug?: boolean;
+  /**
+   * Booster de modelo fraco (opt-in): quando ativo, injeta mensagens
+   * corretivas quando um tool_call falha ou vem num formato inválido, dando
+   * uma nova chance ao modelo em vez de devolver o texto "narrado".
+   */
+  booster?: boolean;
 }
 
 export interface LoopTurnResult {
@@ -37,6 +44,23 @@ export interface LLMResponse {
 
 const TOOL_START_TAG = '<' + 'tool_call>';
 const TOOL_END_TAG = '</' + 'tool_call>';
+
+/** Heurística: o texto parece conter um tool_call quebrado/parcial. */
+export function looksLikeBrokenToolCall(text: string): boolean {
+  const t = (text || '').trim();
+  if (!t) return false;
+  if (t.includes(TOOL_START_TAG) || t.includes('tool_call')) return true;
+  return /^\{?\s*"name"\s*:\s*"/.test(t) || /\{"name"\s*:\s*"/.test(t);
+}
+
+/** Mensagem corretiva injetada quando um tool_call falha (booster). */
+export function buildCorrectionMessage(failures: string): string {
+  return (
+    `[CORREÇÃO AUTOMÁTICA] Um ou mais tool_calls falharam:\n${failures}\n\n` +
+    `Isto NÃO é uma resposta final. Reenvie o(s) tool_call(s) corrigidos (confira os nomes e os argumentos no formato exato do schema). ` +
+    `NUNCA invente o resultado de uma ferramenta — se você não chamou a ferramenta, não afirme que executou a ação.`
+  );
+}
 
 export function parseToolCallsFromContent(content: string): {
   textContent: string;
@@ -73,14 +97,22 @@ export function parseToolCallsFromContent(content: string): {
         sanitized = sanitized.substring(braceStart, braceEnd + 1);
       }
 
-      const parsed = JSON.parse(sanitized);
-      toolCalls.push({
-        id: 'call_' + uuidv4(),
-        name: parsed.name || '',
-        arguments: typeof parsed.arguments === 'string'
-          ? JSON.parse(parsed.arguments)
-          : (parsed.arguments || {}),
-      });
+      // Modelos costumam emitir aspas sem escape dentro de valores JSON (ex.:
+      // charSet="UTF-8") e quebras de linha REAIS dentro de strings (HTML
+      // multi-linha). robustParseJSON corrige aspas internas E escapa control
+      // chars no fallback; JSON.parse direto quebraria nesses casos.
+      const parsed = robustParseJSON(sanitized);
+      if (parsed) {
+        toolCalls.push({
+          id: 'call_' + uuidv4(),
+          name: parsed.name || '',
+          arguments: typeof parsed.arguments === 'string'
+            ? (robustParseJSON(parsed.arguments) ?? {})
+            : (parsed.arguments || {}),
+        });
+      } else {
+        textContent += TOOL_START_TAG + jsonStr + TOOL_END_TAG;
+      }
     } catch (e) {
       textContent += TOOL_START_TAG + jsonStr + TOOL_END_TAG;
     }
@@ -199,10 +231,25 @@ export async function runExecutionLoop(
       : response.content;
 
     if (effectiveToolCalls.length === 0) {
-      if (debug) {
-        console.log('[executor] No tool calls, loop complete');
+      // Modelo fraco (booster): se o texto parece conter um tool_call quebrado
+      // (tag aberta, "name" solto, menção a tool_call), não devolvemos o texto
+      // como resposta — damos uma nova chance com uma correção.
+      const broken = config.booster && effectiveContent && looksLikeBrokenToolCall(effectiveContent);
+      if (!broken) {
+        if (debug) {
+          console.log('[executor] No tool calls, loop complete');
+        }
+        return effectiveContent || '';
       }
-      return effectiveContent || '';
+      messages.push({ role: 'assistant', content: effectiveContent });
+      messages.push({
+        role: 'user',
+        content: buildCorrectionMessage(
+          'O tool_call que você emitiu estava num formato inválido e não pôde ser executado. ' +
+            'Use o formato exato: <tool_call>{"name": "nome_da_tool", "arguments": {...}}</tool_call> e nada mais.'
+        ),
+      });
+      continue;
     }
 
     const context: ToolContext = {
@@ -224,6 +271,17 @@ export async function runExecutionLoop(
 
     for (const result of toolResults) {
       messages.push(buildToolMessage(result));
+    }
+
+    // Booster: quando uma tool falhou (desconhecida, validação ou erro de
+    // execução), injeta um aviso corretivo para o modelo fraco aprender e
+    // corrigir na próxima volta, em vez de só seguir adiante.
+    const failures = toolResults.filter((r) => r.isError);
+    if (config.booster && failures.length > 0) {
+      const detail = failures
+        .map((r) => `${r.name}: ${String(r.result).slice(0, 300)}`)
+        .join('\n');
+      messages.push({ role: 'user', content: buildCorrectionMessage(detail) });
     }
 
     if (debug) {

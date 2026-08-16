@@ -74,7 +74,7 @@ import {
 import type { ProviderRegistry } from '../services/config.ts';
 import { getModelCatalog, resolveModelEntry } from '../services/modelCatalog.ts';
 import { getTokenEconomy, updateTokenEconomy } from '../services/token-economy.ts';
-
+import { getBoosterSettings, updateBoosterSettings, toggleModelBooster, isModelBoosted } from '../services/booster.ts';
 export const dashboard = new Hono();
 
 // Incrementado quando o registro de provedores muda. As páginas (chat e
@@ -641,6 +641,48 @@ dashboard.patch('/api/settings/token-economy', async (c) => {
   }
 });
 
+/* ------------------------- Modo Booster (modelos fracos) ------------------------- */
+
+// GET /api/settings/booster — configuração atual do booster.
+dashboard.get('/api/settings/booster', (c) => {
+  return c.json({ ok: true, settings: getBoosterSettings() });
+});
+
+// PATCH /api/settings/booster — atualiza (parcialmente) e persiste.
+dashboard.patch('/api/settings/booster', async (c) => {
+  try {
+    const body: any = await c.req.json().catch(() => ({}));
+    const patch: any = {};
+    for (const key of ['enabled', 'promptReinforcement', 'correctiveLoop', 'tolerantParser'] as const) {
+      if (typeof body[key] === 'boolean') patch[key] = body[key];
+    }
+    if (Array.isArray(body.models)) patch.models = body.models;
+    const settings = updateBoosterSettings(patch);
+    console.log(
+      `[booster] configuração atualizada: enabled=${settings.enabled} models=[${settings.models.join(', ') || 'nenhum'}] prompt=${settings.promptReinforcement} corrective=${settings.correctiveLoop} tolerant=${settings.tolerantParser}`
+    );
+    return c.json({ ok: true, settings });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+// POST /api/settings/booster/models — liga/desliga o booster de um modelo.
+// Corpo: { "model": "meu-modelo", "enable": true|false }
+dashboard.post('/api/settings/booster/models', async (c) => {
+  try {
+    const body: any = await c.req.json().catch(() => ({}));
+    const model = String(body.model || '').trim();
+    if (!model) return c.json({ ok: false, error: 'Informe o campo "model".' }, 400);
+    const enable = body.enable !== false;
+    const settings = toggleModelBooster(model, enable);
+    console.log(`[booster] modelo "${model}" ${enable ? 'habilitado' : 'desabilitado'} (${isModelBoosted(model) ? 'ativo' : 'inativo'})`);
+    return c.json({ ok: true, settings, boosted: isModelBoosted(model) });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
 dashboard.get('/api/apps', async (c) => {
   const registry = resolveRegistry(c.req.header('Cookie'));
   const apps = [];
@@ -648,9 +690,7 @@ dashboard.get('/api/apps', async (c) => {
     apps.push(await enrichApp(a, registry));
   }
   return c.json({ ok: true, apps });
-});
-
-dashboard.post('/api/apps', async (c) => {
+});dashboard.post('/api/apps', async (c) => {
   try {
     const body: any = await c.req.json().catch(() => ({}));
     const name = String(body.name || '').trim();

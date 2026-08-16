@@ -80,7 +80,7 @@ export class StreamingToolParser {
 
               if (toolCallObj.arguments) {
                 toolArgs = typeof toolCallObj.arguments === 'string'
-                  ? JSON.parse(toolCallObj.arguments)
+                  ? (robustParseJSON(toolCallObj.arguments) ?? {})
                   : toolCallObj.arguments;
               } else {
                 const { name, ...rest } = toolCallObj;
@@ -128,7 +128,7 @@ export class StreamingToolParser {
             const toolId = 'call_' + uuidv4();
             let toolName = toolCallObj.name || '';
             let toolArgs = toolCallObj.arguments || {};
-            if (typeof toolArgs === 'string') toolArgs = JSON.parse(toolArgs);
+            if (typeof toolArgs === 'string') toolArgs = robustParseJSON(toolArgs) ?? {};
             else if (!toolCallObj.arguments) {
               const { name, ...rest } = toolCallObj;
               toolArgs = rest;

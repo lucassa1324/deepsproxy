@@ -83,9 +83,12 @@ async function ensurePoolPages(): Promise<void> {
   }
 }
 
-/** Pega uma aba livre para um stream de chat; espera se todas estiverem ocupadas. */
-export function acquireGeminiStreamPage(): Promise<Page> {
+/** Pega uma aba livre para um stream de chat; espera se todas estiverem ocupadas.
+ *  Quando `signal` aborta (cliente pausou), remove o waiter da fila e rejeita —
+ *  o request cancelado não deve segurar uma aba nem furar a fila depois. */
+export function acquireGeminiStreamPage(signal?: AbortSignal): Promise<Page> {
   if (!context) return Promise.reject(new Error('Playwright not initialized'));
+  if (signal?.aborted) return Promise.reject(new Error('Requisição cancelada'));
 
   const ready = geminiStreamPages.find((p) => !geminiStreamPagesBusy.has(p) && !p.isClosed());
   if (ready) {
@@ -98,33 +101,45 @@ export function acquireGeminiStreamPage(): Promise<Page> {
   if (closedCount > 0) {
     geminiStreamPages = geminiStreamPages.filter((p) => !p.isClosed());
     for (const p of geminiStreamPages) geminiStreamPagesBusy.delete(p);
-    return ensurePoolPages().then(() => acquireGeminiStreamPage());
+    return ensurePoolPages().then(() => acquireGeminiStreamPage(signal));
   }
 
   // Pool vazio (ex.: contexto reaberto depois do login concluído): recria o
   // pool em vez de deixar o request esperando para sempre com capacidade 0.
   if (geminiStreamPages.length === 0 && !loginFlowActive) {
-    return ensurePoolPages().then(() => acquireGeminiStreamPage());
+    return ensurePoolPages().then(() => acquireGeminiStreamPage(signal));
   }
 
   return new Promise<Page>((resolve, reject) => {
     let waiter: { resolve: (p: Page) => void, reject: (e: Error) => void };
-    const timer = setTimeout(() => {
+    const removeWaiter = () => {
       const i = geminiStreamWaiters.indexOf(waiter);
       if (i >= 0) geminiStreamWaiters.splice(i, 1);
+    };
+    const timer = setTimeout(() => {
+      removeWaiter();
+      signal?.removeEventListener('abort', onAbort);
       reject(new Error('Timeout esperando aba livre do Gemini (fila lotada ou login em andamento)'));
     }, 120000);
+    const onAbort = () => {
+      clearTimeout(timer);
+      removeWaiter();
+      reject(new Error('Requisição cancelada'));
+    };
     waiter = {
       resolve: (page) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         geminiStreamPagesBusy.add(page);
         resolve(page);
       },
       reject: (e) => {
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onAbort);
         reject(e);
       },
     };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
     geminiStreamWaiters.push(waiter);
   });
 }

@@ -5,6 +5,52 @@ foi feito e para que serve. Novas implementações são adicionadas no topo.
 
 ---
 
+## Implementação 8 — Modo Booster (suporte a modelos fracos no uso de ferramentas)
+
+**Data:** 2026-08-16
+
+**O que serve para:**
+- Modelos "fracos" (ex.: `qwen2.5-coder:3b` no Ollama) se perdem no uso de
+  ferramentas: narram o que fariam sem chamar a tool, emitem `<tool_call>` com
+  JSON quebrado ou repetem tool calls inválidos.
+- O booster é um ajuste **por modelo** (opt-in): só os modelos cadastrados são
+  afetados — modelos potentes (DeepSeek, Gemini 3 Pro, etc.) continuam com o
+  comportamento atual intacto.
+- 3 ajudas independentes (configuráveis no painel, aba Apps → Modo Booster):
+  - **Reforço de prompt:** regras duras ("não narre o que faria", "após um
+    `<tool_call>` pare") + **exemplo pronto** de `<tool_call>` montado com uma
+    tool REAL da requisição (nome + argumentos de exemplo seguindo o schema);
+  - **Loop corretivo:** no modo agente (`agent:true`), quando um tool_call
+    falha (tool desconhecida, JSON inválido, validação) ou vem num formato
+    quebrado, o proxy injeta uma mensagem de correção com o erro e dá uma nova
+    chance, em vez de devolver o texto "narrado";
+  - **Parser tolerante:** `robustParseJSON` no streaming do DeepSeek (era
+    `JSON.parse`) — recupera tool calls com aspas não escapadas, backslashes
+    de caminho Windows e JSON truncado (seguro p/ todos: em JSON válido o
+    resultado é idêntico).
+
+**Como ativar:**
+- Painel → aba Apps → card "Modo Booster": ligue o master, adicione o **id do
+  modelo** (datalist com o catálogo) ou use o curinga `*` para todos.
+- Config persistida em `gateway-booster.json` (ou `BOOSTER_FILE`).
+- APIs: `GET/PATCH /api/settings/booster` e `POST /api/settings/booster/models`
+  (`{ "model": "...", "enable": true|false }`).
+
+**Arquivos:**
+- `src/services/booster.ts` (novo): settings + `isModelBoosted(model)`.
+- `src/utils/prompt.ts`: `buildToolsInstructions`/`buildAgentPrompt`/
+  `buildFullHistoryPrompt` aceitam `opts.booster` e injetam o reforço.
+- `src/tools/executor.ts`: `looksLikeBrokenToolCall` + `buildCorrectionMessage`
+  + loop corretivo (config `booster`).
+- Aplicado em: `chat.ts` (DeepSeek), `qwen.ts`, `gemini-web.ts`, `local.ts`,
+  `adapters/ollama.ts` e `agent.ts` (modo agente).
+- `src/ui/dashboard.ts` + `src/ui/index.html`: rotas e painel do booster.
+- `src/booster.test.ts` (novo): 12 testes.
+
+**Verificação:** build limpo; suíte 142 testes (141 pass, 0 fail, 1 skip).
+
+---
+
 ## Implementação 7 — Provedor Gemini Web (UI automation, sem API key)
 
 **Data:** 2026-08-15

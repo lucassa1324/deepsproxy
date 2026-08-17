@@ -5,8 +5,8 @@ qwen_profile/
 gemini_profile/
 qwenproxy/
 .env
-.env.local
-.env.loocal
+.env.*
+!.env.example
 *.log
 .DS_Store
 coverage/
@@ -17,3 +17,20 @@ providers.json
 gateway-apps.json
 gateway-economy.json
 gateway-booster.json
+
+# Playwright
+blob_report/
+playwright-report/
+test-results/
+
+# Chrome / Chromium user data (nunca committar sessoes)
+**/Default/Network/Cookies
+**/Default/Login Data*
+**/Default/Local Storage/
+**/Default/Session Storage/
+**/Default/IndexedDB/
+**/Default/Cache/
+**/Default/Code Cache/
+**/Local State
+**/Singleton*
+**/*Profile*/

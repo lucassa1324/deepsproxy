@@ -183,6 +183,24 @@ dashboard.get('/api/status', async (c) => {
       backend = { ok: !!models, baseUrl: primary.baseUrl, model: primary.model };
     }
 
+    // Adicionar os modelos virtuais "auto" e "auto-free" como primeiros da lista
+    if (!seenModels.has('auto')) {
+      modelsList.unshift(enrichModel({
+        id: 'auto',
+        object: 'model',
+        owned_by: 'deepsproxy',
+        name: 'Auto (Smart Router)',
+      }));
+    }
+    if (!seenModels.has('auto-free')) {
+      modelsList.unshift(enrichModel({
+        id: 'auto-free',
+        object: 'model',
+        owned_by: 'deepsproxy',
+        name: 'Auto Free (Browser Only)',
+      }));
+    }
+
     return c.json({
       server: 'online',
       port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
@@ -400,6 +418,16 @@ dashboard.post('/api/models/refresh', async (c) => {
     return true;
   });
 
+  // Adicionar o modelo virtual "auto" como primeiro da lista
+  if (!seen.has('auto')) {
+    deduped.unshift(enrichModel({
+      id: 'auto',
+      object: 'model',
+      owned_by: 'deepsproxy',
+      name: 'Auto (Smart Router)',
+    }));
+  }
+
   modelsVersion++;
   console.log(
     `[models] refresh: ${providersInfo
@@ -477,10 +505,22 @@ dashboard.get('/api/models', async (c) => {
   const result =
     enabled.length === 0 && !deduped.length
       ? [
+          enrichModel({ id: 'auto', object: 'model', owned_by: 'deepsproxy', name: 'Auto (Smart Router)' }),
           enrichModel({ id: 'deepseek-thinking', object: 'model', owned_by: 'deepseek' }),
           enrichModel({ id: 'deepseek-no-thinking', object: 'model', owned_by: 'deepseek' }),
         ]
       : deduped;
+
+  // Adicionar o modelo virtual "auto" como primeiro da lista
+  if (!seen.has('auto')) {
+    result.unshift(enrichModel({
+      id: 'auto',
+      object: 'model',
+      owned_by: 'deepsproxy',
+      name: 'Auto (Smart Router)',
+    }));
+  }
+
   return c.json({ object: 'list', data: result });
 });
 
@@ -627,13 +667,13 @@ dashboard.patch('/api/settings/token-economy', async (c) => {
   try {
     const body: any = await c.req.json().catch(() => ({}));
     const patch: any = {};
-    for (const key of ['enabled', 'cachePrefix', 'truncateHistory', 'summarizeHistory', 'stripReasoning', 'truncateToolOutput', 'responseCache', 'tokenEstimation'] as const) {
+    for (const key of ['enabled', 'cachePrefix', 'truncateHistory', 'summarizeHistory', 'stripReasoning', 'truncateToolOutput', 'responseCache', 'tokenEstimation', 'smartTruncation', 'dedupConsecutive'] as const) {
       if (typeof body[key] === 'boolean') patch[key] = body[key];
     }
     if (body.maxContextTokens !== undefined) patch.maxContextTokens = body.maxContextTokens;
     const settings = updateTokenEconomy(patch);
     console.log(
-      `[economy] configuração atualizada: enabled=${settings.enabled} cachePrefix=${settings.cachePrefix} truncate=${settings.truncateHistory} summarize=${settings.summarizeHistory} stripReasoning=${settings.stripReasoning} toolOutput=${settings.truncateToolOutput} responseCache=${settings.responseCache} tokenEstimation=${settings.tokenEstimation}`
+      `[economy] configuração atualizada: enabled=${settings.enabled} cachePrefix=${settings.cachePrefix} truncate=${settings.truncateHistory} summarize=${settings.summarizeHistory} stripReasoning=${settings.stripReasoning} toolOutput=${settings.truncateToolOutput} responseCache=${settings.responseCache} tokenEstimation=${settings.tokenEstimation} smartTruncation=${settings.smartTruncation} dedup=${settings.dedupConsecutive}`
     );
     return c.json({ ok: true, settings });
   } catch (e: any) {
@@ -758,4 +798,64 @@ dashboard.post('/api/apps/:id/key', async (c) => {
   console.log(`[gateway] chave regenerada para a app ${id}`);
   const registry = resolveRegistry(c.req.header('Cookie'));
   return c.json({ ok: true, app: await enrichApp(result.app, registry), apiKey: result.apiKey });
+});
+
+// ── FASE 4: Local Models ──────────────────────────────────────────────────
+
+import {
+  discoverLocalInstances,
+  getLocalInstances,
+  checkAllHealth,
+  getAllHealthStatuses,
+  getAllMetrics,
+  getFallbackConfig,
+  configureFallback,
+  getLocalModelsDashboard,
+} from '../services/local-discovery.ts';
+
+dashboard.get('/api/local-models', (c) => {
+  return c.json(getLocalModelsDashboard());
+});
+
+dashboard.post('/api/local-models/refresh', async (c) => {
+  const instances = await discoverLocalInstances();
+  return c.json({ ok: true, count: instances.length, instances });
+});
+
+dashboard.get('/api/local-models/health', async (c) => {
+  const statuses = await checkAllHealth();
+  return c.json(statuses);
+});
+
+dashboard.get('/api/local-models/metrics', (c) => {
+  return c.json(getAllMetrics());
+});
+
+dashboard.patch('/api/local-models/fallback', async (c) => {
+  const body: any = await c.req.json().catch(() => ({}));
+  configureFallback(body);
+  return c.json({ ok: true, fallback: getFallbackConfig() });
+});
+
+// ── Auto Router ─────────────────────────────────────────────────────────
+
+import {
+  updateAutoRouterConfig,
+  getAutoRouterConfig,
+  getAutoRouterStatus,
+  getAllModelMetadata,
+} from '../services/auto-router/index.ts';
+
+dashboard.get('/api/auto-router', (c) => {
+  return c.json(getAutoRouterStatus());
+});
+
+dashboard.patch('/api/auto-router', async (c) => {
+  const body: any = await c.req.json().catch(() => ({}));
+  updateAutoRouterConfig(body);
+  return c.json({ ok: true, config: getAutoRouterConfig() });
+});
+
+dashboard.get('/api/auto-router/metadata', (c) => {
+  return c.json(getAllModelMetadata());
 });

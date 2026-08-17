@@ -89,6 +89,30 @@ async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogMod
     out.push(m);
   };
 
+  // Modelo "auto" (Smart Router) — sempre disponível
+  push({
+    id: 'auto',
+    name: 'Auto (Smart Router)',
+    provider: 'deepsproxy',
+    providerName: 'Auto Router',
+    providerType: 'openai-compatible' as ProviderType,
+    baseUrl: '',
+    apiKeyEnvVar: '',
+    apiKey: '',
+  });
+
+  // Modelo "auto-free" (Smart Router apenas provedores browser/gratuitos)
+  push({
+    id: 'auto-free',
+    name: 'Auto Free (Browser Only)',
+    provider: 'deepsproxy',
+    providerName: 'Auto Router',
+    providerType: 'openai-compatible' as ProviderType,
+    baseUrl: '',
+    apiKeyEnvVar: '',
+    apiKey: '',
+  });
+
   for (const p of enabled) {
     const base = {
       provider: p.id,

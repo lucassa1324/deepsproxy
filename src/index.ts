@@ -41,6 +41,8 @@ import {
   getAppByKey,
   isVirtualKeyFormat,
 } from './services/gateway.ts';
+import { shutdownAgentPool, optimizedFetch } from './services/optimizations.ts';
+import { startDiscovery, stopDiscovery, startHealthCheck, stopHealthCheck } from './services/local-discovery.ts';
 
 dotenv.config();
 
@@ -264,31 +266,52 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
       return true;
     });
 
+  // Adicionar os modelos virtuais como primeiros da lista
+  const autoModel = {
+    id: 'auto',
+    object: 'model' as const,
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'deepsproxy',
+    permission: [],
+    root: 'auto',
+    parent: null,
+  };
+
+  const autoFreeModel = {
+    id: 'auto-free',
+    object: 'model' as const,
+    created: Math.floor(Date.now() / 1000),
+    owned_by: 'deepsproxy',
+    permission: [],
+    root: 'auto-free',
+    parent: null,
+  };
+
+  const modelList = deduped.length ? [autoModel, autoFreeModel, ...deduped] : [autoModel, autoFreeModel,
+    {
+      id: 'deepseek-thinking',
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: 'deepseek',
+      permission: [],
+      root: 'deepseek-thinking',
+      parent: null,
+    },
+    {
+      id: 'deepseek-no-thinking',
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: 'deepseek',
+      permission: [],
+      root: 'deepseek-no-thinking',
+      parent: null,
+    },
+  ];
+
   return new Response(
     JSON.stringify({
       object: 'list',
-      data: deduped.length
-        ? deduped
-        : [
-            {
-              id: 'deepseek-thinking',
-              object: 'model',
-              created: Math.floor(Date.now() / 1000),
-              owned_by: 'deepseek',
-              permission: [],
-              root: 'deepseek-thinking',
-              parent: null,
-            },
-            {
-              id: 'deepseek-no-thinking',
-              object: 'model',
-              created: Math.floor(Date.now() / 1000),
-              owned_by: 'deepseek',
-              permission: [],
-              root: 'deepseek-no-thinking',
-              parent: null,
-            },
-          ],
+      data: modelList,
     }),
     { headers: { 'Content-Type': 'application/json' } }
   );
@@ -361,7 +384,7 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
 
   let resp: Response;
   try {
-    resp = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+    resp = await optimizedFetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
   } catch (err: any) {
     return c.json({ error: { message: `Falha ao conectar com ${target.name}: ${err?.message || String(err)}` } }, 502);
   }
@@ -444,6 +467,20 @@ function serveApp(label: string, honoApp: Hono, port: number, opts: { openUi?: b
 
   attachVncWs(server);
 
+  // Fecha o pool de conexões HTTP e discovery ao desligar o servidor
+  process.on('SIGINT', () => {
+    stopDiscovery();
+    stopHealthCheck();
+    shutdownAgentPool();
+    process.exit(0);
+  });
+  process.on('SIGTERM', () => {
+    stopDiscovery();
+    stopHealthCheck();
+    shutdownAgentPool();
+    process.exit(0);
+  });
+
   if (opts.openUi) openDashboard(port);
   return server;
 }
@@ -514,6 +551,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     console.log('Playwright desativado (para usar a DeepSeek, o Qwen ou o Gemini Web, não defina PROVIDER=local no .env).');
     serveApp('direct', app, port, { openUi: true });
     startGatewayServer(gatewayPort);
+    // FASE 4: Auto-discovery e health check para modelos locais
+    startDiscovery();
+    startHealthCheck();
   } else {
     const boot = async () => {
       if (needsDeepseekPlaywright) await initPlaywright();

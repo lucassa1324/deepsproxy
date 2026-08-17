@@ -443,6 +443,17 @@ const CSS = `
 }
 .ds-chat__meta button:hover { color: var(--ds-text); }
 
+.ds-chat__auto-router {
+  background: rgba(79,140,255,0.12);
+  border: 1px solid rgba(79,140,255,0.3);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  color: #4f8cff;
+  white-space: nowrap;
+  cursor: default;
+}
+
 .ds-chat__msg-actions {
   display: flex;
   gap: 8px;
@@ -1600,6 +1611,14 @@ class ChatComponent {
       const elapsed = ((Date.now() - this._startTime) / 1000).toFixed(1);
       let m = "<span>" + elapsed + "s</span>";
       if (msg.usage) m += "<span>" + (msg.usage.total_tokens || 0) + " tokens</span>";
+      if (msg.autoRouter) {
+        m += '<span class="ds-chat__auto-router" title="' +
+          "Modelo: " + msg.autoRouter.model +
+          " | Score: " + msg.autoRouter.score +
+          " | Tarefa: " + msg.autoRouter.task +
+          " | Motivo: " + msg.autoRouter.reason +
+          '">&#9889; auto → ' + msg.autoRouter.model + '</span>';
+      }
       m += '<button data-action="copy" aria-label="Copiar resposta">Copiar</button>';
       meta.innerHTML = m;
     }
@@ -1696,6 +1715,17 @@ class ChatComponent {
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
       throw new Error("HTTP " + res.status + ": " + errText.slice(0, 500));
+    }
+
+    // Auto Router: captura headers de decisão do roteamento inteligente
+    const autoModel = res.headers.get("X-AutoRouter-Model");
+    if (autoModel) {
+      asstMsg.autoRouter = {
+        model: autoModel,
+        score: res.headers.get("X-AutoRouter-Score") || "",
+        task: res.headers.get("X-AutoRouter-Task") || "",
+        reason: res.headers.get("X-AutoRouter-Reason") || "",
+      };
     }
 
     const reader = res.body.getReader();

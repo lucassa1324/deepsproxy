@@ -40,6 +40,14 @@ export interface TokenEconomySettings {
   responseCache: boolean;
   /** tokenEstimation: estimar tokens por request e logar. */
   tokenEstimation: boolean;
+  /** compressTools: comprimir definições de tools (descrições). */
+  compressTools: boolean;
+  /** stripMetadata: remover metadados desnecessários do payload. */
+  stripMetadata: boolean;
+  /** smartTruncation: truncar por importância em vez de ordem cronológica. */
+  smartTruncation: boolean;
+  /** dedupConsecutive: remover mensagens consecutivas idênticas. */
+  dedupConsecutive: boolean;
   /** Janela máxima de contexto (tokens) usada pelo truncateHistory. */
   maxContextTokens: number;
 }
@@ -53,6 +61,10 @@ export const DEFAULT_ECONOMY: TokenEconomySettings = {
   truncateToolOutput: false,
   responseCache: false,
   tokenEstimation: false,
+  compressTools: true,
+  stripMetadata: true,
+  smartTruncation: false,
+  dedupConsecutive: false,
   maxContextTokens: 56000,
 };
 
@@ -128,6 +140,10 @@ export function updateTokenEconomy(patch: Partial<TokenEconomySettings>): TokenE
     truncateToolOutput: sanitizeBool(patch.truncateToolOutput, current.truncateToolOutput),
     responseCache: sanitizeBool(patch.responseCache, current.responseCache),
     tokenEstimation: sanitizeBool(patch.tokenEstimation, current.tokenEstimation),
+    compressTools: sanitizeBool(patch.compressTools, current.compressTools),
+    stripMetadata: sanitizeBool(patch.stripMetadata, current.stripMetadata),
+    smartTruncation: sanitizeBool(patch.smartTruncation, current.smartTruncation),
+    dedupConsecutive: sanitizeBool(patch.dedupConsecutive, current.dedupConsecutive),
     maxContextTokens: sanitizeWindow(patch.maxContextTokens, current.maxContextTokens),
   };
   economyCache = next;
@@ -224,6 +240,164 @@ export function truncateMessages(messages: any[], maxTokens: number): { messages
   return { messages: out, dropped };
 }
 
+/* ------------------------- 2.1 Smart Truncation (importância) ------------------------- */
+
+/**
+ * Score de importância de uma mensagem (maior = mais importante).
+ * Critérios:
+ *  1. System prompt → sempre fica (não chega aqui)
+ *  2. Tool calls/results → densas de informação
+ *  3. Mensagens com código, números ou dados específicos
+ *  4. Mensagens longas (>200 chars)
+ *  5. Mensagens curtas ("ok", "entendi") → baixa prioridade
+ */
+function messageImportance(msg: any): number {
+  const text = messageText(msg);
+  const len = text.length;
+
+  // Tool calls e results são sempre importantes
+  if (msg.role === 'tool' || msg.role === 'function') return 100;
+  if (msg.tool_calls && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return 90;
+
+  // Mensagens com código, números ou dados específicos
+  const hasCode = /```|`[^`]+`|import |export |function |class |def |const |let |var /.test(text);
+  const hasNumbers = /\d{2,}/.test(text);
+  const hasData = /\btrue\b|\bfalse\b|\bnull\b|\bundefined\b|\b\d+\.\d+\b/.test(text);
+
+  let score = 0;
+  if (hasCode) score += 40;
+  if (hasNumbers) score += 10;
+  if (hasData) score += 10;
+
+  // Mensagens longas são mais informativas
+  if (len > 500) score += 30;
+  else if (len > 200) score += 20;
+  else if (len > 50) score += 10;
+
+  // Mensagens curtas demais ("ok", "sim", "obrigado") são menos importantes
+  if (len < 10) score -= 20;
+  else if (len < 30) score -= 10;
+
+  // Tool results com output longo são muito importantes
+  if (msg.role === 'tool' || msg.role === 'function') {
+    if (len > 1000) score += 50;
+    else if (len > 200) score += 30;
+  }
+
+  return Math.max(0, score);
+}
+
+/**
+ * Truncamento inteligente por importância: em vez de cortar pelas mensagens
+ * mais antigas, descarta as menos importantes primeiro.
+ *
+ * Regras obrigatórias:
+ *  - System prompts SEMPRE ficam
+ *  - Últimas 3 mensagens SEMPRE ficam
+ *  - Mensagens são ordenadas por importância (menor primeiro) e descartadas
+ *    até caber na janela
+ */
+export function smartTruncateMessages(
+  messages: any[],
+  maxTokens: number
+): { messages: any[]; dropped: any[] } {
+  const input = messages || [];
+  if (estimateMessagesTokens(input) <= maxTokens) return { messages: [...input], dropped: [] };
+  if (input.length <= 4) return { messages: [...input], dropped: [] };
+
+  // Separa system prompts (sempre ficam)
+  const systemMsgs: any[] = [];
+  const nonSystem: any[] = [];
+  for (const m of input) {
+    if (m.role === 'system') systemMsgs.push(m);
+    else nonSystem.push(m);
+  }
+
+  if (nonSystem.length <= 3) return { messages: [...input], dropped: [] };
+
+  // Últimas 3 mensagens sempre ficam (âncoras)
+  const anchors = nonSystem.slice(-3);
+  const candidates = nonSystem.slice(0, -3);
+
+  // Verifica se já cabe com system + anchors
+  const anchorCost = estimateMessagesTokens([...systemMsgs, ...anchors]);
+  if (anchorCost >= maxTokens) {
+    // Mesmo as âncoras estouram? Mantém só a última
+    const lastOnly = [nonSystem[nonSystem.length - 1]];
+    return {
+      messages: [...systemMsgs, ...lastOnly],
+      dropped: nonSystem.slice(0, -1),
+    };
+  }
+
+  const budget = maxTokens - anchorCost;
+
+  // Ordena candidatos por importancia (menor primeiro = descartados primeiro)
+  const scored = candidates.map((m, i) => ({ msg: m, score: messageImportance(m), idx: i }));
+  scored.sort((a, b) => a.score - b.score || a.idx - b.idx);
+
+  // Descarta candidatos de menor importância até caber no orçamento
+  const keptCandidates: any[] = [];
+  const dropped: any[] = [];
+
+  // Primeiro, adiciona todos (precisamos saber quais descartar)
+  const candidatesTokens = estimateMessagesTokens(candidates);
+  if (candidatesTokens <= budget) {
+    // Todos cabem
+    keptCandidates.push(...candidates);
+  } else {
+    // Precisa descartar os menos importantes
+    for (const { msg } of scored) {
+      const remaining = [...keptCandidates, msg];
+      if (estimateMessagesTokens(remaining) <= budget) {
+        keptCandidates.push(msg);
+      } else {
+        dropped.push(msg);
+      }
+    }
+
+    // Reordena os mantidos pela posição original
+    keptCandidates.sort((a, b) => candidates.indexOf(a) - candidates.indexOf(b));
+  }
+
+  return {
+    messages: [...systemMsgs, ...keptCandidates, ...anchors],
+    dropped,
+  };
+}
+
+/* ------------------------- 2.3 Deduplicação de mensagens consecutivas ------------------------- */
+
+/**
+ * Remove mensagens idênticas consecutivas (mesma role + mesmo conteúdo).
+ * Geralmente é erro de digitação ou reenvio acidental.
+ * Só remove cópias EXATAS consecutivas — não afeta mensagens repetidas
+ * em turnos diferentes.
+ */
+export function dedupConsecutiveMessages(messages: any[]): { messages: any[]; removed: number } {
+  if (!messages || messages.length <= 1) return { messages: [...(messages || [])], removed: 0 };
+
+  const out: any[] = [messages[0]];
+  let removed = 0;
+
+  for (let i = 1; i < messages.length; i++) {
+    const prev = out[out.length - 1];
+    const curr = messages[i];
+
+    if (prev && curr && prev.role === curr.role) {
+      const prevText = messageText(prev);
+      const currText = messageText(curr);
+      if (prevText === currText && prevText !== '') {
+        removed++;
+        continue; // Duplicata consecutiva — descarta
+      }
+    }
+    out.push(curr);
+  }
+
+  return { messages: out, removed };
+}
+
 /** Digest determinístico dos turnos descartados (fallback do resumo). */
 export function buildSummaryDigest(dropped: any[]): string {
   const parts: string[] = [];
@@ -287,6 +461,13 @@ export async function applyTokenEconomy(
 
   let messages = [...(payload.messages || [])];
 
+  // 2.3 Deduplicação de mensagens consecutivas (antes de qualquer truncamento)
+  if (settings.dedupConsecutive) {
+    const { messages: deduped, removed } = dedupConsecutiveMessages(messages);
+    if (removed > 0) actions.push(`dedup(${removed} removidas)`);
+    messages = deduped;
+  }
+
   if (settings.stripReasoning) {
     messages = stripReasoningFromMessages(messages);
     actions.push('stripReasoning');
@@ -299,11 +480,14 @@ export async function applyTokenEconomy(
   }
 
   const maxTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : DEFAULT_ECONOMY.maxContextTokens;
-  const wantsTruncate = settings.truncateHistory || settings.summarizeHistory;
+  const wantsTruncate = settings.truncateHistory || settings.summarizeHistory || settings.smartTruncation;
   if (wantsTruncate) {
     const est = estimateMessagesTokens(messages);
     if (est > maxTokens) {
-      const { messages: kept, dropped } = truncateMessages(messages, maxTokens);
+      // 2.1 Smart truncation: escolhe o método baseado na configuração
+      const { messages: kept, dropped } = settings.smartTruncation
+        ? smartTruncateMessages(messages, maxTokens)
+        : truncateMessages(messages, maxTokens);
       if (dropped.length > 0) {
         if (settings.summarizeHistory) {
           let summary = '';
@@ -323,7 +507,8 @@ export async function applyTokenEconomy(
           messages = insertSummary(kept, summary);
           actions.push(`summary(${method}, ${dropped.length} turnos)`);
         } else {
-          actions.push(`truncate(${kept.length} mantidas, ${dropped.length} descartadas)`);
+          const method = settings.smartTruncation ? 'smart' : 'chronological';
+          actions.push(`truncate(${method}, ${kept.length} mantidas, ${dropped.length} descartadas)`);
           messages = kept;
         }
       }

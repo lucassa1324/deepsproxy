@@ -8,6 +8,7 @@
  */
 
 import { OpenAIRequest } from './types.ts';
+import { cacheSystemPrompt, getCachedPrompt } from '../services/optimizations.ts';
 
 export interface PromptOptions {
   /**
@@ -218,10 +219,16 @@ export function buildAgentPrompt(body: OpenAIRequest, opts: PromptOptions = {}):
     }
   }
 
-  // Inject tools instructions
+  // Inject tools instructions (com cache do system prompt)
   const toolsInstructions = buildToolsInstructions(body, opts);
   if (toolsInstructions) {
     systemPrompt += toolsInstructions;
+  }
+
+  // Cache o system prompt parseado (evita reconstruir a cada request)
+  if (systemPrompt) {
+    const cacheKey = `agent_${body.model || 'default'}`;
+    cacheSystemPrompt(cacheKey, systemPrompt);
   }
 
   return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
@@ -269,6 +276,12 @@ export function buildFullHistoryPrompt(body: OpenAIRequest, opts: PromptOptions 
   const toolsInstructions = buildToolsInstructions(body, opts);
   if (toolsInstructions) {
     systemPrompt += toolsInstructions;
+  }
+
+  // Cache o system prompt parseado
+  if (systemPrompt) {
+    const cacheKey = `fullhist_${body.model || 'default'}`;
+    cacheSystemPrompt(cacheKey, systemPrompt);
   }
 
   return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;

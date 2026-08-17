@@ -21,6 +21,7 @@ import {
   adapterHttpErrorResponse,
 } from './base.ts';
 import { RateLimiter, withRetry, HttpError } from './throttle.ts';
+import { optimizedFetch } from '../optimizations.ts';
 
 const DEFAULT_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
@@ -394,7 +395,7 @@ export class GeminiAdapter implements ProviderAdapter {
 
     const doFetch = () =>
       withRetry(async () => {
-        const res = await fetch(url, {
+        const res = await optimizedFetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -473,7 +474,7 @@ export class GeminiAdapter implements ProviderAdapter {
     if (!apiKey) return null;
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     try {
-      const res = await fetch(`${baseUrl}/models?key=${encodeURIComponent(apiKey)}`);
+      const res = await optimizedFetch(`${baseUrl}/models?key=${encodeURIComponent(apiKey)}`);
       if (!res.ok) return null;
       const data: any = await res.json();
       const list = Array.isArray(data?.models) ? data.models : [];

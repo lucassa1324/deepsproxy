@@ -23,6 +23,7 @@ import { buildAgentPrompt } from '../../utils/prompt.ts';
 import { isModelBoosted } from '../booster.ts';
 import { parseToolCallsFromContent } from '../../tools/executor.ts';
 import { StreamingToolParser } from '../../tools/stream-parser.ts';
+import { optimizedFetch } from '../optimizations.ts';
 
 const DEFAULT_BASE = 'http://localhost:11434';
 
@@ -131,7 +132,7 @@ export class OllamaAdapter implements ProviderAdapter {
     const body = buildOllamaBody(payload, messages);
     const doFetch = () =>
       withRetry(async () => {
-        const res = await fetch(`${baseUrl}/api/chat`, {
+        const res = await optimizedFetch(`${baseUrl}/api/chat`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -276,7 +277,7 @@ export class OllamaAdapter implements ProviderAdapter {
   async fetchModels(provider: Provider): Promise<any[] | null> {
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     try {
-      const res = await fetch(`${baseUrl}/api/tags`);
+      const res = await optimizedFetch(`${baseUrl}/api/tags`);
       if (!res.ok) return null;
       const data: any = await res.json();
       if (!Array.isArray(data?.models)) return null;

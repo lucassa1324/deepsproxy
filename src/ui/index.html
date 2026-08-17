@@ -47,17 +47,38 @@
   .pill.warn { color: var(--yellow); border-color: #5a4a1f; }
   .pill.warn .s { background: var(--yellow); }
 
-  nav.tabs {
-    display: flex; gap: 4px; padding: 10px 24px 0; border-bottom: 1px solid var(--border);
-    background: var(--panel-2);
+  /* ---- Sidebar Navigation ---- */
+  .app-layout {
+    display: flex; min-height: calc(100vh - 57px);
   }
-  nav.tabs button {
-    background: none; border: none; color: var(--muted); cursor: pointer;
-    padding: 10px 16px; font-size: 14px; border-bottom: 2px solid transparent;
-    font-family: inherit;
+  aside.sidebar {
+    width: 220px; flex-shrink: 0;
+    background: var(--panel-2); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 12px 0;
+    position: sticky; top: 57px; height: calc(100vh - 57px);
+    overflow-y: auto;
   }
-  nav.tabs button:hover { color: var(--text); }
-  nav.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  aside.sidebar .sidebar-section {
+    font-size: 10px; font-weight: 700; color: var(--muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    padding: 12px 16px 6px; user-select: none;
+  }
+  aside.sidebar button {
+    display: flex; align-items: center; gap: 10px;
+    width: 100%; background: none; border: none; color: var(--muted);
+    cursor: pointer; padding: 10px 16px; font-size: 14px;
+    font-family: inherit; text-align: left; border-left: 3px solid transparent;
+    transition: background 0.12s, color 0.12s;
+  }
+  aside.sidebar button:hover { background: rgba(79,140,255,0.06); color: var(--text); }
+  aside.sidebar button.active {
+    color: var(--accent); border-left-color: var(--accent);
+    background: rgba(79,140,255,0.08);
+  }
+  aside.sidebar button .icon { font-size: 16px; width: 20px; text-align: center; flex-shrink: 0; }
+  aside.sidebar .sidebar-divider {
+    height: 1px; background: var(--border); margin: 8px 16px;
+  }
 
   main { padding: 20px 24px 60px; max-width: 1100px; margin: 0 auto; }
   section.tab { display: none; }
@@ -274,9 +295,6 @@
   }
 
   /* ---- OVERRIDE TELA CHEIA DA ABA CHAT ---- */
-  /* Com a aba Chat ativa o body vira coluna flex: header e nav.tabs
-     mantêm a altura natural e o main preenche o restante da viewport,
-     sem position:fixed nem offsets em px (nada é sobreposto). */
   body:has(#tab-chat.active) {
     height: 100vh;
     height: 100dvh;
@@ -285,8 +303,8 @@
     flex-direction: column;
   }
   body:has(#tab-chat.active) header,
-  body:has(#tab-chat.active) nav.tabs { flex-shrink: 0; }
-  body:has(#tab-chat.active) main {
+  body:has(#tab-chat.active) aside.sidebar { flex-shrink: 0; }
+  body:has(#tab-chat.active) .app-content {
     flex: 1;
     min-height: 0;
     overflow: hidden;
@@ -407,6 +425,31 @@
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .hidden { display: none !important; }
+
+  /* ---- Settings options ---- */
+  .settings-option {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .settings-option-header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .settings-option-header .checkbox { flex: 1; min-width: 0; color: var(--text); }
+  .settings-option-desc {
+    font-size: 13px; color: var(--muted); line-height: 1.55; margin-top: 8px;
+  }
+  .model-eco-row {
+    display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .model-eco-row .checkbox { flex: 1; min-width: 0; color: var(--text); }
+  .model-default-tag {
+    font-size: 11px; color: var(--muted); font-style: italic;
+    white-space: nowrap;
+  }
+  .model-default-tag.is-custom {
+    color: var(--accent); font-style: normal; font-weight: 600;
+  }
   @media (max-width: 700px) {
     header { flex-direction: column; gap: 10px; align-items: flex-start; }
     main { padding: 14px 14px 40px; }
@@ -421,16 +464,23 @@
   <a href="/chat" class="btn" style="margin-left:10px; text-decoration:none;" title="Abrir chat em página separada">Chat</a>
 </header>
 
-<nav class="tabs">
-  <button class="active" data-tab="connect">Conexão</button>
-  <button data-tab="apps">Apps (Gateway)</button>
-  <button data-tab="chat">Chat</button>
-  <button data-tab="test">Testar API</button>
-  <button data-tab="examples">Exemplos</button>
-  <button data-tab="logs">Logs</button>
-</nav>
+<div class="app-layout">
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-section">Principal</div>
+  <button class="active" data-tab="connect"><span class="icon">&#9673;</span> Conexão</button>
+  <button data-tab="chat"><span class="icon">&#9993;</span> Chat</button>
+  <button data-tab="apps"><span class="icon">&#9881;</span> Apps (Gateway)</button>
+  <button data-tab="test"><span class="icon">&#9654;</span> Testar API</button>
+  <button data-tab="auto-router"><span class="icon">&#9889;</span> Auto Router</button>
+  <div class="sidebar-divider"></div>
+  <div class="sidebar-section">Sistema</div>
+  <button data-tab="settings"><span class="icon">&#9881;</span> Configurações</button>
+  <button data-tab="local-models"><span class="icon">&#9729;</span> Modelos Locais</button>
+  <button data-tab="examples"><span class="icon">&#10697;</span> Exemplos</button>
+  <button data-tab="logs"><span class="icon">&#9776;</span> Logs</button>
+</aside>
 
-<main>
+<main class="app-content">
 
   <!-- ============ CONEXÃO ============ -->
   <section class="tab active" id="tab-connect">
@@ -729,6 +779,18 @@
           </label>
           <span class="hint" title="Estimar tokens: calcula o total estimado de tokens do histórico de cada requisição (aprox. 4 caracteres por token) e registra no console do servidor uma linha como: [economy] tokens~12000 janela=56000 msgs=14 [truncate(9 mantidas, 5 descartadas)]. Não altera as respostas — serve para medir o impacto das outras opções.">?</span>
         </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="smartTruncation" /> Smart truncation (por importância)
+          </label>
+          <span class="hint" title="Smart truncation: em vez de cortar as mensagens mais antigas (cronológico), descarta as MENOS IMPORTANTES primeiro — mensagens curtas ('ok', 'obrigado'), sem código, sem tool calls. Preserva system prompts + últimas 3 mensagens SEMPRE. Risco moderado: pode descartar mensagem que parecia irrelevante mas era crucial. Recomendado para contextos pequenos.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="dedupConsecutive" /> Limpar duplicatas consecutivas
+          </label>
+          <span class="hint" title="Deduplicação: remove mensagens idênticas consecutivas (mesma role + mesmo conteúdo exato). Geralmente é erro de digitação ou reenvio acidental. Risco muito baixo — só remove cópias EXATAS seguidas, nunca repete turnos diferentes.">?</span>
+        </div>
       </div>
 
       <div class="row" style="margin-top:12px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
@@ -910,7 +972,532 @@
     </div>
   </section>
 
-</main>
+  <!-- ============ AUTO ROUTER ============ -->
+  <section class="tab" id="tab-auto-router">
+    <div class="card">
+      <h3>Auto Router (Roteamento Inteligente)</h3>
+      <p class="note" style="margin:0 0 14px;">
+        Quando o modelo <b>"auto"</b> é selecionado, o roteador classifica a tarefa
+        e escolhe automaticamente o melhor modelo disponível com base em capacidade,
+        custo e complexidade.
+      </p>
+
+      <!-- Status overview -->
+      <div class="grid cols-4" style="margin-bottom:16px;">
+        <div class="card">
+          <h3>Modelos no Catálogo</h3>
+          <div class="value" id="arModelCount">—</div>
+        </div>
+        <div class="card">
+          <h3>Disponíveis</h3>
+          <div class="value" id="arAvailableCount">—</div>
+        </div>
+        <div class="card">
+          <h3>Decisions no Cache</h3>
+          <div class="value" id="arCacheSize">—</div>
+        </div>
+        <div class="card">
+          <h3>Política Atual</h3>
+          <div class="value" id="arCurrentPolicy">—</div>
+        </div>
+      </div>
+
+      <!-- Config -->
+      <div class="card">
+        <h3>Configuração</h3>
+        <div style="display:flex; flex-direction:column; gap:14px;">
+          <label class="field" style="max-width:320px;">
+            <span>Política de custo</span>
+            <select id="arCostPolicy">
+              <option value="balanced">Balanceado (melhor custo-benefício)</option>
+              <option value="economy">Econômico (prioriza gratuitos/baratos)</option>
+              <option value="quality">Qualidade (prioriza modelos potentes)</option>
+              <option value="free-only">Apenas gratuitos</option>
+              <option value="paid-only">Apenas pagos</option>
+            </select>
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" id="arShowDecision" />
+            <b>Mostrar decisões no console</b>
+            <span class="note" style="margin-left:6px;">Log detalhado de cada roteamento</span>
+          </label>
+          <label class="field" style="max-width:240px;">
+            <span>Limiar mínimo de capacidade</span>
+            <input type="number" id="arMinCapability" min="0" max="10" step="1" />
+            <span class="note">Modelos abaixo deste limiar são ignorados</span>
+          </label>
+          <button class="btn" id="btnSaveAutoRouter" type="button" style="align-self:start;">Salvar configuração</button>
+          <span id="arFeedback" class="note" style="margin:0;"></span>
+        </div>
+      </div>
+
+      <!-- Model catalog -->
+      <div class="card" style="margin-top:14px;">
+        <h3>Catálogo de Modelos</h3>
+        <p class="note" style="margin:0 0 10px;">
+          Metadados conhecidos usados pelo Auto Router para classificar e pontuar modelos.
+          Modelos não listados aqui recebem valores padrão.
+        </p>
+        <div id="arModelCatalog" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px;"></div>
+        <p class="note" id="arCatalogEmpty" style="margin:10px 0 0;">Carregando catálogo...</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ MODELOS LOCAIS ============ -->
+  <section class="tab" id="tab-local-models">
+    <div class="card">
+      <h3>Modelos Locais</h3>
+      <p class="note" style="margin:0 0 10px;">
+        Detecta automaticamente instâncias de <b>Ollama</b> e <b>LM Studio</b> rodando em localhost.
+        Mostra status, performance e permite fallback automático para cloud.
+      </p>
+
+      <div class="row" style="gap:10px; margin-bottom:14px;">
+        <button class="btn" id="btnRefreshLocal" type="button">Buscar novamente</button>
+        <span id="localModelsStatus" class="note" style="margin:0;"></span>
+      </div>
+
+      <!-- Health indicators -->
+      <div id="localHealthGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px; margin-bottom:16px;"></div>
+
+      <!-- Instances -->
+      <div id="localInstancesList"></div>
+
+      <!-- Fallback config -->
+      <div class="card" style="margin-top:14px;">
+        <h3>Fallback Automático</h3>
+        <p class="note" style="margin:0 0 10px;">
+          Quando o modelo local falhar ou ficar lento demais, o deepsproxy pode
+          redirecionar automaticamente para um provedor cloud.
+        </p>
+        <div style="display:flex; flex-direction:column; gap:12px;">
+          <label class="checkbox">
+            <input type="checkbox" id="fallbackEnabled" />
+            <b>Ativar fallback automático</b>
+          </label>
+          <label class="field" style="max-width:300px;">
+            <span>Limite de latência (ms)</span>
+            <input type="number" id="fallbackThreshold" value="10000" min="1000" step="1000" />
+          </label>
+          <label class="field" style="max-width:400px;">
+            <span>Provedor fallback</span>
+            <select id="fallbackProvider">
+              <option value="">— Nenhum —</option>
+            </select>
+          </label>
+          <button class="btn" id="btnSaveFallback" type="button" style="align-self:start;">Salvar configuração</button>
+        </div>
+      </div>
+
+      <!-- Performance metrics -->
+      <div class="card" style="margin-top:14px;">
+        <h3>Métricas de Performance</h3>
+        <div id="localMetricsGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(280px, 1fr)); gap:12px;"></div>
+        <p class="note" id="localMetricsEmpty" style="margin:10px 0 0;">Nenhuma métrica ainda. Faça uma requisição para um modelo local para ver os dados.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CONFIGURAÇÕES ============ -->
+  <section class="tab" id="tab-settings">
+    <div class="card">
+      <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
+        <h3 style="margin:0;">Configurações Globais</h3>
+        <label class="checkbox" style="font-size:12px;">
+          <input type="checkbox" id="setAdvancedMode" />
+          <b>Modo Avançado</b>
+        </label>
+      </div>
+      <p class="note" style="margin:0 0 6px;">
+        Estas opções são aplicadas a <b>todos os modelos</b> por padrão.
+        Você pode personalizar configurações individuais por modelo na seção abaixo.
+      </p>
+      <p class="note" style="margin:0 0 14px; color:var(--yellow);">
+        Modelos conhecidos já vêm pré-configurados com as melhores opções.
+        Se um modelo não tiver configuração própria, usa estas globais.
+      </p>
+
+      <!-- Impact summary bar -->
+      <div id="impactBar" class="hidden" style="display:flex; gap:16px; padding:10px 14px; border-radius:8px; background:var(--panel-2); border:1px solid var(--border); margin-bottom:14px; flex-wrap:wrap; font-size:12px;">
+        <div><b>Tokens economizados/request:</b> <span id="impactTokens">~0</span></div>
+        <div><b>Impacto na qualidade:</b> <span id="impactQuality">nenhum</span></div>
+        <div><b>Recomendação:</b> <span id="impactRecommend" class="note">—</span></div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px;">
+
+        <!-- truncateHistory: BÁSICO -->
+        <div class="settings-option" data-setting="truncateHistory">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setTruncateHistory" />
+              <b>Truncar histórico antigo</b>
+            </label>
+            <span class="pill warn">afeta precisão</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Descarta mensagens antigas quando o contexto fica cheio.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Quando o histórico excede a janela de contexto, descarta as mensagens
+            <b>mais antigas</b> (preserva sempre o system prompt e a última mensagem).
+            <br><b>Impacto:</b> em conversas longas, o modelo pode "esquecer" detalhes
+            importantes mencionados há várias mensagens atrás.
+          </p>
+        </div>
+
+        <!-- summarizeHistory: AVANÇADO -->
+        <div class="settings-option" data-setting="summarizeHistory" data-advanced="true">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setSummarizeHistory" />
+              <b>Resumir histórico descartado</b>
+            </label>
+            <span class="pill warn">afeta precisão</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Substitui mensagens antigas por um resumo inteligente.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Em vez de deletar turnos antigos, cria um <b>resumo</b> deles usando o
+            provedor ativo e insere como nota no contexto. Funciona junto com a
+            opção de truncar.
+            <br><b>Impacto:</b> preserva a essência, mas pode perder detalhes
+            específicos (números, nomes, trechos de código).
+          </p>
+        </div>
+
+        <!-- truncateToolOutput: AVANÇADO -->
+        <div class="settings-option" data-setting="truncateToolOutput" data-advanced="true">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setTruncateToolOutput" />
+              <b>Limitar resultado de ferramentas (tools)</b>
+            </label>
+            <span class="pill warn">afeta precisão</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Limita respostas de ferramentas a 4.000 caracteres.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Limita cada mensagem de ferramenta (role tool/function) a <b>4.000
+            caracteres</b>. Quando o resultado é cortado, o modelo vê
+            "...[truncado: N chars]" no final.
+            <br><b>Impacto:</b> se uma tool retornar dados extensos (código, JSON,
+            listagens), o modelo pode perder informação crítica para a tarefa.
+          </p>
+        </div>
+
+        <!-- stripReasoning: BÁSICO -->
+        <div class="settings-option" data-setting="stripReasoning">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setStripReasoning" />
+              <b>Remover raciocínio (thinking) do histórico</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">baixo risco</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Remove o "pensamento" do modelo das mensagens reenviadas. Economiza tokens.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Remove o campo <code class="inline">reasoning_content</code> (o
+            "pensamento" de modelos como deepseek-thinking) das mensagens de
+            histórico reenviadas ao provedor.
+            <br><b>Impacto:</b> baixo — o raciocínio anterior raramente é necessário
+            para gerar a próxima resposta. Economiza muitos tokens.
+          </p>
+        </div>
+
+        <!-- cachePrefix: BÁSICO -->
+        <div class="settings-option" data-setting="cachePrefix" style="border-left:3px solid var(--green);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setCachePrefix" />
+              <b>Prompt caching (prefixo estável)</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">sem impacto</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Acelera respostas mantendo o início do prompt em cache. Sem perda de qualidade.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Mantém o prefixo do prompt em ordem estável para cache automático.
+            No Anthropic ativa <code class="inline">cache_control</code> (10-25% economia).
+            <br><b>Impacto:</b> zero — não altera a resposta.
+          </p>
+        </div>
+
+        <!-- responseCache: BÁSICO -->
+        <div class="settings-option" data-setting="responseCache" style="border-left:3px solid var(--green);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setResponseCache" />
+              <b>Cache de respostas idênticas</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">sem impacto</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Reusa respostas idênticas recentes. Economiza chamadas sem perda de qualidade.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Guarda em memória (60s, máx 200 entradas) respostas NÃO-streaming
+            idênticas. Evita retrabalho em chamadas repetidas.
+            <br><b>Impacto:</b> zero.
+          </p>
+        </div>
+
+        <!-- tokenEstimation: AVANÇADO -->
+        <div class="settings-option" data-setting="tokenEstimation" data-advanced="true" style="border-left:3px solid var(--muted);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setTokenEstimation" />
+              <b>Estimar tokens (log no servidor)</b>
+            </label>
+            <span class="pill" style="color:var(--muted);border-color:var(--border);">informativo</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Mostra no log quantos tokens cada requisição usa.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Registra no console a estimativa de tokens por requisição.
+            <br><b>Impacto:</b> zero — apenas gera log.
+          </p>
+        </div>
+
+        <!-- smartTruncation: AVANÇADO -->
+        <div class="settings-option" data-setting="smartTruncation" data-advanced="true" style="border-left:3px solid var(--yellow);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setSmartTruncation" />
+              <b>Smart truncation (por importância)</b>
+            </label>
+            <span class="pill" style="color:var(--yellow);border-color:#5a4a1f;">médio risco</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Preserva as mensagens mais importantes ao truncar contexto.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Em vez de cortar as mensagens mais antigas, descarta as menos importantes
+            primeiro (mensagens curtas, sem código, sem tool calls). Preserva system
+            prompts + últimas 3 mensagens SEMPRE.
+            <br><b>Impacto:</b> muito eficiente em contexto pequeno. Risco moderado —
+            pode descartar mensagem que parecia irrelevante mas era crucial.
+          </p>
+        </div>
+
+        <!-- dedupConsecutive: BÁSICO -->
+        <div class="settings-option" data-setting="dedupConsecutive" style="border-left:3px solid var(--green);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setDedupConsecutive" />
+              <b>Limpar duplicatas consecutivas</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">baixo risco</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Remove cópias exatas seguidas da mesma mensagem.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Remove mensagens idênticas consecutivas (mesma role + mesmo conteúdo
+            exato). Geralmente é erro de digitação ou reenvio acidental.
+            <br><b>Impacto:</b> muito baixo — só remove cópias EXATAS seguidas.
+          </p>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:16px; align-items:center; gap:12px; flex-wrap:wrap;">
+        <button class="btn" id="btnSaveSettings" type="button">Salvar globais</button>
+        <button class="btn ghost" id="btnResetSettings" type="button">Restaurar padrões</button>
+        <span id="settingsFeedback" class="note" style="margin:0;"></span>
+      </div>
+    </div>
+
+    <!-- ============ PRESETS ============ -->
+    <div class="card" style="margin-top:14px;">
+      <h3>Presets de Configuração</h3>
+      <p class="note" style="margin:0 0 10px;">
+        Presets são conjuntos de configurações que podem ser aplicados a qualquer
+        modelo com 1 clique. Crie seus próprios ou use os pré-configurados.
+      </p>
+
+      <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        <label class="field" style="flex:1; min-width:200px;">
+          <span>Aplicar preset</span>
+          <select id="presetSelect">
+            <option value="">— Escolha um preset —</option>
+          </select>
+        </label>
+        <button class="btn" id="btnApplyPreset" type="button">Aplicar ao modelo selecionado</button>
+        <button class="btn ghost" id="btnBulkApplyPreset" type="button" title="Aplicar o preset a vários modelos de uma vez">Aplicar em massa</button>
+      </div>
+
+      <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        <button class="btn ghost" id="btnCreatePreset" type="button">+ Criar preset</button>
+        <button class="btn ghost" id="btnExportPresets" type="button">Exportar JSON</button>
+        <button class="btn ghost" id="btnImportPresets" type="button">Importar JSON</button>
+        <input type="file" id="presetImportFile" accept=".json" style="display:none;" />
+      </div>
+
+      <div id="presetList" style="margin-top:8px;"></div>
+
+      <!-- Criar/editar preset (escondido por padrão) -->
+      <div id="presetEditor" class="hidden" style="margin-top:12px; border:1px solid var(--border); border-radius:8px; padding:14px; background:var(--panel-2);">
+        <div class="row" style="gap:10px; align-items:center; margin-bottom:10px;">
+          <label class="field" style="flex:1;">
+            <span>Nome do preset</span>
+            <input id="presetName" type="text" placeholder="Ex: Código, Criativo, Rápido" />
+          </label>
+          <button class="btn" id="btnSavePreset" type="button">Salvar</button>
+          <button class="btn ghost" id="btnCancelPreset" type="button">Cancelar</button>
+        </div>
+        <div id="presetCheckboxes" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px;"></div>
+      </div>
+
+      <!-- Bulk apply (escondido por padrão) -->
+      <div id="bulkApplyPanel" class="hidden" style="margin-top:12px; border:1px solid var(--border); border-radius:8px; padding:14px; background:var(--panel-2);">
+        <p class="note" style="margin:0 0 8px;">Selecione os modelos para aplicar o preset:</p>
+        <div id="bulkModelCheckboxes" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:4px; max-height:200px; overflow-y:auto;"></div>
+        <div class="row" style="margin-top:10px; gap:8px;">
+          <button class="btn" id="btnConfirmBulkApply" type="button">Aplicar selecionados</button>
+          <button class="btn ghost" id="btnCancelBulkApply" type="button">Cancelar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ CONFIG POR MODELO ============ -->
+    <div class="card" style="margin-top:14px;">
+      <h3>Configuração por Modelo</h3>
+      <p class="note" style="margin:0 0 6px;">
+        Cada modelo pode ter configurações próprias que <b>sobrescrevem</b> as globais.
+        Modelos conhecidos já vêm pré-configurados com as melhores opções para suas
+        características.
+      </p>
+      <p class="note" style="margin:0 0 14px;">
+        Se um modelo <b>não tiver</b> configuração própria, as configurações globais
+        são usadas automaticamente.
+      </p>
+
+      <div class="row" style="gap:10px; flex-wrap:wrap; margin-bottom:14px;">
+        <label class="field" style="flex:1; min-width:200px;">
+          <span>Selecionar modelo</span>
+          <select id="settingsModelSelect">
+            <option value="">— Escolha um modelo —</option>
+          </select>
+        </label>
+        <button class="btn ghost" id="btnAddModelConfig" type="button" title="Adicionar configuração para um modelo customizado">+ Modelo customizado</button>
+      </div>
+
+      <div id="modelConfigPanel" class="hidden">
+        <div class="model-config-header" style="display:flex; align-items:center; gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+          <span id="modelConfigName" style="font-size:15px; font-weight:600; color:var(--accent);"></span>
+          <span id="modelConfigBadge" class="pill" style="font-size:11px;"></span>
+          <span class="spacer" style="flex:1;"></span>
+          <label class="checkbox" id="modelUseGlobalLabel" style="font-size:13px;">
+            <input type="checkbox" id="modelUseGlobal" />
+            Usar configurações globais
+          </label>
+          <button class="btn ghost danger" id="btnRemoveModelConfig" type="button" style="font-size:12px;">Remover</button>
+        </div>
+
+        <div id="modelConfigFields" style="display:flex; flex-direction:column; gap:12px;">
+          <div class="model-eco-row">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetTruncateHistory" />
+              <b>Truncar histórico</b>
+            </label>
+            <span class="pill warn" style="font-size:11px;">afeta precisão</span>
+            <span class="model-default-tag" data-default="truncateHistory"></span>
+          </div>
+          <div class="model-eco-row" data-advanced="true">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetSummarizeHistory" />
+              <b>Resumir histórico</b>
+            </label>
+            <span class="pill warn" style="font-size:11px;">afeta precisão</span>
+            <span class="model-default-tag" data-default="summarizeHistory"></span>
+          </div>
+          <div class="model-eco-row" data-advanced="true">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetTruncateToolOutput" />
+              <b>Limitar tools</b>
+            </label>
+            <span class="pill warn" style="font-size:11px;">afeta precisão</span>
+            <span class="model-default-tag" data-default="truncateToolOutput"></span>
+          </div>
+          <div class="model-eco-row">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetStripReasoning" />
+              <b>Remover thinking</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--green);border-color:#1f4d38;">baixo risco</span>
+            <span class="model-default-tag" data-default="stripReasoning"></span>
+          </div>
+          <div class="model-eco-row">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetCachePrefix" />
+              <b>Prompt caching</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--green);border-color:#1f4d38;">sem impacto</span>
+            <span class="model-default-tag" data-default="cachePrefix"></span>
+          </div>
+          <div class="model-eco-row">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetResponseCache" />
+              <b>Cache de respostas</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--green);border-color:#1f4d38;">sem impacto</span>
+            <span class="model-default-tag" data-default="responseCache"></span>
+          </div>
+          <div class="model-eco-row" data-advanced="true">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetTokenEstimation" />
+              <b>Estimar tokens</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--muted);border-color:var(--border);">informativo</span>
+            <span class="model-default-tag" data-default="tokenEstimation"></span>
+          </div>
+          <div class="model-eco-row" data-advanced="true">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetSmartTruncation" />
+              <b>Smart truncation (importância)</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--yellow);border-color:#5a4a1f;">médio risco</span>
+            <span class="model-default-tag" data-default="smartTruncation"></span>
+          </div>
+          <div class="model-eco-row">
+            <label class="checkbox">
+              <input type="checkbox" id="modelSetDedupConsecutive" />
+              <b>Limpar duplicatas consecutivas</b>
+            </label>
+            <span class="pill" style="font-size:11px;color:var(--green);border-color:#1f4d38;">baixo risco</span>
+            <span class="model-default-tag" data-default="dedupConsecutive"></span>
+          </div>
+
+          <div class="row" style="margin-top:6px; gap:10px; flex-wrap:wrap;">
+            <label class="field" style="flex:0 0 200px;">
+              <span>Janela de contexto (tokens)</span>
+              <input id="modelSetContextWindow" type="number" min="1000" step="1000" placeholder="padrão: 56000" />
+            </label>
+            <span class="model-default-tag" data-default="contextWindow" style="align-self:flex-end;"></span>
+          </div>
+        </div>
+
+        <div class="row" style="margin-top:14px; align-items:center; gap:12px;">
+          <button class="btn" id="btnSaveModelConfig" type="button">Salvar para este modelo</button>
+          <span id="modelConfigFeedback" class="note" style="margin:0;"></span>
+        </div>
+      </div>
+
+      <div id="modelConfigEmpty" class="note" style="margin-top:8px;">
+        Selecione um modelo acima para ver ou editar suas configurações.
+      </div>
+    </div>
+  </section>
+
+
+</div><!-- /app-layout -->
 
 <script>
 (function () {
@@ -921,13 +1508,14 @@
   const apiKeyInput = $("#apiKey");
   const serverDot = $("#serverDot");
 
-  // ---------- Tabs ----------
-  document.querySelectorAll("nav.tabs button").forEach((btn) => {
+  // ---------- Tabs (sidebar) ----------
+  document.querySelectorAll("aside.sidebar button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      document.querySelectorAll("nav.tabs button").forEach((b) => b.classList.remove("active"));
+      document.querySelectorAll("aside.sidebar button").forEach((b) => b.classList.remove("active"));
       document.querySelectorAll("section.tab").forEach((s) => s.classList.remove("active"));
       btn.classList.add("active");
-      $("#tab-" + btn.dataset.tab).classList.add("active");
+      const tab = $("#tab-" + btn.dataset.tab);
+      if (tab) tab.classList.add("active");
     });
   });
 
@@ -939,6 +1527,7 @@
     try {
       const res = await fetch("/api/status");
       status = await res.json();
+      window._lastStatus = status;
       const port = status.port || 3005;
       const providerInfo = status.provider || {};
       const isBrowser = providerInfo.type === "deepseek" || providerInfo.type === "qwen" || providerInfo.type === "gemini-web";
@@ -2207,7 +2796,7 @@ for await (const chunk of stream) {
   // Se o usuário mexeu no painel mas ainda não salvou, o poll de status não
   // pode sobrescrever a edição em andamento (senão o checkbox "desmarca sozinho").
   let economyDirty = false;
-  const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation"];
+  const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
 
   function renderEconomy() {
     if (economyDirty) return;
@@ -2611,7 +3200,1161 @@ for await (const chunk of stream) {
     }
   });
 
+  // ---------- Configurações (localStorage) ----------
+  const SETTINGS_KEY = "deepsproxy_settings";
+  const MODELS_KEY = "deepsproxy_model_settings";
+  const SETTINGS_DEFAULTS = {
+    truncateHistory: false,
+    summarizeHistory: false,
+    truncateToolOutput: false,
+    stripReasoning: false,
+    cachePrefix: true,
+    responseCache: true,
+    tokenEstimation: false,
+    smartTruncation: false,
+    dedupConsecutive: false,
+  };
+
+  // Pre-configurações para modelos conhecidos (melhores práticas para cada um)
+  const MODEL_PRESETS = {
+    // === DeepSeek ===
+    "deepseek-thinking": {
+      name: "DeepSeek Thinking",
+      description: "Raciocínio profundo. stripReasoning economiza muito tokens de thinking.",
+      contextWindow: 64000,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: true,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "deepseek-no-thinking": {
+      name: "DeepSeek (sem thinking)",
+      description: "Modelo direto. Sem raciocínio para remover.",
+      contextWindow: 64000,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    // === Qwen ===
+    "qwen-turbo": {
+      name: "Qwen Turbo",
+      description: "Rápido e leve. Melhor com contexto menor.",
+      contextWindow: 32000,
+      truncateHistory: true,
+      summarizeHistory: false,
+      truncateToolOutput: true,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "qwen-plus": {
+      name: "Qwen Plus",
+      description: "Equilíbrio entre velocidade e qualidade.",
+      contextWindow: 131072,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "qwen-max": {
+      name: "Qwen Max",
+      description: "Modelo mais potente. Contexto grande, sem necessidade de truncar.",
+      contextWindow: 32768,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    // === Gemini ===
+    "gemini-2.5-flash": {
+      name: "Gemini 2.5 Flash",
+      description: "Contexto gigante (1M). Pode desligar todas as otimizações.",
+      contextWindow: 1048576,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "gemini-2.5-pro": {
+      name: "Gemini 2.5 Pro",
+      description: "Modelo premium com contexto de 1M tokens.",
+      contextWindow: 1048576,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    // === Ollama (locais) ===
+    "qwen2.5-coder:3b": {
+      name: "Qwen 2.5 Coder 3B (local)",
+      description: "Modelo pequeno. Truncar e limitar tools é essencial.",
+      contextWindow: 8192,
+      truncateHistory: true,
+      summarizeHistory: false,
+      truncateToolOutput: true,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "qwen2.5-coder:7b": {
+      name: "Qwen 2.5 Coder 7B (local)",
+      description: "Modelo médio. Bom equilíbrio, mas ainda se beneficia de truncar.",
+      contextWindow: 32768,
+      truncateHistory: true,
+      summarizeHistory: false,
+      truncateToolOutput: true,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "llama3.2:3b": {
+      name: "Llama 3.2 3B (local)",
+      description: "Modelo pequeno. Precisa de contexto curto e tools limitados.",
+      contextWindow: 8192,
+      truncateHistory: true,
+      summarizeHistory: false,
+      truncateToolOutput: true,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "codellama:13b": {
+      name: "CodeLlama 13B (local)",
+      description: "Especializado em código. Contexto moderado.",
+      contextWindow: 16384,
+      truncateHistory: true,
+      summarizeHistory: false,
+      truncateToolOutput: true,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    // === Anthropic ===
+    "claude-sonnet-4-5": {
+      name: "Claude Sonnet 4.5",
+      description: "Ótimo para código. Cache do Anthropic reduz custo muito.",
+      contextWindow: 200000,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+    "claude-opus-4-1": {
+      name: "Claude Opus 4.1",
+      description: "Modelo mais potente. Contexto grande, sem necessidade de truncar.",
+      contextWindow: 200000,
+      truncateHistory: false,
+      summarizeHistory: false,
+      truncateToolOutput: false,
+      stripReasoning: false,
+      cachePrefix: true,
+      responseCache: true,
+      tokenEstimation: false,
+      smartTruncation: false,
+      dedupConsecutive: false,
+    },
+  };
+
+  const ECO_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
+
+  // ---- Global settings ----
+  function loadSettings() {
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      if (!raw) return { ...SETTINGS_DEFAULTS };
+      return { ...SETTINGS_DEFAULTS, ...JSON.parse(raw) };
+    } catch { return { ...SETTINGS_DEFAULTS }; }
+  }
+
+  function saveSettings(settings) {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  }
+
+  function renderSettings() {
+    const s = loadSettings();
+    const map = {
+      setTruncateHistory: "truncateHistory",
+      setSummarizeHistory: "summarizeHistory",
+      setTruncateToolOutput: "truncateToolOutput",
+      setStripReasoning: "stripReasoning",
+      setCachePrefix: "cachePrefix",
+      setResponseCache: "responseCache",
+      setTokenEstimation: "tokenEstimation",
+      setSmartTruncation: "smartTruncation",
+      setDedupConsecutive: "dedupConsecutive",
+    };
+    Object.entries(map).forEach(([elId, key]) => {
+      const el = document.getElementById(elId);
+      if (el) el.checked = !!s[key];
+    });
+    // Advanced mode
+    const adv = $("#setAdvancedMode");
+    const isAdvanced = localStorage.getItem("deepsproxy_advanced_mode") === "true";
+    if (adv) adv.checked = isAdvanced;
+    applyAdvancedMode(isAdvanced);
+    updateImpactBar();
+  }
+
+  // ── FASE 5: Advanced mode ────────────────────────────────────────────
+  const ADVANCED_KEY = "deepsproxy_advanced_mode";
+
+  function applyAdvancedMode(isAdvanced) {
+    document.querySelectorAll("[data-advanced='true']").forEach(el => {
+      el.style.display = isAdvanced ? "" : "none";
+    });
+    // Toggle description mode
+    document.querySelectorAll(".settings-desc-simple").forEach(el => {
+      el.classList.toggle("hidden", isAdvanced);
+    });
+    document.querySelectorAll(".settings-desc-detail").forEach(el => {
+      el.classList.toggle("hidden", !isAdvanced);
+    });
+    // Show/hide impact bar (only useful in advanced)
+    const bar = $("#impactBar");
+    if (bar) bar.classList.toggle("hidden", !isAdvanced);
+  }
+
+  const setAdvancedMode = $("#setAdvancedMode");
+  if (setAdvancedMode) {
+    setAdvancedMode.addEventListener("change", () => {
+      const isAdvanced = !!setAdvancedMode.checked;
+      localStorage.setItem(ADVANCED_KEY, String(isAdvanced));
+      applyAdvancedMode(isAdvanced);
+    });
+  }
+
+  // ── FASE 5: Impact indicators ────────────────────────────────────────
+  const IMPACT_DATA = {
+    truncateHistory:    { tokens: 2000, quality: "alto",    desc: "Pode perder contexto importante" },
+    summarizeHistory:   { tokens: 1500, quality: "médio",   desc: "Preserva essência, perde detalhes" },
+    truncateToolOutput: { tokens: 3000, quality: "médio",   desc: "Pode cortar dados de ferramentas" },
+    stripReasoning:     { tokens: 2500, quality: "baixo",   desc: "Raramente afeta respostas" },
+    cachePrefix:        { tokens: 0,    quality: "nenhum",  desc: "Acelera sem afetar qualidade" },
+    responseCache:      { tokens: 0,    quality: "nenhum",  desc: "Reusa respostas idênticas" },
+    tokenEstimation:    { tokens: 0,    quality: "nenhum",  desc: "Apenas log, sem efeito" },
+    smartTruncation:    { tokens: 2500, quality: "médio",   desc: "Preserva o mais importante" },
+    dedupConsecutive:   { tokens: 500,  quality: "baixo",   desc: "Remove apenas duplicatas exatas" },
+  };
+
+  function updateImpactBar() {
+    const tokensEl = $("#impactTokens");
+    const qualityEl = $("#impactQuality");
+    const recommendEl = $("#impactRecommend");
+    if (!tokensEl || !qualityEl || !recommendEl) return;
+
+    let totalTokens = 0;
+    let maxQuality = 0;
+    const qualityLevels = { nenhum: 0, baixo: 1, médio: 2, alto: 3 };
+    const qualityNames = ["nenhum", "baixo", "médio", "alto"];
+    let activeCount = 0;
+
+    for (const [key, data] of Object.entries(IMPACT_DATA)) {
+      const el = $(`#set${key.charAt(0).toUpperCase() + key.slice(1)}`);
+      if (el && el.checked) {
+        totalTokens += data.tokens;
+        const q = qualityLevels[data.quality] || 0;
+        if (q > maxQuality) maxQuality = q;
+        activeCount++;
+      }
+    }
+
+    tokensEl.textContent = totalTokens > 0 ? `~${totalTokens}` : "0";
+    qualityEl.textContent = qualityNames[maxQuality];
+    qualityEl.style.color = maxQuality === 0 ? "var(--green)" : maxQuality === 1 ? "var(--green)" : maxQuality === 2 ? "var(--yellow)" : "var(--red)";
+
+    if (totalTokens === 0) {
+      recommendEl.textContent = "Nenhuma otimização ativa — tudo no padrão.";
+    } else if (maxQuality <= 1) {
+      recommendEl.textContent = "Configuração segura para uso diário.";
+    } else if (maxQuality === 2) {
+      recommendEl.textContent = "Bom equilíbrio entre economia e qualidade.";
+    } else {
+      recommendEl.textContent = "Atenção: alta economia pode afetar respostas.";
+    }
+  }
+
+  // Listen to all setting checkboxes for live impact update
+  document.querySelectorAll("[data-setting]").forEach(optionEl => {
+    const checkbox = optionEl.querySelector('input[type="checkbox"]');
+    if (checkbox) {
+      checkbox.addEventListener("change", updateImpactBar);
+    }
+  });
+
+  function collectSettings() {
+    return {
+      truncateHistory: !!$("#setTruncateHistory")?.checked,
+      summarizeHistory: !!$("#setSummarizeHistory")?.checked,
+      truncateToolOutput: !!$("#setTruncateToolOutput")?.checked,
+      stripReasoning: !!$("#setStripReasoning")?.checked,
+      cachePrefix: !!$("#setCachePrefix")?.checked,
+      responseCache: !!$("#setResponseCache")?.checked,
+      tokenEstimation: !!$("#setTokenEstimation")?.checked,
+      smartTruncation: !!$("#setSmartTruncation")?.checked,
+      dedupConsecutive: !!$("#setDedupConsecutive")?.checked,
+    };
+  }
+
+  async function applySettingsToServer(settings) {
+    try {
+      await fetch("/api/settings/token-economy", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: true, ...settings }),
+      });
+    } catch { /* offline */ }
+  }
+
+  const btnSaveSettings = $("#btnSaveSettings");
+  if (btnSaveSettings) {
+    btnSaveSettings.addEventListener("click", async () => {
+      const fb = $("#settingsFeedback");
+      const settings = collectSettings();
+      saveSettings(settings);
+      fb.textContent = "Salvando no servidor...";
+      await applySettingsToServer(settings);
+      fb.textContent = "Configurações globais salvas e aplicadas.";
+      setTimeout(() => { if (fb.textContent.includes("globais")) fb.textContent = ""; }, 3000);
+    });
+  }
+
+  const btnResetSettings = $("#btnResetSettings");
+  if (btnResetSettings) {
+    btnResetSettings.addEventListener("click", async () => {
+      const fb = $("#settingsFeedback");
+      saveSettings({ ...SETTINGS_DEFAULTS });
+      renderSettings();
+      fb.textContent = "Restaurando padrões...";
+      await applySettingsToServer({ ...SETTINGS_DEFAULTS });
+      fb.textContent = "Padrões globais restaurados.";
+      setTimeout(() => { if (fb.textContent.includes("Padrões")) fb.textContent = ""; }, 3000);
+    });
+  }
+
+  // ---- Presets ----
+  const PRESETS_KEY = "deepsproxy_presets";
+  const ECO_ALL_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
+
+  // Presets pré-configurados
+  const BUILTIN_PRESETS = {
+    "Padrão": {
+      truncateHistory: false, summarizeHistory: false, truncateToolOutput: false,
+      stripReasoning: false, cachePrefix: true, responseCache: false,
+      tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+    },
+    "Código": {
+      truncateHistory: false, summarizeHistory: false, truncateToolOutput: true,
+      stripReasoning: true, cachePrefix: true, responseCache: false,
+      tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+    },
+    "Criativo": {
+      truncateHistory: false, summarizeHistory: false, truncateToolOutput: false,
+      stripReasoning: false, cachePrefix: false, responseCache: false,
+      tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+    },
+    "Econômico": {
+      truncateHistory: true, summarizeHistory: true, truncateToolOutput: true,
+      stripReasoning: true, cachePrefix: true, responseCache: true,
+      tokenEstimation: false, smartTruncation: true, dedupConsecutive: true,
+    },
+  };
+
+  function loadUserPresets() {
+    try {
+      const raw = localStorage.getItem(PRESETS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+
+  function saveUserPresets(presets) {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(presets));
+  }
+
+  function getAllPresets() {
+    return { ...BUILTIN_PRESETS, ...loadUserPresets() };
+  }
+
+  function renderPresetSelect() {
+    const sel = $("#presetSelect");
+    if (!sel) return;
+    const all = getAllPresets();
+    sel.innerHTML = '<option value="">— Escolha um preset —</option>';
+    // Builtin primeiro
+    Object.keys(BUILTIN_PRESETS).forEach(name => {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name + " (pré-config)";
+      sel.appendChild(opt);
+    });
+    // User depois
+    const userPresets = loadUserPresets();
+    Object.keys(userPresets).forEach(name => {
+      if (BUILTIN_PRESETS[name]) return;
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+  }
+
+  function renderPresetList() {
+    const container = $("#presetList");
+    if (!container) return;
+    const userPresets = loadUserPresets();
+    const names = Object.keys(userPresets);
+    if (names.length === 0) {
+      container.innerHTML = '<p class="note" style="margin:0;">Nenhum preset customizado. Clique "Criar preset" para criar um.</p>';
+      return;
+    }
+    container.innerHTML = names.map(name => {
+      const p = userPresets[name];
+      const activeKeys = ECO_ALL_KEYS.filter(k => p[k]);
+      return `<div style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border);">
+        <b style="min-width:120px;">${escHtml(name)}</b>
+        <span class="note" style="flex:1;">${activeKeys.length > 0 ? activeKeys.join(", ") : "tudo desligado"}</span>
+        <button class="btn ghost" onclick="deletePreset('${escAttr(name)}')" style="font-size:11px; padding:2px 8px;">Excluir</button>
+      </div>`;
+    }).join("");
+  }
+
+  function escHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+  function escAttr(s) { return String(s).replace(/'/g,"\\'").replace(/\\/g,"\\\\"); }
+
+  function openPresetEditor(existingName, existingValues) {
+    const editor = $("#presetEditor");
+    const nameInput = $("#presetName");
+    const checkboxes = $("#presetCheckboxes");
+    if (!editor || !nameInput || !checkboxes) return;
+    editor.classList.remove("hidden");
+    nameInput.value = existingName || "";
+    nameInput.disabled = !!existingName;
+    const current = existingValues || collectSettings();
+    checkboxes.innerHTML = ECO_ALL_KEYS.map(key => {
+      const labels = {
+        truncateHistory: "Truncar histórico",
+        summarizeHistory: "Resumir histórico",
+        truncateToolOutput: "Limitar tools",
+        stripReasoning: "Remover thinking",
+        cachePrefix: "Prompt caching",
+        responseCache: "Cache respostas",
+        tokenEstimation: "Estimar tokens",
+        smartTruncation: "Smart truncation",
+        dedupConsecutive: "Dedup consecutivas",
+      };
+      return `<label class="checkbox" style="font-size:12px;">
+        <input type="checkbox" data-preset-key="${key}" ${current[key] ? "checked" : ""} />
+        ${labels[key] || key}
+      </label>`;
+    }).join("");
+  }
+
+  const btnCreatePreset = $("#btnCreatePreset");
+  if (btnCreatePreset) {
+    btnCreatePreset.addEventListener("click", () => openPresetEditor(null, null));
+  }
+
+  const btnCancelPreset = $("#btnCancelPreset");
+  if (btnCancelPreset) {
+    btnCancelPreset.addEventListener("click", () => {
+      $("#presetEditor")?.classList.add("hidden");
+    });
+  }
+
+  const btnSavePreset = $("#btnSavePreset");
+  if (btnSavePreset) {
+    btnSavePreset.addEventListener("click", () => {
+      const name = ($("#presetName")?.value || "").trim();
+      if (!name) { alert("Informe um nome para o preset."); return; }
+      if (BUILTIN_PRESETS[name]) { alert("Não é possível editar presets pré-configurados."); return; }
+      const values = {};
+      ECO_ALL_KEYS.forEach(key => {
+        const el = document.querySelector(`[data-preset-key="${key}"]`);
+        if (el) values[key] = el.checked;
+      });
+      const userPresets = loadUserPresets();
+      userPresets[name] = values;
+      saveUserPresets(userPresets);
+      $("#presetEditor")?.classList.add("hidden");
+      renderPresetSelect();
+      renderPresetList();
+    });
+  }
+
+  // Delete preset (exposed globally for onclick)
+  window.deletePreset = function(name) {
+    if (BUILTIN_PRESETS[name]) return;
+    if (!confirm(`Excluir o preset "${name}"?`)) return;
+    const userPresets = loadUserPresets();
+    delete userPresets[name];
+    saveUserPresets(userPresets);
+    renderPresetSelect();
+    renderPresetList();
+  };
+
+  // Apply preset to selected model
+  const btnApplyPreset = $("#btnApplyPreset");
+  if (btnApplyPreset) {
+    btnApplyPreset.addEventListener("click", async () => {
+      const presetName = $("#presetSelect")?.value;
+      const modelId = $("#settingsModelSelect")?.value;
+      if (!presetName) { alert("Escolha um preset."); return; }
+      if (!modelId) { alert("Escolha um modelo para aplicar o preset."); return; }
+      const allPresets = getAllPresets();
+      const preset = allPresets[presetName];
+      if (!preset) return;
+      const custom = loadModelSettings();
+      custom[modelId] = { ...custom[modelId], ...preset, useGlobal: false };
+      saveModelSettings(custom);
+      populateModelSelect();
+      $("#settingsModelSelect").value = modelId;
+      selectModelConfig(modelId);
+    });
+  }
+
+  // Bulk apply
+  const btnBulkApplyPreset = $("#btnBulkApplyPreset");
+  if (btnBulkApplyPreset) {
+    btnBulkApplyPreset.addEventListener("click", () => {
+      const presetName = $("#presetSelect")?.value;
+      if (!presetName) { alert("Escolha um preset primeiro."); return; }
+      const panel = $("#bulkApplyPanel");
+      const container = $("#bulkModelCheckboxes");
+      if (!panel || !container) return;
+      panel.classList.remove("hidden");
+      const allPresets = getAllPresets();
+      const custom = loadModelSettings();
+      const allModels = new Set([...Object.keys(MODEL_PRESETS), ...Object.keys(custom)]);
+      container.innerHTML = Array.from(allModels).sort().map(id => {
+        const conf = custom[id] || MODEL_PRESETS[id];
+        const label = conf?.name || id;
+        return `<label class="checkbox" style="font-size:12px;">
+          <input type="checkbox" data-bulk-model="${id}" />
+          ${escHtml(label)} <span class="note">(${escHtml(id)})</span>
+        </label>`;
+      }).join("");
+    });
+  }
+
+  const btnCancelBulkApply = $("#btnCancelBulkApply");
+  if (btnCancelBulkApply) {
+    btnCancelBulkApply.addEventListener("click", () => {
+      $("#bulkApplyPanel")?.classList.add("hidden");
+    });
+  }
+
+  const btnConfirmBulkApply = $("#btnConfirmBulkApply");
+  if (btnConfirmBulkApply) {
+    btnConfirmBulkApply.addEventListener("click", async () => {
+      const presetName = $("#presetSelect")?.value;
+      if (!presetName) return;
+      const allPresets = getAllPresets();
+      const preset = allPresets[presetName];
+      if (!preset) return;
+      const checkboxes = document.querySelectorAll('[data-bulk-model]:checked');
+      if (checkboxes.length === 0) { alert("Selecione pelo menos um modelo."); return; }
+      const custom = loadModelSettings();
+      checkboxes.forEach(cb => {
+        const modelId = cb.getAttribute("data-bulk-model");
+        custom[modelId] = { ...custom[modelId], ...preset, useGlobal: false };
+      });
+      saveModelSettings(custom);
+      $("#bulkApplyPanel")?.classList.add("hidden");
+      populateModelSelect();
+      alert(`Preset "${presetName}" aplicado a ${checkboxes.length} modelo(s).`);
+    });
+  }
+
+  // Export presets
+  const btnExportPresets = $("#btnExportPresets");
+  if (btnExportPresets) {
+    btnExportPresets.addEventListener("click", () => {
+      const all = getAllPresets();
+      const blob = new Blob([JSON.stringify(all, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "deepsproxy-presets.json";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  // Import presets
+  const btnImportPresets = $("#btnImportPresets");
+  const presetImportFile = $("#presetImportFile");
+  if (btnImportPresets && presetImportFile) {
+    btnImportPresets.addEventListener("click", () => presetImportFile.click());
+    presetImportFile.addEventListener("change", (e) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const imported = JSON.parse(reader.result);
+          if (typeof imported !== "object" || Array.isArray(imported)) throw new Error("Formato inválido");
+          const userPresets = loadUserPresets();
+          let count = 0;
+          for (const [name, values] of Object.entries(imported)) {
+            if (typeof values === "object" && values !== null) {
+              userPresets[name] = values;
+              count++;
+            }
+          }
+          saveUserPresets(userPresets);
+          renderPresetSelect();
+          renderPresetList();
+          alert(`${count} preset(s) importado(s) com sucesso.`);
+        } catch (err) {
+          alert("Erro ao importar: " + err.message);
+        }
+      };
+      reader.readAsText(file);
+      e.target.value = "";
+    });
+  }
+
+  // ---- Per-model settings ----
+  function loadModelSettings() {
+    try {
+      const raw = localStorage.getItem(MODELS_KEY);
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  }
+
+  function saveModelSettings(models) {
+    localStorage.setItem(MODELS_KEY, JSON.stringify(models));
+  }
+
+  function getModelConfig(modelId) {
+    const custom = loadModelSettings();
+    if (custom[modelId]) return custom[modelId];
+    if (MODEL_PRESETS[modelId]) return MODEL_PRESETS[modelId];
+    return null;
+  }
+
+  function getEffectiveConfig(modelId) {
+    const custom = loadModelSettings();
+    const modelConf = custom[modelId] || MODEL_PRESETS[modelId];
+    const globals = loadSettings();
+    if (!modelConf) return globals;
+    if (modelConf.useGlobal) return globals;
+    return {
+      truncateHistory: modelConf.truncateHistory ?? globals.truncateHistory,
+      summarizeHistory: modelConf.summarizeHistory ?? globals.summarizeHistory,
+      truncateToolOutput: modelConf.truncateToolOutput ?? globals.truncateToolOutput,
+      stripReasoning: modelConf.stripReasoning ?? globals.stripReasoning,
+      cachePrefix: modelConf.cachePrefix ?? globals.cachePrefix,
+      responseCache: modelConf.responseCache ?? globals.responseCache,
+      tokenEstimation: modelConf.tokenEstimation ?? globals.tokenEstimation,
+      smartTruncation: modelConf.smartTruncation ?? globals.smartTruncation,
+      dedupConsecutive: modelConf.dedupConsecutive ?? globals.dedupConsecutive,
+    };
+  }
+
+  const MODEL_FIELDS = [
+    { id: "modelSetTruncateHistory", key: "truncateHistory" },
+    { id: "modelSetSummarizeHistory", key: "summarizeHistory" },
+    { id: "modelSetTruncateToolOutput", key: "truncateToolOutput" },
+    { id: "modelSetStripReasoning", key: "stripReasoning" },
+    { id: "modelSetCachePrefix", key: "cachePrefix" },
+    { id: "modelSetResponseCache", key: "responseCache" },
+    { id: "modelSetTokenEstimation", key: "tokenEstimation" },
+    { id: "modelSetSmartTruncation", key: "smartTruncation" },
+    { id: "modelSetDedupConsecutive", key: "dedupConsecutive" },
+  ];
+
+  let selectedModelId = null;
+
+  function populateModelSelect() {
+    const sel = $("#settingsModelSelect");
+    if (!sel) return;
+    const current = sel.value;
+    const custom = loadModelSettings();
+    const knownModels = new Set([...Object.keys(MODEL_PRESETS), ...Object.keys(custom)]);
+
+    // Groups
+    const groups = {};
+    knownModels.forEach((id) => {
+      const conf = custom[id] || MODEL_PRESETS[id];
+      const provider = conf.provider || id.split("-")[0] || "outros";
+      if (!groups[provider]) groups[provider] = [];
+      groups[provider].push({ id, name: conf.name || id });
+    });
+
+    // Also add models from status if available
+    (status.models || []).forEach((m) => {
+      const mid = typeof m === "string" ? m : m.id;
+      if (mid && !knownModels.has(mid)) {
+        const provider = mid.split("-")[0] || "outros";
+        if (!groups[provider]) groups[provider] = [];
+        groups[provider].push({ id: mid, name: mid });
+      }
+    });
+
+    sel.innerHTML = '<option value="">— Escolha um modelo —</option>';
+    Object.keys(groups).sort().forEach((provider) => {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = provider.toUpperCase();
+      groups[provider].sort((a, b) => a.name.localeCompare(b.name)).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.name;
+        const conf = custom[m.id];
+        if (conf && !conf.useGlobal) o.textContent += " (custom)";
+        else if (MODEL_PRESETS[m.id]) o.textContent += " (pré-config)";
+        optgroup.appendChild(o);
+      });
+      sel.appendChild(optgroup);
+    });
+
+    if (current) sel.value = current;
+  }
+
+  function renderModelConfig(modelId) {
+    selectedModelId = modelId;
+    const panel = $("#modelConfigPanel");
+    const empty = $("#modelConfigEmpty");
+    if (!modelId) { panel.classList.add("hidden"); empty.classList.remove("hidden"); return; }
+    panel.classList.remove("hidden");
+    empty.classList.add("hidden");
+
+    const custom = loadModelSettings();
+    const conf = custom[modelId] || MODEL_PRESETS[modelId];
+    const isPreset = !!MODEL_PRESETS[modelId];
+    const isCustom = !!custom[modelId];
+    const useGlobal = conf ? (conf.useGlobal !== false && !isCustom) : true;
+    const globals = loadSettings();
+
+    // Header
+    const displayName = conf?.name || modelId;
+    $("#modelConfigName").textContent = displayName;
+    const badge = $("#modelConfigBadge");
+    if (isCustom) { badge.textContent = "personalizado"; badge.className = "pill"; badge.style.cssText = "font-size:11px;color:var(--accent);border-color:#1f3d6a;"; }
+    else if (isPreset) { badge.textContent = "pré-configurado"; badge.className = "pill"; badge.style.cssText = "font-size:11px;color:var(--green);border-color:#1f4d38;"; }
+    else { badge.textContent = "usando globais"; badge.className = "pill warn"; badge.style.cssText = "font-size:11px;"; }
+
+    const useGlobalEl = $("#modelUseGlobal");
+    useGlobalEl.checked = useGlobal;
+
+    // Fill fields
+    MODEL_FIELDS.forEach(({ id, key }) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.checked = conf ? !!conf[key] : !!globals[key];
+      el.disabled = useGlobal;
+    });
+
+    const ctxEl = $("#modelSetContextWindow");
+    if (ctxEl) {
+      ctxEl.value = conf?.contextWindow || "";
+      ctxEl.disabled = useGlobal;
+    }
+
+    // Default tags
+    document.querySelectorAll(".model-default-tag[data-default]").forEach((tag) => {
+      const key = tag.dataset.default;
+      if (key === "contextWindow") {
+        tag.textContent = useGlobal ? "(global: 56000)" : "";
+      } else {
+        const gVal = globals[key];
+        tag.textContent = useGlobal ? "(global: " + (gVal ? "ligado" : "desligado") + ")" : "";
+        tag.classList.toggle("is-custom", !useGlobal);
+      }
+    });
+  }
+
+  function collectModelSettings() {
+    const settings = {};
+    MODEL_FIELDS.forEach(({ id, key }) => {
+      const el = document.getElementById(id);
+      if (el) settings[key] = !!el.checked;
+    });
+    const ctxEl = $("#modelSetContextWindow");
+    if (ctxEl && ctxEl.value) settings.contextWindow = parseInt(ctxEl.value, 10) || undefined;
+    settings.useGlobal = !!$("#modelUseGlobal")?.checked;
+    return settings;
+  }
+
+  const settingsModelSelect = $("#settingsModelSelect");
+  if (settingsModelSelect) {
+    settingsModelSelect.addEventListener("change", () => renderModelConfig(settingsModelSelect.value));
+  }
+
+  const modelUseGlobalEl = $("#modelUseGlobal");
+  if (modelUseGlobalEl) {
+    modelUseGlobalEl.addEventListener("change", () => {
+      const disabled = modelUseGlobalEl.checked;
+      MODEL_FIELDS.forEach(({ id }) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = disabled;
+      });
+      const ctxEl = $("#modelSetContextWindow");
+      if (ctxEl) ctxEl.disabled = disabled;
+      // Update default tags
+      const globals = loadSettings();
+      document.querySelectorAll(".model-default-tag[data-default]").forEach((tag) => {
+        const key = tag.dataset.default;
+        if (key === "contextWindow") {
+          tag.textContent = disabled ? "(global: 56000)" : "";
+        } else {
+          tag.textContent = disabled ? "(global: " + (globals[key] ? "ligado" : "desligado") + ")" : "";
+          tag.classList.remove("is-custom");
+        }
+      });
+    });
+  }
+
+  const btnSaveModelConfig = $("#btnSaveModelConfig");
+  if (btnSaveModelConfig) {
+    btnSaveModelConfig.addEventListener("click", async () => {
+      if (!selectedModelId) return;
+      const fb = $("#modelConfigFeedback");
+      const modelConf = collectModelSettings();
+      const custom = loadModelSettings();
+      custom[selectedModelId] = modelConf;
+      saveModelSettings(custom);
+      fb.textContent = "Configuração salva para " + selectedModelId + ".";
+      populateModelSelect();
+      renderModelConfig(selectedModelId);
+      setTimeout(() => { if (fb.textContent.includes("salva")) fb.textContent = ""; }, 3000);
+    });
+  }
+
+  const btnRemoveModelConfig = $("#btnRemoveModelConfig");
+  if (btnRemoveModelConfig) {
+    btnRemoveModelConfig.addEventListener("click", async () => {
+      if (!selectedModelId) return;
+      if (!confirm("Remover configuração personalizada de " + selectedModelId + "? Voltará a usar as configurações globais ou pré-configuradas.")) return;
+      const custom = loadModelSettings();
+      delete custom[selectedModelId];
+      saveModelSettings(custom);
+      populateModelSelect();
+      renderModelConfig(selectedModelId);
+    });
+  }
+
+  const btnAddModelConfig = $("#btnAddModelConfig");
+  if (btnAddModelConfig) {
+    btnAddModelConfig.addEventListener("click", () => {
+      const name = prompt("Nome do modelo (ex: meu-modelo-custom):");
+      if (!name || !name.trim()) return;
+      const id = name.trim();
+      const custom = loadModelSettings();
+      custom[id] = { name: id, useGlobal: true };
+      saveModelSettings(custom);
+      populateModelSelect();
+      settingsModelSelect.value = id;
+      renderModelConfig(id);
+    });
+  }
+
+  // Init settings
+  async function initSettings() {
+    renderSettings();
+    renderPresetSelect();
+    renderPresetList();
+    populateModelSelect();
+    const settings = loadSettings();
+    await applySettingsToServer(settings);
+  }
+
+  // ---------- FASE 4: Local Models ----------
+  const localHealthGrid = $("#localHealthGrid");
+  const localInstancesList = $("#localInstancesList");
+  const localMetricsGrid = $("#localMetricsGrid");
+  const localMetricsEmpty = $("#localMetricsEmpty");
+  const localModelsStatus = $("#localModelsStatus");
+
+  async function loadLocalModels() {
+    try {
+      const resp = await fetch("/api/local-models");
+      const data = await resp.json();
+      renderLocalHealth(data.health);
+      renderLocalInstances(data.instances);
+      renderLocalMetrics(data.metrics);
+      renderFallbackConfig(data.fallback);
+    } catch (err) {
+      if (localModelsStatus) localModelsStatus.textContent = "Erro ao carregar modelos locais.";
+    }
+  }
+
+  function renderLocalHealth(health) {
+    if (!localHealthGrid) return;
+    if (!health || health.length === 0) {
+      localHealthGrid.innerHTML = '<p class="note" style="margin:0;">Nenhuma instância local detectada.</p>';
+      return;
+    }
+    localHealthGrid.innerHTML = health.map(h => {
+      const colors = { online: "var(--green)", slow: "var(--yellow)", offline: "var(--red)" };
+      const labels = { online: "Online", slow: "Lento", offline: "Offline" };
+      const color = colors[h.status] || "var(--muted)";
+      const label = labels[h.status] || h.status;
+      return `<div class="card" style="border-left:4px solid ${color};">
+        <h3 style="margin:0 0 4px;">${escHtml(h.instanceId)}</h3>
+        <div style="display:flex; align-items:center; gap:8px;">
+          <span style="width:10px; height:10px; border-radius:50%; background:${color};"></span>
+          <b>${label}</b>
+        </div>
+        <div class="note" style="margin:4px 0 0;">Latência: ${h.latencyMs}ms</div>
+        ${h.error ? `<div class="note" style="color:var(--red); margin:4px 0 0;">${escHtml(h.error)}</div>` : ''}
+      </div>`;
+    }).join("");
+  }
+
+  function renderLocalInstances(instances) {
+    if (!localInstancesList) return;
+    if (!instances || instances.length === 0) {
+      localInstancesList.innerHTML = '<p class="note" style="margin:0;">Nenhuma instância local encontrada. Certifique-se de que Ollama ou LM Studio está rodando em localhost.</p>';
+      return;
+    }
+    localInstancesList.innerHTML = instances.map(inst => {
+      const modelsHtml = inst.models.length > 0
+        ? inst.models.map(m => `<span class="pill" style="margin:2px;">${escHtml(m.id)}${m.parameterSize ? ` (${m.parameterSize})` : ''}</span>`).join('')
+        : '<span class="note">Nenhum modelo disponível</span>';
+      return `<div class="card" style="margin-bottom:10px;">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px;">
+          <b style="font-size:14px;">${escHtml(inst.name)}</b>
+          <span class="note">porta ${inst.port}</span>
+          <span class="note">latência: ${inst.latencyMs}ms</span>
+        </div>
+        <div style="display:flex; flex-wrap:wrap; gap:4px;">${modelsHtml}</div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderLocalMetrics(metrics) {
+    if (!localMetricsGrid || !localMetricsEmpty) return;
+    if (!metrics || metrics.length === 0) {
+      localMetricsGrid.innerHTML = "";
+      localMetricsEmpty.style.display = "";
+      return;
+    }
+    localMetricsEmpty.style.display = "none";
+    localMetricsGrid.innerHTML = metrics.map(m => {
+      return `<div class="card">
+        <h3 style="margin:0 0 4px;">${escHtml(m.modelId)}</h3>
+        <div class="note">Instância: ${escHtml(m.instanceId)}</div>
+        <div style="margin-top:6px;">
+          <div>Requisições: <b>${m.requests}</b></div>
+          <div>Tokens/s: <b>${m.avgTokensPerSec.toFixed(1)}</b></div>
+          <div>Latência média: <b>${m.avgLatencyMs.toFixed(0)}ms</b></div>
+          <div>Total tokens: <b>${m.totalTokens.toLocaleString()}</b></div>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function renderFallbackConfig(config) {
+    const enabled = $("#fallbackEnabled");
+    const threshold = $("#fallbackThreshold");
+    const provider = $("#fallbackProvider");
+    if (enabled) enabled.checked = config?.enabled || false;
+    if (threshold) threshold.value = config?.latencyThresholdMs || 10000;
+    // Populate provider select with cloud providers
+    if (provider) {
+      const status = window._lastStatus;
+      if (status?.providers) {
+        const current = provider.value;
+        provider.innerHTML = '<option value="">— Nenhum —</option>';
+        status.providers.forEach(p => {
+          const opt = document.createElement("option");
+          opt.value = p.id;
+          opt.textContent = p.name || p.id;
+          provider.appendChild(opt);
+        });
+        provider.value = current || config?.fallbackProviderId || "";
+      }
+    }
+  }
+
+  const btnRefreshLocal = $("#btnRefreshLocal");
+  if (btnRefreshLocal) {
+    btnRefreshLocal.addEventListener("click", async () => {
+      if (localModelsStatus) localModelsStatus.textContent = "Buscando...";
+      try {
+        await fetch("/api/local-models/refresh", { method: "POST" });
+        await loadLocalModels();
+        if (localModelsStatus) localModelsStatus.textContent = "Atualizado!";
+      } catch {
+        if (localModelsStatus) localModelsStatus.textContent = "Erro ao atualizar.";
+      }
+      setTimeout(() => { if (localModelsStatus) localModelsStatus.textContent = ""; }, 3000);
+    });
+  }
+
+  const btnSaveFallback = $("#btnSaveFallback");
+  if (btnSaveFallback) {
+    btnSaveFallback.addEventListener("click", async () => {
+      const config = {
+        enabled: !!$("#fallbackEnabled")?.checked,
+        latencyThresholdMs: parseInt($("#fallbackThreshold")?.value || "10000"),
+        fallbackProviderId: $("#fallbackProvider")?.value || "",
+      };
+      try {
+        await fetch("/api/local-models/fallback", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        alert("Configuração de fallback salva!");
+      } catch {
+        alert("Erro ao salvar configuração.");
+      }
+    });
+  }
+
+  // ---------- Auto Router ----------
+  async function loadAutoRouterConfig() {
+    try {
+      const res = await fetch("/api/auto-router");
+      const data = await res.json();
+      const cfg = data.config || {};
+      if ($("#arCostPolicy")) $("#arCostPolicy").value = cfg.costPolicy || "balanced";
+      if ($("#arShowDecision")) $("#arShowDecision").checked = !!cfg.showDecision;
+      if ($("#arMinCapability")) $("#arMinCapability").value = cfg.minCapabilityThreshold ?? 3;
+      if ($("#arModelCount")) $("#arModelCount").textContent = data.modelCount ?? "—";
+      if ($("#arAvailableCount")) $("#arAvailableCount").textContent = data.availableCount ?? "—";
+      if ($("#arCacheSize")) $("#arCacheSize").textContent = data.cacheSize ?? 0;
+      if ($("#arCurrentPolicy")) $("#arCurrentPolicy").textContent = cfg.costPolicy || "balanced";
+    } catch {
+      console.error("Erro ao carregar config do Auto Router");
+    }
+  }
+
+  async function loadAutoRouterCatalog() {
+    const container = $("#arModelCatalog");
+    const empty = $("#arCatalogEmpty");
+    if (!container) return;
+    try {
+      const res = await fetch("/api/auto-router/metadata");
+      const models = await res.json();
+      if (!models.length) {
+        container.innerHTML = "";
+        if (empty) { empty.style.display = ""; empty.textContent = "Nenhum modelo cadastrado."; }
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      container.innerHTML = models.map((m) => {
+        const caps = m.capabilities || {};
+        const capBar = (label, val) =>
+          `<div style="display:flex;justify-content:space-between;font-size:11px;">
+            <span>${label}</span>
+            <span>${"█".repeat(Math.round((val||0)/2))}${"░".repeat(5-Math.round((val||0)/2))} ${val||0}</span>
+          </div>`;
+        const costStr = m.isFree ? "Gratuito" : `$${(m.cost?.input||0).toFixed(2)}/$${(m.cost?.output||0).toFixed(2)} per 1M`;
+        const avail = m.isAvailable !== false;
+        return `<div class="card" style="opacity:${avail?1:0.5}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+            <b style="font-size:13px;">${m.name || m.id}</b>
+            <span class="pill ${avail?'ok':'err'}" style="font-size:10px;">
+              <span class="s"></span>${avail?'Ativo':'Inativo'}
+            </span>
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${m.providerId||'?'} · ${costStr} · Vel: ${m.speed||'?'}/10</div>
+          <div style="display:flex;flex-direction:column;gap:2px;">
+            ${capBar('Raciocínio', caps.reasoning)}
+            ${capBar('Código', caps.coding)}
+            ${capBar('Matemática', caps.math)}
+            ${capBar('Escrita', caps.writing)}
+            ${capBar('Visão', caps.vision)}
+            ${capBar('Geral', caps.general)}
+          </div>
+          ${m.tags?.length ? `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${m.tags.map(t=>`<span class="pill" style="font-size:9px;">${t}</span>`).join('')}</div>` : ''}
+        </div>`;
+      }).join("");
+    } catch {
+      if (empty) { empty.style.display = ""; empty.textContent = "Erro ao carregar catálogo."; }
+    }
+  }
+
+  const btnSaveAutoRouter = $("#btnSaveAutoRouter");
+  if (btnSaveAutoRouter) {
+    btnSaveAutoRouter.addEventListener("click", async () => {
+      const config = {
+        costPolicy: $("#arCostPolicy")?.value || "balanced",
+        showDecision: !!$("#arShowDecision")?.checked,
+        minCapabilityThreshold: parseInt($("#arMinCapability")?.value || "3"),
+      };
+      try {
+        await fetch("/api/auto-router", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(config),
+        });
+        const fb = $("#arFeedback");
+        if (fb) { fb.textContent = "✓ Configuração salva!"; setTimeout(() => fb.textContent = "", 3000); }
+        loadAutoRouterConfig();
+      } catch {
+        const fb = $("#arFeedback");
+        if (fb) fb.textContent = "Erro ao salvar.";
+      }
+    });
+  }
+
+  const tabAutoRouter = document.querySelector('[data-tab="auto-router"]');
+  if (tabAutoRouter) {
+    tabAutoRouter.addEventListener("click", () => { loadAutoRouterConfig(); loadAutoRouterCatalog(); });
+  }
+
+  // Load local models on tab switch
+  const tabLocalModels = document.querySelector('[data-tab="local-models"]');
+  if (tabLocalModels) {
+    tabLocalModels.addEventListener("click", () => loadLocalModels());
+  }
+
   // ---------- Init ----------
+  initSettings();
   loadStatus();
   // Polling: atualiza status e modelos (aba Testar API) automaticamente.
   // A cada 10s mantém o card de fila de requisições razoavelmente atualizado;

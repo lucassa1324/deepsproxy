@@ -20,6 +20,7 @@ import {
   adapterHttpErrorResponse,
 } from './base.ts';
 import { withRetry, HttpError } from './throttle.ts';
+import { optimizedFetch } from '../optimizations.ts';
 
 const DEFAULT_BASE = 'https://api.anthropic.com/v1';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -247,7 +248,7 @@ export class AnthropicAdapter implements ProviderAdapter {
     const url = `${baseUrl}/messages`;
     const doFetch = () =>
       withRetry(async () => {
-        const res = await fetch(url, {
+        const res = await optimizedFetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

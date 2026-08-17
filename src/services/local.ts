@@ -17,15 +17,34 @@ import { v4 as uuidv4 } from 'uuid';
 import type { Provider, ProviderType } from './config.ts';
 import { defaultBaseUrl, isAdapterType, normalizeModelId } from './config.ts';
 import { isAdapterProvider, fetchProviderModels, dispatchAdapterChat } from './adapters/index.ts';
+import { shouldFallback as localShouldFallback, getLocalInstance, getFallbackConfig } from './local-discovery.ts';
 import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
 import { isModelBoosted } from './booster.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { GEMINI_KNOWN_MODELS } from './gemini-web.ts';
+import { optimizedFetch } from './optimizations.ts';
+import { resolveRegistry } from './config.ts';
 
 const TOOL_START = '<tool_call>';
 const TOOL_END = '</tool_call>';
+
+/**
+ * Verifica se o provedor é local (Ollama/LM Studio) e se deve fazer fallback.
+ * Retorna o provider de fallback se deve usar, ou null se pode usar o local.
+ */
+function checkFallback(provider: Provider): Provider | null {
+  if (provider.type !== 'ollama') return null;
+  const instance = getLocalInstance(provider.id);
+  if (!instance) return null;
+  const fallbackId = localShouldFallback(instance.id, provider.model || 'default');
+  if (!fallbackId) return null;
+  const config = getFallbackConfig();
+  if (!config.fallbackProviderId) return null;
+  const registry = resolveRegistry();
+  return registry.providers.find(p => p.id === config.fallbackProviderId) || null;
+}
 
 function buildHeaders(provider: Provider): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
@@ -108,11 +127,17 @@ export async function findProviderForModel(
 }
 
 export async function forwardChatCompletions(c: Context, body: OpenAIRequest, provider: Provider) {
-  // Provedores heterogêneos (gemini/anthropic/ollama) passam pela camada de
-  // Adapters; a resposta já vem no formato OpenAI (JSON ou SSE).
+  // FASE 4: Fallback automático — verifica se deve usar cloud
   if (isAdapterProvider(provider)) {
-    const resp = await dispatchAdapterChat(body, provider);
-    if (resp) return resp;
+    const fallback = checkFallback(provider);
+    if (fallback) {
+      console.log(`[local] fallback de ${provider.id} para ${fallback.id}`);
+      const resp = await dispatchAdapterChat(body, fallback);
+      if (resp) return resp;
+    } else {
+      const resp = await dispatchAdapterChat(body, provider);
+      if (resp) return resp;
+    }
   }
   if (hasTools(body)) {
     return forwardAgentic(c, body, provider);
@@ -133,7 +158,11 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
     delete payload.model;
   }
 
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+  const providerBaseUrl = provider.baseUrl.endsWith('/')
+    ? provider.baseUrl.slice(0, -1)
+    : provider.baseUrl;
+
+  const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: buildHeaders(provider),
     body: JSON.stringify(payload),
@@ -209,10 +238,10 @@ function buildAgenticMessagesWithImages(body: OpenAIRequest): any[] {
       ...m,
       content: Array.isArray(m.content)
         ? m.content
-            .filter((p: any) => p && (p.type === 'image_url' || (p.type === 'text' && p.text != null)))
-            .map((p: any) =>
-              p.type === 'image_url' ? { type: 'image_url', image_url: { url: p.image_url?.url } } : { type: 'text', text: p.text }
-            )
+          .filter((p: any) => p && (p.type === 'image_url' || (p.type === 'text' && p.text != null)))
+          .map((p: any) =>
+            p.type === 'image_url' ? { type: 'image_url', image_url: { url: p.image_url?.url } } : { type: 'text', text: p.text }
+          )
         : m.content,
     });
   }
@@ -242,7 +271,11 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
   delete payload.tools;
   delete payload.tool_choice;
 
-  const response = await fetch(`${provider.baseUrl}/chat/completions`, {
+  const providerBaseUrl = provider.baseUrl.endsWith('/')
+    ? provider.baseUrl.slice(0, -1)
+    : provider.baseUrl;
+
+  const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: buildHeaders(provider),
     body: JSON.stringify(payload),
@@ -533,7 +566,7 @@ async function fetchModelsFrom(baseUrl: string, apiKey: string, timeoutMs: numbe
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(`${baseUrl}/models`, {
+    const resp = await optimizedFetch(`${baseUrl}/models`, {
       headers: apiKey ? { authorization: `Bearer ${apiKey}` } : {},
       signal: controller.signal,
     });

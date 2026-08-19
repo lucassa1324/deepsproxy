@@ -34,3 +34,6 @@ test-results/
 **/Local State
 **/Singleton*
 **/*Profile*/
+
+# Debug screenshots (podem conter a conta logada)
+debug_*.png

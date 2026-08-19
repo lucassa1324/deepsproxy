@@ -19,6 +19,12 @@
     --purple: #a78bfa;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  #appVersion {
+    position: fixed; bottom: 4px; right: 8px;
+    font-size: 10px; color: var(--muted); opacity: 0.55;
+    z-index: 999; pointer-events: none; user-select: none;
+    letter-spacing: 0.02em;
+  }
   body {
     background: var(--bg);
     color: var(--text);
@@ -4411,5 +4417,6 @@ for await (const chunk of stream) {
     });
   }
 </script>
+<div id="appVersion">v__APP_VERSION__ · __APP_TAG__</div>
 </body>
 </html>

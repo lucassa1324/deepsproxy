@@ -75,6 +75,7 @@ import type { ProviderRegistry } from '../services/config.ts';
 import { getModelCatalog, resolveModelEntry } from '../services/modelCatalog.ts';
 import { getTokenEconomy, updateTokenEconomy } from '../services/token-economy.ts';
 import { getBoosterSettings, updateBoosterSettings, toggleModelBooster, isModelBoosted } from '../services/booster.ts';
+import { APP_VERSION, APP_TAG } from '../version.ts';
 export const dashboard = new Hono();
 
 // Incrementado quando o registro de provedores muda. As páginas (chat e
@@ -114,7 +115,9 @@ const chatExampleHtml = readFileSync(
   'utf-8'
 );
 
-dashboard.get('/', (c) => c.html(html));
+const htmlWithVersion = html.replace('__APP_VERSION__', APP_VERSION).replace('__APP_TAG__', APP_TAG);
+
+dashboard.get('/', (c) => c.html(htmlWithVersion));
 
 dashboard.get('/chat', (c) => c.html(chatHtml));
 

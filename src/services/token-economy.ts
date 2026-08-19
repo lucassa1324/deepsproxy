@@ -77,6 +77,35 @@ export const CACHE_MAX_ENTRIES = 200;
 /** max_tokens usado na chamada de resumo. */
 export const SUMMARY_MAX_TOKENS = 512;
 
+/**
+ * Janelas de contexto efetivas por tipo de provedor (tokens). Ajusta o teto
+ * global do usuário aos limites reais de cada provedor: para provedores com
+ * janela curta (gemini-web) o corte da economia acontece antes e de forma mais
+ * suave (preservando a cauda); para provedores com janela grande o teto do
+ * usuário continua valendo (nunca aumentamos além dele).
+ */
+export const PROVIDER_CONTEXT_WINDOWS: Record<string, number> = {
+  'gemini-web': 20000,
+  deepseek: 120000,
+  qwen: 60000,
+  gemini: 980000,
+  anthropic: 190000,
+  'openai-compatible': 120000,
+};
+
+/**
+ * Janela de contexto efetiva para um provedor. Sem tipo → retorna o teto base.
+ * Com tipo → `min(base, janela do provedor)`: nunca aumenta o orçamento do
+ * usuário, só impede que a economia prometa mais contexto do que o provedor
+ * consegue segurar (o que levaria o provedor a cortar a cauda com violência).
+ */
+export function contextWindowFor(providerType: string | undefined, base: number): number {
+  if (!providerType) return base;
+  const window = PROVIDER_CONTEXT_WINDOWS[providerType];
+  if (!window) return base;
+  return Math.min(base, window);
+}
+
 function economyFile(): string {
   return process.env.ECONOMY_FILE || join(process.cwd(), 'gateway-economy.json');
 }
@@ -398,6 +427,44 @@ export function dedupConsecutiveMessages(messages: any[]): { messages: any[]; re
   return { messages: out, removed };
 }
 
+/**
+ * Estabiliza o prefixo do prompt para maximizar o prompt caching automático
+ * entre requests (DeepSeek/OpenAI/Gemini cacheiam prefixo byte-idêntico; o
+ * Anthropic usa os breakpoints cache_control já marcados no adapter).
+ *
+ * Regras:
+ *  - Todas as mensagens de system vão para o início, em ordem estável e sem
+ *    duplicatas exatas (system soltas no meio quebram o cache a cada request);
+ *  - A conversa segue em ordem cronológica (a cauda volátil — o turno atual do
+ *    usuário — permanece no fim, como deve ser para o cache funcionar).
+ *
+ * Retorna `changed` quando houve reordenação/remoção — útil para o log da
+ * economia. Não altera conteúdo de nenhuma mensagem (zero impacto na IA).
+ */
+export function stabilizePromptPrefix(messages: any[]): { messages: any[]; changed: boolean } {
+  const input = messages || [];
+  const system: any[] = [];
+  const rest: any[] = [];
+  let scattered = false;
+  for (let i = 0; i < input.length; i++) {
+    const m = input[i];
+    if (m?.role === 'system') {
+      if (rest.length > 0) scattered = true;
+      system.push(m);
+    } else {
+      rest.push(m);
+    }
+  }
+  const deduped: any[] = [];
+  for (const m of system) {
+    const prev = deduped[deduped.length - 1];
+    if (prev && messageText(prev) === messageText(m)) continue;
+    deduped.push(m);
+  }
+  const changed = scattered || deduped.length !== system.length;
+  return changed ? { messages: [...deduped, ...rest], changed } : { messages: [...input], changed };
+}
+
 /** Digest determinístico dos turnos descartados (fallback do resumo). */
 export function buildSummaryDigest(dropped: any[]): string {
   const parts: string[] = [];
@@ -434,6 +501,11 @@ export interface EconomyApplyOptions {
    * resumo. Se ausente ou se lançar, usa o digest local.
    */
   summarize?: (dropped: any[]) => Promise<string>;
+  /**
+   * Tipo do provedor de destino (ex.: "gemini-web", "deepseek"). Ajusta a
+   * janela de contexto efetiva (contextWindowFor) aos limites do provedor.
+   */
+  providerType?: string;
 }
 
 export interface EconomyApplyResult {
@@ -479,7 +551,10 @@ export async function applyTokenEconomy(
     messages = kept;
   }
 
-  const maxTokens = settings.maxContextTokens > 0 ? settings.maxContextTokens : DEFAULT_ECONOMY.maxContextTokens;
+  const maxTokens = contextWindowFor(
+    options.providerType,
+    settings.maxContextTokens > 0 ? settings.maxContextTokens : DEFAULT_ECONOMY.maxContextTokens
+  );
   const wantsTruncate = settings.truncateHistory || settings.summarizeHistory || settings.smartTruncation;
   if (wantsTruncate) {
     const est = estimateMessagesTokens(messages);
@@ -515,8 +590,18 @@ export async function applyTokenEconomy(
     }
   }
 
-  const next = { ...payload, messages };
+  let next = { ...payload, messages };
   if (settings.cachePrefix) {
+    // Prompt caching real: além de marcar o cache_control (Anthropic),
+    // garante um prefixo byte-idêntico entre requests — system no início,
+    // em ordem estável e sem duplicatas — para o cache automático do
+    // DeepSeek/OpenAI/Gemini reutilizar o prefixo (tokens cacheados custam
+    // ~10% do preço normal).
+    const { messages: stabilized, changed } = stabilizePromptPrefix(messages);
+    if (changed) {
+      actions.push('prefixStable');
+      next = { ...payload, messages: stabilized };
+    }
     next._eco = { cachePrefix: true };
   }
 

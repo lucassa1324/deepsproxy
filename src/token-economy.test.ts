@@ -24,6 +24,8 @@ import {
   responseCacheGet,
   responseCacheSet,
   hasMeaningfulContent,
+  stabilizePromptPrefix,
+  contextWindowFor,
   resetResponseCache,
   _responseCacheStore,
   getTokenEconomy,
@@ -176,6 +178,67 @@ test('economy: applyTokenEconomy trunca histórico e opcionalmente resume', asyn
   assert.ok(a3.some((a) => a.startsWith('summary(digest')));
   const head3 = p3.messages.filter((m: any) => m.role === 'system').map((m: any) => m.content).join('\n');
   assert.ok(head3.includes('[Resumo do histórico anterior]'));
+});
+
+test('economy: stabilizePromptPrefix move system soltas para o início e preserva a cauda', () => {
+  const input = [
+    { role: 'user', content: 'pergunta 1' },
+    { role: 'system', content: 'instrução solta no meio' },
+    { role: 'assistant', content: 'resposta 1' },
+    { role: 'user', content: 'PERGUNTA ATUAL' },
+  ];
+  const { messages, changed } = stabilizePromptPrefix(input);
+  assert.equal(changed, true);
+  assert.deepEqual(messages[0], { role: 'system', content: 'instrução solta no meio' });
+  assert.equal(messages[messages.length - 1].content, 'PERGUNTA ATUAL', 'cauda volátil deve ficar no fim');
+  assert.equal(messages.filter((m: any) => m.role === 'system').length, 1);
+});
+
+test('economy: stabilizePromptPrefix dedup system idênticas consecutivas', () => {
+  const input = [
+    { role: 'system', content: 'você é um assistente' },
+    { role: 'system', content: 'você é um assistente' },
+    { role: 'user', content: 'oi' },
+  ];
+  const { messages, changed } = stabilizePromptPrefix(input);
+  assert.equal(changed, true);
+  assert.equal(messages.filter((m: any) => m.role === 'system').length, 1);
+  assert.equal(messages.length, 2);
+});
+
+test('economy: stabilizePromptPrefix sem mudanças não altera a ordem', () => {
+  const input = [
+    { role: 'system', content: 'regras' },
+    { role: 'user', content: 'u1' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'u2' },
+  ];
+  const { messages, changed } = stabilizePromptPrefix(input);
+  assert.equal(changed, false);
+  assert.deepEqual(messages, input);
+});
+
+test('economy: contextWindowFor ajusta a janela por provedor e nunca aumenta', () => {
+  assert.equal(contextWindowFor(undefined, 56000), 56000);
+  assert.equal(contextWindowFor('deepseek', 56000), 56000);
+  assert.equal(contextWindowFor('gemini-web', 56000), 20000);
+  assert.equal(contextWindowFor('gemini-web', 8000), 8000, 'não aumenta além do teto do usuário');
+  assert.equal(contextWindowFor('provider-desconhecido', 56000), 56000);
+});
+
+test('economy: cachePrefix estabiliza o prefixo no payload', async () => {
+  const settings = { ...DEFAULT_ECONOMY, enabled: true, cachePrefix: true, maxContextTokens: 999999999 };
+  const input = [
+    { role: 'user', content: 'u1' },
+    { role: 'system', content: 'regras soltas' },
+    { role: 'assistant', content: 'a1' },
+    { role: 'user', content: 'u2' },
+  ];
+  const { payload, actions } = await applyTokenEconomy({ messages: input }, settings);
+  assert.ok(actions.includes('prefixStable'));
+  assert.equal(payload.messages[0].role, 'system');
+  assert.equal(payload.messages[payload.messages.length - 1].content, 'u2');
+  assert.deepEqual(payload._eco, { cachePrefix: true });
 });
 
 test('economy: cache de respostas com TTL', () => {

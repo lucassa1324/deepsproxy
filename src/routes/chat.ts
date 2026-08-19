@@ -525,6 +525,7 @@ export async function chatCompletions(c: Context) {
     if (economy.enabled) {
       const { payload: ecoPayload, actions, estimatedTokens } = await applyTokenEconomy(body, economy, {
         summarize: async (dropped: any[]) => summarizeDropped(dropped, target),
+        providerType: target?.type,
       });
       body = ecoPayload;
       if (economy.tokenEstimation) {

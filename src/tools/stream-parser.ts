@@ -134,12 +134,25 @@ export class StreamingToolParser {
               toolArgs = rest;
             }
 
-            result.toolCalls.push({
-              id: toolId,
-              name: toolName,
-              arguments: toolArgs,
-            });
-            this.emittedToolCallCount++;
+            // Tool call truncada no meio (sem fechar `}` e sem argumentos) é
+            // descartada — emitir com args vazios faz o cliente executar a
+            // ferramenta com valores inválidos (ex.: Read com file_path ""),
+            // e vazar o <tool_call> cru como texto confunde o agente.
+            const rawClosed = this.buffer.trim().endsWith('}');
+            const hasArgs = Object.keys(toolArgs).length > 0;
+            if (rawClosed || hasArgs) {
+              result.toolCalls.push({
+                id: toolId,
+                name: toolName,
+                arguments: toolArgs,
+              });
+              this.emittedToolCallCount++;
+            } else {
+              console.warn(
+                '[StreamingToolParser] tool call truncada descartada (sem fechamento):',
+                this.buffer.slice(0, 120)
+              );
+            }
           }
         } catch (e) {
           if (this.emittedToolCallCount === 0) {

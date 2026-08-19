@@ -139,6 +139,16 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
       if (resp) return resp;
     }
   }
+  if (!provider.baseUrl) {
+    return c.json(
+      {
+        error: {
+          message: `Provedor "${provider.name}" não tem Base URL configurada e não consegue encaminhar o modelo "${body.model || ''}". Configure o provedor na aba Conexão do dashboard.`,
+        },
+      },
+      502
+    );
+  }
   if (hasTools(body)) {
     return forwardAgentic(c, body, provider);
   }

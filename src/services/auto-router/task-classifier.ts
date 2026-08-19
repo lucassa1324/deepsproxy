@@ -201,22 +201,43 @@ const IMAGE_INDICATORS = [
 
 // ── Classificador principal ─────────────────────────────────────────────
 
+export interface ClassifyOptions {
+  /**
+   * true quando a requisição traz tools (agentes/IDE, ex.: Trae/Cursor).
+   * Usar ferramentas é essencialmente uma tarefa de programação/agente:
+   * exige seguir instruções e decidir quando chamar cada tool. Se o texto
+   * do usuário não citar código, este sinal garante coding+reasoning altos
+   * para NÃO rotear para um modelo fraco que ignora as tools e responde
+   * só com texto.
+   */
+  hasTools?: boolean;
+}
+
 /**
  * Classifica uma mensagem de usuário em termos de capacidades necessárias
  * e complexidade. Usa heurísticas locais (sem chamadas externas).
  *
  * @param messages - Histórico completo da conversa (últimas N mensagens)
  * @param currentMessage - A mensagem atual do usuário
+ * @param options - Opções de classificação (ex.: presença de tools)
  */
 export function classifyTask(
   messages: Array<{ role: string; content: string | any[] }>,
-  currentMessage: string
+  currentMessage: string,
+  options: ClassifyOptions = {}
 ): TaskClassification {
   const text = extractTextContent(currentMessage);
   const fullContext = buildContext(messages, text);
 
   // 1. Detectar categorias necessárias
   const categories = detectCategories(fullContext);
+
+  // 1b. Requisição com ferramentas: garante o mínimo de coding+reasoning
+  // para que o seletor escolha um modelo capaz de executar as tools.
+  if (options.hasTools) {
+    categories.coding = Math.max(categories.coding || 0, 8);
+    categories.reasoning = Math.max(categories.reasoning || 0, 7);
+  }
 
   // 2. Estimar complexidade
   const complexity = estimateComplexity(fullContext, messages);

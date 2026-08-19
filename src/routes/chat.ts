@@ -13,7 +13,7 @@ import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
 import { createDeepSeekStream, updateSessionParent } from '../services/deepseek.ts';
 import { uploadDeepSeekImages, prepareDeepSeekVisionFiles, DeepSeekImageInput } from '../services/playwright.ts';
-import { forwardChatCompletions, findProviderForModel, isDeepseekModel } from '../services/local.ts';
+import { forwardChatCompletions, findProviderForModel, isDeepseekModel, hasTools } from '../services/local.ts';
 import { isQwenModel } from '../services/qwen.ts';
 import { qwenChatCompletions } from './qwen.ts';
 import { geminiChatCompletions } from './gemini.ts';
@@ -36,6 +36,7 @@ import {
   cachePayloadKey,
   responseCacheGet,
   responseCacheSet,
+  hasMeaningfulContent,
   buildSummaryDigest,
   SUMMARY_MAX_TOKENS,
 } from '../services/token-economy.ts';
@@ -55,8 +56,7 @@ import {
 } from '../services/agent.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { applyPhase1Optimizations, cacheSystemPrompt, getCachedPrompt, optimizedFetch } from '../services/optimizations.ts';
-import { routeRequest, getAutoRouterConfig } from '../services/auto-router/index.ts';
-import { getCachedModelCatalog } from '../services/modelCatalog.ts';
+import { routeRequest, getAutoRouterConfig, getModelMetadata } from '../services/auto-router/index.ts';
 
 interface DeepSeekAccumulated {
   reasoning: string;
@@ -343,6 +343,93 @@ async function summarizeDropped(dropped: any[], target: Provider): Promise<strin
   return digest;
 }
 
+/**
+ * Resolve o modelo "auto"/"auto-free" via Smart Router.
+ *
+ * Usa sempre o catálogo atual (não o cache, que pode estar vazio no primeiro
+ * request), exclui os placeholders "auto"/"auto-free" das opções (não são
+ * modelos encaminháveis) e garante que o modelo escolhido exista no catálogo —
+ * nunca devolvendo o próprio "auto"/"auto-free" (que tem Base URL vazia e
+ * quebraria o encaminhamento com "Failed to parse URL from /chat/completions").
+ */
+async function resolveAutoModel(
+  c: Context,
+  body: OpenAIRequest,
+  isBrowserOnly: boolean
+): Promise<{ model: string; message?: string; status?: number }> {
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  const catalog = await getModelCatalog(registry);
+  const availableModels = catalog
+    .filter((m) => m.id !== 'auto' && m.id !== 'auto-free')
+    .map((m) => ({ id: m.id, providerId: m.provider, providerType: m.providerType }));
+
+  const messages = body.messages || [];
+  const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
+  const currentMessage =
+    typeof lastUserMsg?.content === 'string'
+      ? lastUserMsg.content
+      : Array.isArray(lastUserMsg?.content)
+        ? lastUserMsg.content.map((p: any) => p.text || '').join('')
+        : '';
+
+  const decision = routeRequest(
+    messages as Array<{ role: string; content: string | any[] }>,
+    currentMessage,
+    availableModels,
+    undefined,
+    isBrowserOnly,
+    hasTools(body)
+  );
+
+  if (!decision.selectedModelId) {
+    return { model: '', status: 503, message: `Auto Router: ${decision.reason}` };
+  }
+
+  // Garante que o modelo escolhido existe no catálogo atual (nunca o próprio
+  // "auto"/"auto-free", que não é encaminhável).
+  const fullCatalog = await getModelCatalog(registry);
+  let model = fullCatalog.find((m) => m.id === decision.selectedModelId)?.id ?? '';
+  if (!model) {
+    console.warn(`[auto-router] modelo selecionado "${decision.selectedModelId}" não está no catálogo; usando fallback`);
+    const realCatalog = fullCatalog.filter((m) => m.id !== 'auto' && m.id !== 'auto-free');
+    const browserPool = realCatalog.filter(
+      (m) => m.providerType === 'gemini-web' || m.providerType === 'deepseek' || m.providerType === 'qwen'
+    );
+    const pool = browserPool.length ? browserPool : realCatalog;
+    if (pool.length) {
+      const sorted = hasTools(body)
+        ? [...pool].sort(
+            (a, b) =>
+              (getModelMetadata(b.id)?.capabilities.coding ?? 0) -
+              (getModelMetadata(a.id)?.capabilities.coding ?? 0)
+          )
+        : pool;
+      model = sorted[0].id;
+      console.log(`[auto-router] fallback para "${model}"`);
+    } else {
+      return { model: '', status: 503, message: 'Auto Router: nenhum modelo disponível. Configure um provedor na aba Conexão do dashboard.' };
+    }
+  }
+
+  console.log(
+    `[auto-router] redirecionando "${body.model}" → "${model}" ` +
+    `(${decision.reason})`
+  );
+
+  // Header visível para clientes API (Postman, curl, libs).
+  // Sanitize to ASCII for HTTP header compliance.
+  const sanitizeHeader = (s: string) => s.replace(/[^\x00-\x7F]/g, '').slice(0, 200);
+  c.header('X-AutoRouter-Model', decision.selectedModelId);
+  c.header('X-AutoRouter-Score', String(decision.score));
+  c.header('X-AutoRouter-Task', sanitizeHeader(decision.taskClassification.description));
+  c.header('X-AutoRouter-Reason', sanitizeHeader(decision.reason));
+  if (isBrowserOnly) {
+    c.header('X-AutoRouter-Mode', 'free-browser');
+  }
+
+  return { model };
+}
+
 export async function chatCompletions(c: Context) {
   const startedAt = Date.now();
   try {
@@ -354,74 +441,8 @@ export async function chatCompletions(c: Context) {
     const isStream = body.stream ?? false;
     const economy: TokenEconomySettings = getTokenEconomy();
 
-    // ── Auto Router: quando modelo="auto" ou "auto-free", seleciona o melhor modelo ──
-    let autoDecision: import('../services/auto-router/types.ts').RoutingDecision | null = null;
-    const isAutoMode = body.model === 'auto' || body.model === 'auto-free';
-    const isBrowserOnly = body.model === 'auto-free';
-    if (isAutoMode) {
-      const catalog = getCachedModelCatalog();
-      const availableModels = catalog.map((m) => ({ id: m.id, providerId: m.provider, providerType: m.providerType }));
-      const messages = body.messages || [];
-      const lastUserMsg = [...messages].reverse().find((m) => m.role === 'user');
-      const currentMessage = typeof lastUserMsg?.content === 'string'
-        ? lastUserMsg.content
-        : Array.isArray(lastUserMsg?.content)
-          ? lastUserMsg.content.map((p: any) => p.text || '').join('')
-          : '';
-
-      autoDecision = routeRequest(
-        messages as Array<{ role: string; content: string | any[] }>,
-        currentMessage,
-        availableModels,
-        undefined,
-        isBrowserOnly
-      );
-
-      if (!autoDecision.selectedModelId) {
-        return c.json(
-          { error: { message: `Auto Router: ${autoDecision.reason}` } },
-          503
-        );
-      }
-
-      console.log(
-        `[auto-router] redirecionando "${body.model}" → "${autoDecision.selectedModelId}" ` +
-        `(${autoDecision.reason})`
-      );
-
-      body.model = autoDecision.selectedModelId;
-
-      // Validar se o modelo selecionado existe no catálogo atual
-      const currentRegistry = resolveRegistry(c.req.header('Cookie'));
-      const fullCatalog = await getModelCatalog(currentRegistry);
-      const modelExists = fullCatalog.some((m) => m.id === autoDecision!.selectedModelId);
-      if (!modelExists) {
-        console.warn(`[auto-router] modelo selecionado "${autoDecision!.selectedModelId}" não está no catálogo; usando fallback`);
-        // Tentar encontrar um modelo disponível do mesmo provedor tipo
-        const fallbackModel = fullCatalog.find((m) => m.providerType === 'gemini-web' || m.providerType === 'deepseek' || m.providerType === 'qwen');
-        if (fallbackModel) {
-          body.model = fallbackModel.id;
-          console.log(`[auto-router] fallback para "${fallbackModel.id}"`);
-        } else if (fullCatalog.length > 0) {
-          body.model = fullCatalog[0].id;
-          console.log(`[auto-router] fallback para primeiro do catálogo: "${fullCatalog[0].id}"`);
-        }
-      }
-
-      // Header visível para clientes API (Postman, curl, libs)
-      // Sanitize to ASCII for HTTP header compliance
-      const sanitizeHeader = (s: string) => s.replace(/[^\x00-\x7F]/g, '').slice(0, 200);
-      c.header('X-AutoRouter-Model', autoDecision.selectedModelId);
-      c.header('X-AutoRouter-Score', String(autoDecision.score));
-      c.header('X-AutoRouter-Task', sanitizeHeader(autoDecision.taskClassification.description));
-      c.header('X-AutoRouter-Reason', sanitizeHeader(autoDecision.reason));
-      if (isBrowserOnly) {
-        c.header('X-AutoRouter-Mode', 'free-browser');
-      }
-    }
-
-    // Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE pelo
-    // catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
+    // ── Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE ──
+    // pelo catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
     //  - porta 3006 (gateway): o model enviado pelo cliente é ignorado; vale o
     //    modelo configurado na aplicação da chave virtual (painel);
     //  - porta 3005 (direta): o model do cliente define o provedor.
@@ -429,11 +450,8 @@ export async function chatCompletions(c: Context) {
     const enabled = enabledProviders(registry);
     const primary = resolveActiveProvider(c.req.header('Cookie'));
 
-    let target: Provider = primary;
-
     // AI Gateway (porta 3006): o middleware do gatewayApp já validou a chave
-    // virtual e guardou a aplicação no contexto. Injeta o modelo do painel e
-    // resolve o provedor pelo catálogo.
+    // virtual e guardou a aplicação no contexto. Injeta o modelo do painel.
     const gwEntry = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
     if (gwEntry) {
       const appModel = (gwEntry.model || '').trim();
@@ -448,12 +466,32 @@ export async function chatCompletions(c: Context) {
         );
       }
       body.model = appModel;
-      const entry = await resolveModelEntry(appModel, registry);
+    }
+
+    // ── Auto Router: quando modelo="auto" ou "auto-free", seleciona o melhor
+    // modelo (vale para o cliente direto e para apps do gateway com modelo auto).
+    const isAutoMode = body.model === 'auto' || body.model === 'auto-free';
+    const isBrowserOnly = body.model === 'auto-free';
+    if (isAutoMode) {
+      const resolved = await resolveAutoModel(c, body, isBrowserOnly);
+      if (resolved.status || !resolved.model) {
+        return c.json(
+          { error: { message: resolved.message || 'Auto Router: sem modelo disponível.' } },
+          (resolved.status || 503) as any
+        );
+      }
+      body.model = resolved.model;
+    }
+
+    let target: Provider = primary;
+
+    if (gwEntry) {
+      const entry = await resolveModelEntry(body.model, registry);
       if (!entry) {
         return c.json(
           {
             error: {
-              message: `Modelo "${appModel}" não encontrado no catálogo. Configure o provedor na aba Conexão (a lista de modelos é carregada automaticamente).`,
+              message: `Modelo "${body.model}" não encontrado no catálogo. Configure o provedor na aba Conexão (a lista de modelos é carregada automaticamente).`,
             },
           },
           404
@@ -550,7 +588,11 @@ export async function chatCompletions(c: Context) {
       if (cacheKey && res.status === 200) {
         try {
           const json = await res.clone().json();
-          responseCacheSet(cacheKey, res.status, json);
+          if (hasMeaningfulContent(json)) {
+            responseCacheSet(cacheKey, res.status, json);
+          } else {
+            console.log(`[economy] resposta vazia NÃO cacheada ${cacheKey.slice(0, 10)}…`);
+          }
         } catch {
           // stream ou corpo não-JSON: não cacheia
         }

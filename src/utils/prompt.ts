@@ -167,6 +167,7 @@ export function buildToolsInstructions(body: OpenAIRequest, opts: PromptOptions 
     `\n\n# TOOLS AVAILABLE\nYou have access to the following tools:\n${namesList}\n\n` +
     `To use a tool, you MUST output a JSON object wrapped EXACTLY in these tags:\n` +
     `<tool_call>\n{"name": "tool_name", "arguments": {"param_name": "value"}}\n</tool_call>\n\n` +
+    `Always respond in the same language as the user's latest message (ex.: user writes in Portuguese -> reply in Portuguese, not English).\n\n` +
     `RULES:\n1. You can call multiple tools by outputting multiple <tool_call> blocks consecutively.\n` +
     `2. Do NOT output any other text after your <tool_call> blocks. Wait for the user to provide the tool response.\n` +
     `3. The JSON must be valid and accurately follow the tool's parameters.\n` +

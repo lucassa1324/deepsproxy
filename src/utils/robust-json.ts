@@ -98,22 +98,68 @@ export function sanitizeModelBackslashes(str: string): string {
 }
 
 /**
+ * Desescapa sequências JSON comuns numa string extraída por regex (o inverso
+ * do escape do JSON.stringify). Ordem importa: `\\n` (barra+barra+n) deve
+ * virar `\n` literal (2 chars), não newline.
+ */
+function unescapeJsonString(s: string): string {
+  return s
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\\//g, '/');
+}
+
+/**
  * Último recurso: quando todas as tentativas de parse falham, tenta extrair
  * via regex os campos típicos de uma chamada de tool (name / file_path /
- * content). Recupera o caso em que o modelo corrompeu o JSON além do reparo.
+ * content). Recupera o caso em que o modelo corrompeu o JSON além do reparo —
+ * ex.: conteúdo de arquivo com aspas internas não escapadas (CMD ["npm", "start"]).
+ *
+ * Ao contrário do JSON.parse, trata `content` como texto livre: a extração
+ * usa o marcador `"content": "` e encerra na PRIMEIRA aspa seguida de
+ * `, "campo_conhecido": "` (início do próximo campo) ou, na ausência desta,
+ * no `"}` final. Assim o conteúdo pode vir em qualquer ordem (antes ou depois
+ * de file_path) e com aspas soltas.
  */
 function tryRecoverToolCall(jsonString: string): any | null {
-  const nameMatch = jsonString.match(/"name"\s*:\s*"([^"]+)"/);
-  const filePathMatch = jsonString.match(/"file_path"\s*:\s*"([^"]+)"/);
-  const contentMatch = jsonString.match(/"content"\s*:\s*"([\s\S]*)"\s*\}\s*$/);
-  if (!contentMatch) return null;
-  return {
-    name: (nameMatch && nameMatch[1]) || 'unknown',
-    arguments: {
-      ...(filePathMatch ? { file_path: filePathMatch[1].replace(/\\/g, '\\\\') } : {}),
-      content: contentMatch[1],
-    },
-  };
+  const str = jsonString.trim();
+
+  // name — campo simples, sem aspas internas.
+  const nameMatch = /"name"\s*:\s*"([^"]+)"/.exec(str);
+  if (!nameMatch) return null;
+
+  const args: Record<string, unknown> = {};
+
+  // Campos simples (string sem aspas internas) — em qualquer ordem.
+  const simpleFieldRe =
+    /"(file_path|path|command|line|start|end|mode|id|url|query|branch|repo|message|description|pattern|target|source|destination|extension|language|output|format|command_line|working_directory)"\s*:\s*"([^"]*)"/g;
+  let fm: RegExpExecArray | null;
+  while ((fm = simpleFieldRe.exec(str)) !== null) {
+    args[fm[1]] = unescapeJsonString(fm[2]);
+  }
+
+  // content — texto livre que PODE conter aspas não escapadas.
+  const contentMarker = /"content"\s*:\s*"/.exec(str);
+  if (contentMarker) {
+    const bodyStart = contentMarker.index + contentMarker[0].length;
+    const body = str.slice(bodyStart);
+    const knownFields =
+      '(?:file_path|path|command|line|start|end|mode|id|url|query|branch|repo|message|description|pattern|target|source|destination|extension|language|output|format|command_line|working_directory)';
+    // Encontra a aspa que fecha o valor de content: a PRIMEIRA `"` seguida de
+    // `, "campo_conhecido": "` (início do próximo campo) — exige `": "` para
+    // não casar com conteúdo como `["npm", "start"]`. Sem isso, usa o `"}` final.
+    const closeRe = new RegExp(`"\\s*,\\s*"${knownFields}"\\s*:\\s*"`, 'g');
+    const cm = closeRe.exec(body);
+    let closeIdx = cm ? cm.index : -1;
+    if (closeIdx === -1) closeIdx = body.lastIndexOf('"}');
+    if (closeIdx === -1) closeIdx = body.length;
+    args.content = unescapeJsonString(body.slice(0, closeIdx));
+  }
+
+  return { name: nameMatch[1], arguments: args };
 }
 
 export function robustParseJSON(str: string): any {
@@ -244,7 +290,10 @@ export function robustParseJSON(str: string): any {
       return JSON.parse(aggFixed);
     } catch (e2) {
       // Último recurso: extração via regex dos campos de uma tool call.
-      const recovered = tryRecoverToolCall(cleaned || jsonPart);
+      // Usa o JSON CRU (jsonPart), não `cleaned` — o repairUnescapedQuotes
+      // corrompe as aspas do conteúdo (ex.: `", "file_path"` vira `\", \"file_path\"`)
+      // e quebra a extração por regex.
+      const recovered = tryRecoverToolCall(jsonPart);
       if (recovered) return recovered;
       throw e; // Throw original error if all fixes fail
     }

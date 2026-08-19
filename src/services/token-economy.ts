@@ -549,10 +549,22 @@ interface CacheEntry {
 /** Store interno do cache (exportado para inspeção em testes). */
 export const _responseCacheStore = new Map<string, CacheEntry>();
 
+/** True quando o corpo de resposta OpenAI-compatible tem conteúdo útil
+ *  (texto ou tool_calls). Respostas vazias não devem ser cacheadas. */
+export function hasMeaningfulContent(body: any): boolean {
+  const msg = body?.choices?.[0]?.message;
+  const content = msg?.content;
+  const hasText =
+    (typeof content === 'string' && content.trim().length > 0) ||
+    (Array.isArray(content) && content.some((p: any) => typeof p?.text === 'string' && p.text.trim().length > 0));
+  const hasTools = Array.isArray(msg?.tool_calls) && msg.tool_calls.length > 0;
+  return hasText || hasTools;
+}
+
 export function responseCacheGet(key: string): { status: number; body: any } | null {
   const entry = _responseCacheStore.get(key);
   if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL_MS) {
+  if (Date.now() - entry.ts > CACHE_TTL_MS || !hasMeaningfulContent(entry.body)) {
     _responseCacheStore.delete(key);
     return null;
   }

@@ -276,6 +276,36 @@ describe('Auto Router', () => {
     assert.ok(result.reason.length > 0, 'deve ter justificativa');
   });
 
+  it('com tools presentes, roteia para modelo de programação mesmo sem palavras de código', () => {
+    // Mensagem de agente/IDE (ex.: Trae) que traz tools mas cujo texto não cita
+    // programação explicitamente ("rodar na vercel os modelos que usam playwright").
+    const result = routeRequest(
+      [],
+      'voce esta por dentro de todo o projeto? como eu faco para rodar na vercel os modelos que usam o playwright?',
+      testAvailableIds(),
+      undefined,
+      false,
+      true // hasTools
+    );
+    const selected = TEST_MODELS.find((m) => m.id === result.selectedModelId);
+    assert.ok(selected, 'deve selecionar um modelo');
+    assert.ok(
+      (selected?.capabilities.coding ?? 0) >= 7,
+      `deve escolher modelo com boa capacidade de programação, veio: ${result.selectedModelId}`
+    );
+  });
+
+  it('sem tools, tarefa genérica não força modelo de programação caro', () => {
+    const result = routeRequest(
+      [],
+      'voce esta por dentro de todo o projeto? como eu faco para rodar na vercel os modelos que usam o playwright?',
+      testAvailableIds()
+    );
+    const selected = TEST_MODELS.find((m) => m.id === result.selectedModelId);
+    assert.ok(selected, 'deve selecionar um modelo');
+    assert.ok(selected.id !== 'paid-high', 'não deve usar o modelo mais caro para pergunta genérica');
+  });
+
   it('roteia tarefa de imagem para modelo de visão', () => {
     const result = routeRequest([], 'Analise essa imagem e descreva o que vê', testAvailableIds());
     assert.equal(result.selectedModelId, 'vision-model', 'deve escolher modelo de visão');

@@ -212,7 +212,12 @@ test('registry: /api/models with configured provider does NOT fall back to deeps
     );
     assert.strictEqual(res.status, 200);
     const data = await res.json();
-    assert.deepStrictEqual(data.data, [], 'must not show deepseek models when a provider is configured');
+    const ids = (data.data || []).map((m: any) => m.id);
+    assert.ok(
+      !ids.includes('deepseek-thinking') && !ids.includes('deepseek-no-thinking'),
+      'must not show deepseek models when a provider is configured'
+    );
+    assert.ok(ids.includes('auto'), 'the auto router model is always offered');
   } finally {
     restore();
   }

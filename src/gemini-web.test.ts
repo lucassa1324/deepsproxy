@@ -15,6 +15,7 @@ import {
   GEMINI_SCRIPT_CLICK_SEND,
   GEMINI_SCRIPT_READ_RESPONSE,
   GEMINI_SCRIPT_READ_COMPOSER,
+  FALLBACK_TOOLS_CONTRACT,
   setMockGeminiPage,
 } from './services/gemini-web.ts';
 import { buildFullHistoryPrompt, buildToolsInstructions } from './utils/prompt.ts';
@@ -270,6 +271,29 @@ test('utils: buildToolsInstructions coloca formato <tool_call> ANTES dos schemas
   assert.ok(schemasIdx > 0, 'seção de schemas presente');
   assert.ok(formatIdx < schemasIdx, 'formato vem ANTES dos schemas (sobrevive ao corte)');
   assert.ok(block.includes('- Write'));
+  assert.ok(
+    block.toLowerCase().includes('same language as the user'),
+    'instrução de idioma presente (evita respostas em inglês quando o usuário fala português)'
+  );
+});
+
+test('utils: FALLBACK_TOOLS_CONTRACT instrui responder no idioma do usuário', () => {
+  const contract = FALLBACK_TOOLS_CONTRACT;
+  assert.ok(
+    contract.toLowerCase().includes('same language as the user'),
+    'contrato fallback também instrui responder no idioma do usuário'
+  );
+});
+
+test('utils: StreamingToolParser flush descarta tool call truncada sem argumentos', () => {
+  // Reprodução do log real: o Gemini Web parou no meio de um <tool_call> do Read
+  // (sem fechar `}`). Não deve vazar o <tool_call> cru como texto nem emitir a
+  // ferramenta com argumentos vazios (Read com file_path "").
+  const parser = new StreamingToolParser();
+  parser.feed('<tool_call>\n{"name": "Read", "arguments": {"file_path":');
+  const flushed = parser.flush();
+  assert.strictEqual(flushed.toolCalls.length, 0, 'tool call truncada não vira tool_calls');
+  assert.strictEqual(flushed.text, '', 'fragmento quebrado não vaza como texto');
 });
 
 test('utils: buildToolsInstructions reordena tools por criticidade e minifica schemas', () => {
@@ -408,6 +432,52 @@ test('utils: robustParseJSON lida com o payload real do log (path Windows + HTML
   assert.ok(parsed.arguments.content.includes('\n'), '\\n do modelo virou quebra real após o parse');
 });
 
+test('utils: robustParseJSON recupera tool call com Dockerfile e aspas internas em content antes de file_path', () => {
+  // Reprodução do log real: o Gemini emitiu o Write com o conteúdo do Dockerfile
+  // contendo `CMD ["npm", "start"]` com aspas NÃO escapadas e content ANTES de
+  // file_path — caso em que repairUnescapedQuotes não desambigua e a recuperação
+  // por regex precisa extrair content como texto livre.
+  const dockerfile =
+    'FROM mcr.microsoft.com/playwright:v1.40.0-jammy\n' +
+    '\n' +
+    'WORKDIR /app\n' +
+    '\n' +
+    'COPY package*.json ./\n' +
+    'RUN npm install\n' +
+    '\n' +
+    'COPY . .\n' +
+    '\n' +
+    'EXPOSE 7860\n' +
+    '\n' +
+    'ENV PORT=7860\n' +
+    'CMD ["npm", "start"]\n';
+  const raw = `{"name": "Write", "arguments": {"content": "${dockerfile}", "file_path": "Dockerfile"}}`;
+
+  const parsed = robustParseJSON(raw);
+  assert.ok(parsed, 'deve recuperar a tool call via regex');
+  assert.strictEqual(parsed.name, 'Write');
+  assert.strictEqual(parsed.arguments.file_path, 'Dockerfile');
+  assert.ok(
+    parsed.arguments.content.includes('CMD ["npm", "start"]'),
+    'conteúdo com aspas internas preservado'
+  );
+  assert.ok(
+    parsed.arguments.content.includes('FROM mcr.microsoft.com/playwright'),
+    'conteúdo completo preservado'
+  );
+});
+
+test('utils: robustParseJSON recupera tool call com content após file_path e aspas internas', () => {
+  const html = '<div class="card"><button id="btn">OK</button></div>';
+  const raw = `{"name": "Write", "arguments": {"file_path": "index.html", "content": "${html}"}}`;
+
+  const parsed = robustParseJSON(raw);
+  assert.ok(parsed, 'deve recuperar a tool call');
+  assert.strictEqual(parsed.name, 'Write');
+  assert.strictEqual(parsed.arguments.file_path, 'index.html');
+  assert.strictEqual(parsed.arguments.content, html, 'HTML com aspas internas preservado');
+});
+
 test('utils: sanitizeModelBackslashes não corrompe escapes duplos válidos (JSON válido passa intacto)', () => {
   // `\\U` é `\` escapado + U literal — JSON VÁLIDO. O sanitize não pode
   // transformar em `\\\U` (regressão: regex simples quebrava isso).
@@ -528,6 +598,37 @@ test('gemini-web: composer completo (length === prompt) não dispara o caminho d
   const stream = await createGeminiWebStream(customPage as any, prompt, { pollIntervalMs: 1, stablePolls: 2 });
   const { text } = await consumeGeminiWebStream(stream);
   assert.strictEqual(text, 'oi!');
+});
+
+test('gemini-web: pausa longa no meio de resposta grande não trunca (estabilidade adaptativa)', async () => {
+  const part1 = 'A'.repeat(4000);
+  const part2 = 'B'.repeat(3000);
+  const phase = { text: part1, readCount: 0 };
+
+  const customPage = {
+    evaluate: async (fn: Function, arg?: unknown) => {
+      const src = String(fn);
+      if (src.includes('__GEMINI_GO_NEW_CHAT__')) return 'https://gemini.google.com/app';
+      if (src.includes('__GEMINI_DISMISS_ONBOARDING__')) return true;
+      if (src.includes('__GEMINI_SET_PROMPT__')) return true;
+      if (src.includes('__GEMINI_CLICK_SEND__')) return true;
+      if (src.includes('__GEMINI_READ_RESPONSE__')) {
+        phase.readCount++;
+        // 8 polls de pausa (~400ms a 50ms/poll), abaixo do teto de ~12 polls
+        // exigido para 4k chars. Com o teto fixo antigo (4 polls) a resposta
+        // seria cortada aqui; com o adaptativo ela segue e recebe a parte 2.
+        if (phase.readCount > 8) phase.text = part1 + part2;
+        return { text: phase.text, hasStop: false };
+      }
+      return undefined;
+    },
+    waitForTimeout: async () => {},
+    isClosed: () => false,
+  };
+
+  const stream = await createGeminiWebStream(customPage as any, 'gere 3 artes longas', { pollIntervalMs: 50 });
+  const { text } = await consumeGeminiWebStream(stream);
+  assert.strictEqual(text, part1 + part2);
 });
 
 /* ------------------------- Cancelamento (cliente pausou) ------------------------- */

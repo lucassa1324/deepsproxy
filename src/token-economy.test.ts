@@ -23,6 +23,7 @@ import {
   cachePayloadKey,
   responseCacheGet,
   responseCacheSet,
+  hasMeaningfulContent,
   resetResponseCache,
   _responseCacheStore,
   getTokenEconomy,
@@ -179,17 +180,31 @@ test('economy: applyTokenEconomy trunca histórico e opcionalmente resume', asyn
 
 test('economy: cache de respostas com TTL', () => {
   const key = 'abc';
+  const body = { choices: [{ message: { role: 'assistant', content: 'olá' } }] };
   assert.equal(responseCacheGet(key), null);
-  responseCacheSet(key, 200, { ok: true });
+  responseCacheSet(key, 200, body);
   const hit = responseCacheGet(key);
   assert.ok(hit);
   assert.equal(hit!.status, 200);
-  assert.deepEqual(hit!.body, { ok: true });
+  assert.deepEqual(hit!.body, body);
   // Expira após o TTL.
-  responseCacheSet('exp', 200, {});
+  responseCacheSet('exp', 200, body);
   const entry = _responseCacheStore.get('exp');
   if (entry) entry.ts = Date.now() - CACHE_TTL_MS - 1000;
   assert.equal(responseCacheGet('exp'), null);
+  resetResponseCache();
+});
+
+test('economy: resposta vazia não é cacheada nem devolvida', () => {
+  const key = 'vazio';
+  responseCacheSet(key, 200, { choices: [{ message: { role: 'assistant', content: '' } }] });
+  assert.equal(responseCacheGet(key), null, 'get deve purgar entrada vazia');
+  assert.equal(hasMeaningfulContent({ choices: [{ message: { content: '' } }] }), false);
+  assert.equal(hasMeaningfulContent({ choices: [{ message: { content: '   ' } }] }), false);
+  assert.equal(hasMeaningfulContent({ choices: [{ message: {} }] }), false);
+  assert.equal(hasMeaningfulContent({ choices: [{ message: { content: 'ok' } }] }), true);
+  assert.equal(hasMeaningfulContent({ choices: [{ message: { content: [{ type: 'text', text: 'x' }] } }] }), true);
+  assert.equal(hasMeaningfulContent({ choices: [{ message: { tool_calls: [{ id: 't1' }] } }] }), true);
   resetResponseCache();
 });
 

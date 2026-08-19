@@ -316,6 +316,7 @@ RULES:
 3. The JSON must be valid and follow the tool's parameters exactly.
 4. When passing code/HTML inside a JSON string value (ex.: <html lang="pt-BR">), escape the inner double quotes as \\" so the JSON stays valid.
 5. Use forward slashes (/) in file_path values (ex.: "C:/Users/nome/arquivo.html"), NEVER backslashes — they break the JSON.
+6. Always respond in the same language as the user's latest message (ex.: user writes in Portuguese -> reply in Portuguese, not English).
 `;
 
 /** Bloco de tools para o prompt: schema do cliente ou contrato fallback. */
@@ -435,10 +436,10 @@ export const GEMINI_SCRIPT_READ_RESPONSE = `(() => {
       .filter((el) => el.matches('button'))
       .some((b) => {
         if (b.offsetParent === null) return false;
-        const label = (b.getAttribute('aria-label') || '').toLowerCase();
-        if (/stop/i.test(label)) return true;
+        const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
+        if (/(stop|parar)/i.test(label)) return true;
         const icon = b.querySelector('mat-icon');
-        return !!icon && /stop/i.test((icon.textContent || '').trim());
+        return !!icon && /(stop|parar)/i.test((icon.textContent || '').trim());
       });
     return { text: text, hasStop: stopVisible };
   } catch (e) {
@@ -704,7 +705,10 @@ async function readGeminiResponseLocator(page: GeminiPageLike): Promise<{ text: 
     const text = await page.locator('.model-response-text').last().innerText();
     let hasStop = false;
     try {
-      hasStop = await page.locator('button[aria-label*="stop" i]').first().isVisible();
+      hasStop = await page
+        .locator('button[aria-label*="stop" i], button[aria-label*="parar" i], button[title*="stop" i], button[title*="parar" i]')
+        .first()
+        .isVisible();
     } catch {
       // sem botão de parar visível
     }
@@ -736,6 +740,15 @@ async function dumpGeminiDiagnostics(page: GeminiPageLike): Promise<void> {
   } catch (e: any) {
     console.log('[gemini-web] [debug] frames() falhou:', e?.message);
   }
+}
+
+/** Polls de silêncio necessários para declarar a resposta concluída.
+ *  Escala com o tamanho da resposta: modelos de raciocínio pausam por
+ *  segundos entre bursts ao gerar saídas longas (ex.: HTML). */
+function stablePollsForLength(charCount: number, pollIntervalMs: number, basePolls: number): number {
+  const baseMs = basePolls * pollIntervalMs;
+  const extraMs = Math.min(4200, Math.floor(Math.max(0, charCount - 2000) / 2000) * 400);
+  return Math.max(basePolls, Math.ceil((baseMs + extraMs) / pollIntervalMs));
 }
 
 /**
@@ -870,6 +883,11 @@ export async function createGeminiWebStream(
         let stableCount = 0;
         const startedAt = Date.now();
 
+        const requiredStablePolls = () => {
+          if (opts.stablePolls !== undefined) return opts.stablePolls;
+          return stablePollsForLength(lastText.length, pollIntervalMs, stablePolls);
+        };
+
         while (true) {
           if (bailIfAborted()) return;
           if (page.isClosed()) {
@@ -905,8 +923,10 @@ export async function createGeminiWebStream(
 
           if (!hasStop && lastText) {
             // Sem botão de parar: a resposta só termina de verdade quando o
-            // texto para de crescer por alguns polls consecutivos.
-            if (stableCount >= stablePolls) break;
+            // texto para de crescer por alguns polls consecutivos. O teto é
+            // adaptativo ao tamanho: respostas longas (modelos de raciocínio)
+            // pausam por segundos entre bursts e não podem usar o padrão curto.
+            if (stableCount >= requiredStablePolls()) break;
           } else if (!hasStop && !lastText) {
             // Nada apareceu ainda e não há geração em andamento.
             if (stableCount >= 5) {

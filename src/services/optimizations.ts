@@ -61,6 +61,9 @@ export async function optimizedFetch(
   url: string,
   init?: RequestInit & { agent?: HttpAgent | HttpsAgent }
 ): Promise<Response> {
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error(`optimizedFetch: URL inválida "${url}" — Base URL do provedor não configurada.`);
+  }
   const pair = getAgentsForOrigin(url);
   const isHttps = url.startsWith('https');
   const { agent: _, ...rest } = init || {};

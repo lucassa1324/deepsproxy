@@ -66,19 +66,22 @@ const decisionCache = new Map<string, DecisionCache>();
  * @param availableModels - Modelos disponíveis do catálogo
  * @param previousModelId - Modelo usado na última resposta (para estabilidade)
  * @param browserOnly - Se true, considera apenas modelos de provedores browser (Playwright)
+ * @param hasTools - Se true, a requisição traz tools (agente/IDE): prioriza
+ *                   modelos com programação/raciocínio fortes
  */
 export function routeRequest(
   messages: Array<{ role: string; content: string | any[] }>,
   currentMessage: string,
   availableModels: Array<{ id: string; providerId: string; providerName?: string; providerType?: string }>,
   previousModelId?: string,
-  browserOnly = false
+  browserOnly = false,
+  hasTools = false
 ): RoutingDecision {
   // 1. Sincronizar metadados com o catálogo
   syncWithCatalog(availableModels);
 
   // 2. Classificar a tarefa
-  const classification = classifyTask(messages, currentMessage);
+  const classification = classifyTask(messages, currentMessage, { hasTools });
 
   // 3. Verificar se precisa de visão (imagens no input)
   const needsVision = hasImageInput(messages) || hasImageInput([{ role: 'user', content: currentMessage }]);
@@ -115,7 +118,7 @@ export function routeRequest(
   }
 
   // 5. Verificar cache de decisão (estabilidade)
-  const convHash = buildConversationHash(messages);
+  const convHash = buildConversationHash(messages, hasTools);
   const cached = decisionCache.get(convHash);
   if (cached && Date.now() - cached.timestamp < DECISION_CACHE_TTL) {
     const cachedModel = candidates.find((m) => m.id === cached.modelId);
@@ -164,10 +167,10 @@ function logDecision(decision: RoutingDecision): void {
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
-function buildConversationHash(messages: Array<{ role: string; content: string | any[] }>): string {
+function buildConversationHash(messages: Array<{ role: string; content: string | any[] }>, hasTools = false): string {
   // Hash simples: últimas 3 mensagens (role + primeiros 100 chars)
   const recent = messages.slice(-3);
-  return recent
+  const hash = recent
     .map((m) => {
       const text = typeof m.content === 'string'
         ? m.content.slice(0, 100)
@@ -177,6 +180,9 @@ function buildConversationHash(messages: Array<{ role: string; content: string |
       return `${m.role}:${text}`;
     })
     .join('|');
+  // Inclui o sinal de tools: uma decisão feita SEM tools não deve ser reusada
+  // numa requisição COM tools (e vice-versa).
+  return `${hasTools ? 'tools' : 'text'}:${hash}`;
 }
 
 // ── API para o dashboard ────────────────────────────────────────────────

@@ -798,8 +798,18 @@ export async function createGeminiWebStream(
             .goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
             .catch(() => {});
         }
-        // Deixa a SPA do Gemini montar o composer antes de digitar.
-        await page.waitForTimeout(1500);
+        // Deixa a SPA do Gemini montar o composer antes de digitar. Em vez de
+        // um sleep fixo, faz polling de prontidão (HAS_COMPOSER): se o composer
+        // montar antes do teto, segue sem esperar o tempo cheio; o teto mantém
+        // o pior caso igual ao sleep antigo. Página fake que não implementa o
+        // marker retorna undefined e segue direto (assume pronto).
+        const composerReadyDeadline = Date.now() + 1500;
+        while (Date.now() < composerReadyDeadline) {
+          const hasComposer = await page.evaluate(GEMINI_SCRIPT_HAS_COMPOSER).catch(() => false);
+          if (hasComposer === true || hasComposer === undefined) break;
+          if (bailIfAborted()) return;
+          await page.waitForTimeout(200);
+        }
         if (bailIfAborted()) return;
         await page.evaluate(GEMINI_SCRIPT_DISMISS_ONBOARDING).catch(() => {});
 

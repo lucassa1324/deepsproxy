@@ -8,7 +8,7 @@
  * Modified By: Pedro Farias
  */
 
-import { getDeepSeekHeaders } from './playwright.ts';
+import { getDeepSeekHeaders, invalidateDeepSeekHeaders } from './playwright.ts';
 
 // In-memory state to track the last message ID per session to avoid overwriting
 // Use globalThis to ensure it survives module reloads in some test environments
@@ -46,54 +46,71 @@ export async function createDeepSeekStream(
   refFileIds: string[] = [],
   opts: DeepSeekStreamOptions = {}
 ): Promise<{ stream: ReadableStream, headers: Record<string, string>, uiSessionId: string }> {
-  // Obtain fresh headers/PoW from Playwright
-  // If forcedParentId is null, it means we are explicitly starting a new session
-  const { headers, chatSessionId, parentMessageId } = await getDeepSeekHeaders(forcedParentId === null);
-
-  // Determine the actual parent ID:
-  // 1. If forcedParentId is provided (even if null), use it.
-  // 2. If tracked parent ID is available for this session, use it.
-  // 3. Fallback to Playwright's state.
-  let actualParentId: number | null = parentMessageId;
-
-  if (forcedParentId !== undefined) {
-    actualParentId = forcedParentId;
-  } else if (chatSessionId && sessionStates[chatSessionId] !== undefined) {
-    actualParentId = sessionStates[chatSessionId];
-  }
-
-  const effectiveSessionId = opts.chatSessionId || chatSessionId;
-  const payload: DeepSeekPayload = {
-    chat_session_id: effectiveSessionId || undefined,
-    parent_message_id: actualParentId,
-    model_type: opts.modelType !== undefined ? opts.modelType : null,
-    prompt: prompt,
-    ref_file_ids: refFileIds,
-    thinking_enabled: enableThinking,
-    search_enabled: true,
-    preempt: false
+  const buildPayload = (sessionId: string, parentId: number | null) => {
+    // Determine the actual parent ID:
+    // 1. If forcedParentId is provided (even if null), use it.
+    // 2. If tracked parent ID is available for this session, use it.
+    // 3. Fallback to Playwright's state.
+    let actualParentId: number | null = parentId;
+    if (forcedParentId !== undefined) {
+      actualParentId = forcedParentId;
+    } else if (sessionId && sessionStates[sessionId] !== undefined) {
+      actualParentId = sessionStates[sessionId];
+    }
+    const effectiveSessionId = opts.chatSessionId || sessionId;
+    const payload: DeepSeekPayload = {
+      chat_session_id: effectiveSessionId || undefined,
+      parent_message_id: actualParentId,
+      model_type: opts.modelType !== undefined ? opts.modelType : null,
+      prompt: prompt,
+      ref_file_ids: refFileIds,
+      thinking_enabled: enableThinking,
+      search_enabled: true,
+      preempt: false
+    };
+    return { payload, effectiveSessionId };
   };
 
-  const response = await fetch('https://chat.deepseek.com/api/v0/chat/completion', {
-    method: 'POST',
-    headers: {
-      'accept': '*/*',
-      'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-      'authorization': headers['authorization'],
-      'content-type': 'application/json',
-      'origin': 'https://chat.deepseek.com',
-      'x-ds-pow-response': headers['x-ds-pow-response'],
-      'x-hif-dliq': headers['x-hif-dliq'],
-      'x-hif-leim': headers['x-hif-leim'],
-      'cookie': headers['cookie'],
-      'x-client-bundle-id': headers['x-client-bundle-id'] || 'com.deepseek.chat',
-      'x-client-locale': headers['x-client-locale'] || 'pt_BR',
-      'x-client-platform': headers['x-client-platform'] || 'web',
-      'x-client-version': headers['x-client-version'] || '2.3.0',
-      'x-client-timezone-offset': headers['x-client-timezone-offset'] || '-10800'
-    },
-    body: JSON.stringify(payload)
-  });
+  const doFetch = (hdrs: Record<string, string>, payload: DeepSeekPayload) =>
+    fetch('https://chat.deepseek.com/api/v0/chat/completion', {
+      method: 'POST',
+      headers: {
+        'accept': '*/*',
+        'accept-language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+        'authorization': hdrs['authorization'],
+        'content-type': 'application/json',
+        'origin': 'https://chat.deepseek.com',
+        'x-ds-pow-response': hdrs['x-ds-pow-response'],
+        'x-hif-dliq': hdrs['x-hif-dliq'],
+        'x-hif-leim': hdrs['x-hif-leim'],
+        'cookie': hdrs['cookie'],
+        'x-client-bundle-id': hdrs['x-client-bundle-id'] || 'com.deepseek.chat',
+        'x-client-locale': hdrs['x-client-locale'] || 'pt_BR',
+        'x-client-platform': hdrs['x-client-platform'] || 'web',
+        'x-client-version': hdrs['x-client-version'] || '2.3.0',
+        'x-client-timezone-offset': hdrs['x-client-timezone-offset'] || '-10800'
+      },
+      body: JSON.stringify(payload)
+    });
+
+  // Obtain fresh headers/PoW from Playwright (ou do cache de continuação).
+  // If forcedParentId is null, it means we are explicitly starting a new session
+  let { headers, chatSessionId, parentMessageId } = await getDeepSeekHeaders(forcedParentId === null);
+  let { payload, effectiveSessionId } = buildPayload(chatSessionId, parentMessageId);
+  let response = await doFetch(headers, payload);
+
+  // Headers/PoW expiraram ou foram rejeitados: invalida o cache e reextrai
+  // headers frescos (fallback único; o chamador já tem retry próprio).
+  if (response.status === 401 || response.status === 403) {
+    console.warn('[deepseek] headers/PoW rejeitados pelo servidor; reextraindo headers frescos...');
+    invalidateDeepSeekHeaders();
+    const fresh = await getDeepSeekHeaders(true);
+    headers = fresh.headers;
+    chatSessionId = fresh.chatSessionId;
+    parentMessageId = fresh.parentMessageId;
+    ({ payload, effectiveSessionId } = buildPayload(chatSessionId, parentMessageId));
+    response = await doFetch(headers, payload);
+  }
 
   if (!response.ok || !response.body) {
     const errText = await response.text().catch(() => '');

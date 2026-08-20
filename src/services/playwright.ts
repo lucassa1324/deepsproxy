@@ -476,6 +476,24 @@ let deepseekLockTail: Promise<void> = Promise.resolve();
 let deepseekActive = 0;
 let deepseekWaiting = 0;
 
+/** Cache de headers/PoW da DeepSeek para continuações rápidas: reutiliza a
+ *  extração da UI (que é serializada por página e custa um fake-send + PoW)
+ *  por alguns segundos, evitando a fila entre requests consecutivos. O TTL é
+ *  curto de propósito: o PoW do DeepSeek expira; em 401/403 o createDeepSeekStream
+ *  invalida o cache e reextrai headers frescos (fallback seguro). */
+let cachedDeepSeekHeaders: { headers: Record<string, string>, chatSessionId: string, parentMessageId: number | null } | null = null;
+let lastDeepSeekHeadersTime = 0;
+
+function getDeepSeekHeadersTtl(): number {
+  const raw = parseInt(process.env.DEEPSEEK_HEADERS_TTL_MS || '60000', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60000;
+}
+
+export function invalidateDeepSeekHeaders(): void {
+  cachedDeepSeekHeaders = null;
+  lastDeepSeekHeadersTime = 0;
+}
+
 export function getDeepSeekQueueState(): { active: number; waiting: number } {
   return { active: deepseekActive, waiting: deepseekWaiting };
 }
@@ -508,6 +526,12 @@ export async function getDeepSeekHeaders(forceNew = false): Promise<{ headers: R
     return { headers: { authorization: 'Bearer MOCK' }, chatSessionId: mockSessionId, parentMessageId: null };
   }
 
+  // Cache hit: continuação rápida sem tocar a UI nem entrar na fila do lock.
+  // Sessão nova (forceNew) sempre reextrai.
+  if (!forceNew && cachedDeepSeekHeaders && (Date.now() - lastDeepSeekHeadersTime < getDeepSeekHeadersTtl())) {
+    return cachedDeepSeekHeaders;
+  }
+
   return withDeepSeekLock(() => getDeepSeekHeadersInner(forceNew));
 }
 
@@ -521,16 +545,13 @@ async function getDeepSeekHeadersInner(forceNew = false): Promise<{ headers: Rec
     throw new Error('Playwright not initialized');
   }
 
-  // Ensure the page reflects the current conversation before reading state.
-  // For multi-turn requests the page must be reloaded: server-side fetches add
-  // messages to the conversation that the already-loaded page doesn't know,
-  // and a stale parent_message_id makes DeepSeek return the previous cached
-  // answer instead of answering the new prompt.
-  if (forceNew) {
-    if (!page.url().startsWith('https://chat.deepseek.com/')) {
-      await page.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
-    }
-  } else {
+  // Garante que a página reflita a conversa atual antes de ler estado. Para
+  // turnos de continuação a página carregada já é a MESMA conversa que
+  // dirigimos no turno anterior, e o parent_message_id correto vem do
+  // sessionStates (prioridade em deepseek.ts) — o reload completo por turno é
+  // desnecessário e custa um page load inteiro + remontagem da SPA. Só navega
+  // quando a página está fora do chat.deepseek.com.
+  if (!page.url().startsWith('https://chat.deepseek.com/')) {
     await page.goto('https://chat.deepseek.com/', { waitUntil: 'domcontentloaded' });
   }
 
@@ -578,6 +599,8 @@ async function getDeepSeekHeadersInner(forceNew = false): Promise<{ headers: Rec
       };
 
       currentHeaders = extractedHeaders;
+      cachedDeepSeekHeaders = { headers: extractedHeaders, chatSessionId: uiSessionId, parentMessageId: uiParentMessageId };
+      lastDeepSeekHeadersTime = Date.now();
 
       // Abort to prevent polluting chat history
       await route.abort('aborted');

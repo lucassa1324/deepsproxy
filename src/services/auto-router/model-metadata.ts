@@ -263,7 +263,7 @@ export function registerModel(
     id,
     name: data.name || existing?.name || id,
     providerId: data.providerId,
-    capabilities: data.capabilities || existing?.capabilities || defaultCapabilities(),
+    capabilities: data.capabilities || existing?.capabilities || inferCapabilities(id),
     cost: data.cost || existing?.cost || { input: 0, output: 0 },
     speed: data.speed ?? existing?.speed ?? 5,
     contextLength: data.contextLength ?? existing?.contextLength ?? 128000,
@@ -310,4 +310,311 @@ export function getModelsByTag(tag: string): ModelMetadata[] {
 
 function defaultCapabilities(): ModelCapabilities {
   return { reasoning: 5, coding: 5, math: 5, writing: 5, vision: 0, general: 5 };
+}
+
+/**
+ * Infere capacidades de modelos dinâmicos (descobertos via provider) a partir
+ * do nome. Antes, todo modelo desconhecido recebia 5 em tudo (exceto visão 0),
+ * então o score do router não diferenciava nada entre eles. As heurísticas são
+ * conservadoras: promovem capacidades só com sinais fortes (família, sufixo,
+ * tamanho) e nunca atribuem extremos que enganariam o router numa tarefa
+ * crítica.
+ */
+export function inferCapabilities(modelId: string): ModelCapabilities {
+  const id = modelId.toLowerCase();
+  const caps: ModelCapabilities = defaultCapabilities();
+  const has = (...words: string[]) => words.some((w) => id.includes(w));
+
+  // ── Visão ───────────────────────────────────────────────────────────────
+  if (has('gemini', 'claude', 'llava', 'pixtral', 'vision', 'multimodal', 'omni', 'vlm', '4v', '4o', '5o', 'minicpm', 'qwen-vl')) {
+    caps.vision = 8;
+  }
+  if (has('flash', 'mini', 'small', 'lite', 'haiku') && caps.vision > 0) {
+    caps.vision = Math.max(6, caps.vision - 1);
+  }
+
+  // ── Raciocínio e matemática (modelos de pensamento) ────────────────────
+  if (has('o1', 'o3', 'o4', 'reasoning', 'thinking', 'thought', 'qwq', 'deepseek-r', 'deepseek-reasoner', 'r1')) {
+    caps.reasoning = 9;
+    caps.math = 9;
+  }
+  if (has('pro', 'opus', 'max', 'ultra')) {
+    caps.reasoning = Math.max(caps.reasoning, 8);
+    caps.math = Math.max(caps.math, 7);
+  }
+
+  // ── Famílias conhecidas ─────────────────────────────────────────────────
+  if (has('gemini')) {
+    caps.general = Math.max(caps.general, 7);
+    caps.reasoning = Math.max(caps.reasoning, 7);
+    caps.coding = Math.max(caps.coding, 7);
+    caps.writing = Math.max(caps.writing, 6);
+    if (has('pro')) {
+      caps.reasoning = 9;
+      caps.coding = 9;
+      caps.math = Math.max(caps.math, 8);
+      caps.writing = Math.max(caps.writing, 8);
+    }
+  }
+  if (has('gpt-5')) {
+    caps.general = 8;
+    caps.reasoning = Math.max(caps.reasoning, 8);
+    caps.coding = 8;
+    caps.math = Math.max(caps.math, 8);
+    caps.writing = Math.max(caps.writing, 8);
+  }
+  if (has('gpt-4o', 'gpt-4-turbo')) {
+    caps.general = 8;
+    caps.coding = 8;
+    caps.writing = 8;
+    caps.reasoning = Math.max(caps.reasoning, 7);
+    caps.math = Math.max(caps.math, 7);
+  }
+  if (has('deepseek')) {
+    caps.reasoning = Math.max(caps.reasoning, 8);
+    caps.coding = Math.max(caps.coding, 8);
+    caps.math = Math.max(caps.math, 8);
+    caps.general = Math.max(caps.general, 7);
+  }
+  if (has('claude')) {
+    caps.coding = Math.max(caps.coding, 8);
+    caps.writing = Math.max(caps.writing, 8);
+    caps.reasoning = Math.max(caps.reasoning, 7);
+    caps.general = Math.max(caps.general, 7);
+    if (has('opus')) {
+      caps.reasoning = 9;
+      caps.math = 9;
+      caps.coding = 9;
+      caps.writing = 9;
+    }
+  }
+  if (has('qwen')) {
+    caps.general = Math.max(caps.general, 6);
+    if (has('coder') || has('code')) caps.coding = Math.max(caps.coding, 9);
+    if (has('plus')) {
+      caps.reasoning = Math.max(caps.reasoning, 8);
+      caps.coding = Math.max(caps.coding, 8);
+    }
+  }
+  if (has('mistral')) {
+    if (has('codestral') || has('code')) caps.coding = Math.max(caps.coding, 9);
+    if (has('large')) {
+      caps.reasoning = Math.max(caps.reasoning, 8);
+      caps.coding = Math.max(caps.coding, 8);
+      caps.general = 7;
+    }
+  }
+
+  // ── Código explícito ────────────────────────────────────────────────────
+  if (has('coder', 'codex', 'codestral', 'code')) {
+    caps.coding = Math.max(caps.coding, 8);
+  }
+
+  // ── Tamanho de modelos locais (7b/8b leves; 32b/70b fortes) ─────────────
+  const sizeMatch = id.match(/(\d{1,3})b/);
+  if (sizeMatch) {
+    const size = parseInt(sizeMatch[1], 10);
+    if (size >= 30) {
+      caps.reasoning = Math.max(caps.reasoning, 7);
+      caps.coding = Math.max(caps.coding, 7);
+      caps.writing = Math.max(caps.writing, 6);
+      caps.general = Math.max(caps.general, 7);
+    }
+  }
+
+  // ── Clamp final (0-10) ──────────────────────────────────────────────────
+  for (const k of Object.keys(caps) as Array<keyof ModelCapabilities>) {
+    caps[k] = Math.max(0, Math.min(10, Math.round(caps[k])));
+  }
+  return caps;
+}
+
+// ── Saúde dos modelos (circuit breaker) ────────────────────────────────────
+// Modelos que falham na prática (timeout, erro HTTP, resposta vazia) saem do
+// roteamento por um cooldown com backoff exponencial (30s → até 10min). Isso
+// separa "está no catálogo" de "está respondendo" — o router só escolhe modelos
+// que provaram funcionar recentemente.
+
+interface ModelHealth {
+  failures: number; // falhas consecutivas (dirige o backoff)
+  downUntil: number; // timestamp até quando fica fora do roteamento
+  totalFailures: number;
+  lastFailAt: number;
+}
+
+const healthMap = new Map<string, ModelHealth>();
+const COOLDOWN_BASE_MS = 30_000;
+const COOLDOWN_MAX_MS = 10 * 60_000;
+
+/** True quando o modelo está fora do roteamento (circuit breaker aberto). */
+export function isModelDown(modelId: string, now: number = Date.now()): boolean {
+  const h = healthMap.get(modelId);
+  return !!h && now < h.downUntil;
+}
+
+/** Registra uma falha: abre o circuito com backoff exponencial (30s → 10min). */
+export function recordModelFailure(
+  modelId: string,
+  status?: number,
+  reason?: string
+): void {
+  const prev = healthMap.get(modelId);
+  const failures = (prev?.failures || 0) + 1;
+  const backoff = COOLDOWN_BASE_MS * Math.pow(2, Math.min(failures - 1, 5));
+  const cooldown = Math.min(backoff, COOLDOWN_MAX_MS);
+  healthMap.set(modelId, {
+    failures,
+    downUntil: Date.now() + cooldown,
+    totalFailures: (prev?.totalFailures || 0) + 1,
+    lastFailAt: Date.now(),
+  });
+  console.warn(
+    `[auto-router] modelo "${modelId}" indisponível por ${Math.round(cooldown / 1000)}s ` +
+      `(${failures} falhas consecutivas) status=${status ?? '-'}${reason ? ` — ${reason}` : ''}`
+  );
+}
+
+/** Registra sucesso: fecha o circuito e zera as falhas acumuladas. */
+export function recordModelSuccess(modelId: string): void {
+  if (healthMap.delete(modelId)) {
+    console.log(`[auto-router] modelo "${modelId}" voltou ao roteamento`);
+  }
+}
+
+/** Estado de saúde atual (para status do roteador/dashboard). */
+export function getModelHealthState(): Array<{
+  modelId: string;
+  failures: number;
+  totalFailures: number;
+  downUntil: number;
+  isDown: boolean;
+}> {
+  const now = Date.now();
+  const out: Array<{
+    modelId: string;
+    failures: number;
+    totalFailures: number;
+    downUntil: number;
+    isDown: boolean;
+  }> = [];
+  for (const [modelId, h] of healthMap) {
+    out.push({
+      modelId,
+      failures: h.failures,
+      totalFailures: h.totalFailures,
+      downUntil: h.downUntil,
+      isDown: now < h.downUntil,
+    });
+  }
+  return out;
+}
+
+/** Limpa o estado de saúde (usado nos testes). */
+export function resetModelHealth(): void {
+  healthMap.clear();
+}
+
+// ── Métricas de saúde por modelo ─────────────────────────────────────────
+// Observacionais: latência média, taxa de sucesso e contagem de requests por
+// modelo. Não interferem no roteamento (isso é papel do circuit breaker), mas
+// alimentam o dashboard para o usuário ver quais modelos são confiáveis.
+
+interface ModelMetrics {
+  requests: number;
+  successes: number;
+  failures: number;
+  totalLatencyMs: number;
+  lastLatencyMs: number;
+  lastError?: string;
+  lastRequestAt?: number;
+  lastSuccessAt?: number;
+}
+
+const metricsMap = new Map<string, ModelMetrics>();
+
+function getMetricsEntry(modelId: string): ModelMetrics {
+  let m = metricsMap.get(modelId);
+  if (!m) {
+    m = { requests: 0, successes: 0, failures: 0, totalLatencyMs: 0, lastLatencyMs: 0 };
+    metricsMap.set(modelId, m);
+  }
+  return m;
+}
+
+/** Marca o início de um request ao modelo (para contar e medir latência). */
+export function recordModelRequest(modelId: string): void {
+  const m = getMetricsEntry(modelId);
+  m.requests++;
+  m.lastRequestAt = Date.now();
+}
+
+/** Registra a latência de um request (atualiza média e última). */
+export function recordModelLatency(modelId: string, latencyMs: number): void {
+  const m = getMetricsEntry(modelId);
+  m.lastLatencyMs = latencyMs;
+  m.totalLatencyMs += latencyMs;
+}
+
+/** Registra o desfecho de um request (sucesso/falha + último erro). */
+export function recordModelOutcome(modelId: string, ok: boolean, error?: string): void {
+  const m = getMetricsEntry(modelId);
+  if (ok) {
+    m.successes++;
+    m.lastSuccessAt = Date.now();
+  } else {
+    m.failures++;
+    if (error) m.lastError = error;
+  }
+}
+
+/** Métricas observacionais consolidadas por modelo. */
+export function getModelMetrics(): Array<{
+  modelId: string;
+  requests: number;
+  successes: number;
+  failures: number;
+  successRate: number; // 0-1 (0 quando não há requests)
+  avgLatencyMs: number; // média aritmética (0 quando não há requests)
+  lastLatencyMs: number;
+  lastError?: string;
+  lastRequestAt?: number;
+  lastSuccessAt?: number;
+}> {
+  const out: Array<{
+    modelId: string;
+    requests: number;
+    successes: number;
+    failures: number;
+    successRate: number;
+    avgLatencyMs: number;
+    lastLatencyMs: number;
+    lastError?: string;
+    lastRequestAt?: number;
+    lastSuccessAt?: number;
+  }> = [];
+  for (const [modelId, m] of metricsMap) {
+    out.push({
+      modelId,
+      requests: m.requests,
+      successes: m.successes,
+      failures: m.failures,
+      successRate: m.requests > 0 ? m.successes / m.requests : 0,
+      avgLatencyMs: m.requests > 0 ? Math.round(m.totalLatencyMs / m.requests) : 0,
+      lastLatencyMs: m.lastLatencyMs,
+      lastError: m.lastError,
+      lastRequestAt: m.lastRequestAt,
+      lastSuccessAt: m.lastSuccessAt,
+    });
+  }
+  return out;
+}
+
+/** Métricas de um único modelo (ou undefined se nunca foi usado). */
+export function getModelMetricsFor(modelId: string): ReturnType<typeof getModelMetrics>[number] | undefined {
+  return getModelMetrics().find((m) => m.modelId === modelId);
+}
+
+/** Limpa as métricas (usado nos testes). */
+export function resetModelMetrics(): void {
+  metricsMap.clear();
 }

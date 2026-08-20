@@ -8,8 +8,8 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyTask } from './task-classifier.ts';
 import { selectBestModel } from './model-selector.ts';
-import { routeRequest, clearDecisionCache, updateAutoRouterConfig } from './router.ts';
-import { registerModel, setModelAvailability } from './model-metadata.ts';
+import { routeRequest, clearDecisionCache, updateAutoRouterConfig, getAutoRouterStatus, getPreviousAutoModel, rememberAutoModel, clearConversationMemory, buildAutoFailoverChain } from './router.ts';
+import { registerModel, setModelAvailability, isModelDown, recordModelFailure, recordModelSuccess, resetModelHealth, getModelHealthState, inferCapabilities, getModelMetadata, recordModelRequest, recordModelLatency, recordModelOutcome, getModelMetrics, getModelMetricsFor, resetModelMetrics } from './model-metadata.ts';
 import type { ModelMetadata, AutoRouterConfig } from './types.ts';
 
 // ── Modelos de teste (mesmos IDs do registry global para override) ──────
@@ -400,5 +400,336 @@ describe('Resource Economy', () => {
     }
     const elapsed = Date.now() - start;
     assert.ok(elapsed < 5000, `100 classificações devem levar < 5s (levou ${elapsed}ms)`);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Circuit Breaker (saúde dos modelos)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Circuit Breaker', () => {
+  beforeEach(() => {
+    setupTestModels();
+    clearDecisionCache();
+    resetModelHealth();
+  });
+
+  it('modelo começa saudável e sai do roteamento após falha', () => {
+    assert.equal(isModelDown('paid-high'), false, 'inicialmente deve estar de pé');
+    recordModelFailure('paid-high', 500, 'HTTP 500');
+    assert.equal(isModelDown('paid-high'), true, 'deve ficar down após falha');
+  });
+
+  it('volta ao roteamento após o cooldown expirar', () => {
+    const now = Date.now();
+    recordModelFailure('paid-high');
+    assert.equal(isModelDown('paid-high', now), true, 'down logo após a falha');
+    // 31s depois o cooldown base (30s) já expirou
+    assert.equal(isModelDown('paid-high', now + 31_000), false, 'deve voltar após o cooldown');
+  });
+
+  it('aplica backoff exponencial em falhas consecutivas', () => {
+    recordModelFailure('paid-high');
+    const first = getModelHealthState().find((h) => h.modelId === 'paid-high')!.downUntil;
+    recordModelFailure('paid-high');
+    recordModelFailure('paid-high');
+    const third = getModelHealthState().find((h) => h.modelId === 'paid-high')!.downUntil;
+    // 1ª falha: 30s; 3ª falha: 30s * 2^2 = 120s → cooldown cresce
+    assert.ok(third - first >= 90_000, 'cooldown deve crescer a cada falha consecutiva');
+    // 6ª falha em diante satura no máximo (10min)
+    recordModelFailure('paid-high');
+    recordModelFailure('paid-high');
+    recordModelFailure('paid-high');
+    const sixth = getModelHealthState().find((h) => h.modelId === 'paid-high')!.downUntil;
+    const elapsed = sixth - Date.now();
+    assert.ok(elapsed <= 600_000 && elapsed >= 599_000, `backoff deve saturar em ~10min (teve ${elapsed}ms)`);
+  });
+
+  it('sucesso fecha o circuito e zera as falhas', () => {
+    recordModelFailure('paid-high');
+    recordModelFailure('paid-high');
+    assert.equal(isModelDown('paid-high'), true, 'down após falhas');
+    recordModelSuccess('paid-high');
+    assert.equal(isModelDown('paid-high'), false, 'sucesso reabilita na hora');
+    assert.equal(getModelHealthState().length, 0, 'histórico de falhas limpo');
+  });
+
+  it('router não escolhe modelo down mesmo sendo o melhor', () => {
+    updateAutoRouterConfig(makeConfig({ costPolicy: 'quality' }));
+    const msg = 'Analise a arquitetura de microserviços deste projeto, encontre gargalos de performance, proponha soluções de caching e implemente um sistema de fallback resilient com testes unitários completos';
+    // Quality normalmente escolheria paid-high (melhor).
+    recordModelFailure('paid-high');
+    const result = routeRequest([], msg, testAvailableIds());
+    assert.notEqual(result.selectedModelId, 'paid-high', 'modelo down não pode ser escolhido');
+    assert.ok(result.selectedModelId, 'deve escolher outro modelo disponível');
+  });
+
+  it('retorna "nenhum modelo disponível" quando todos estão down', () => {
+    for (const m of TEST_MODELS) recordModelFailure(m.id);
+    const result = routeRequest([], 'Qualquer tarefa', testAvailableIds());
+    assert.equal(result.selectedModelId, '', 'nenhum modelo disponível');
+    assert.ok(result.reason.toLowerCase().includes('nenhum'), 'deve indicar indisponibilidade');
+  });
+
+  it('expõe estado de saúde no status do roteador', () => {
+    recordModelFailure('paid-high', 503, 'HTTP 503');
+    const status = getAutoRouterStatus();
+    assert.equal(status.downedCount, 1, 'deve contar 1 modelo down');
+    assert.equal(status.downedModels[0].modelId, 'paid-high');
+    assert.ok(status.downedModels[0].retryInMs > 0, 'deve informar quando o retry é possível');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Estabilidade entre turnos (previousModelId real por conversa)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Conversation Memory', () => {
+  beforeEach(() => {
+    setupTestModels();
+    clearDecisionCache();
+    clearConversationMemory();
+  });
+
+  it('retorna undefined antes de qualquer roteamento', () => {
+    assert.equal(getPreviousAutoModel([{ role: 'user', content: 'oi' }], 'app', 'auto'), undefined);
+  });
+
+  it('lembra o modelo e devolve no próximo turno da mesma conversa', () => {
+    const msgs1 = [{ role: 'user', content: 'Primeira pergunta' }];
+    rememberAutoModel(msgs1, 'app1', 'auto', 'code-specialist');
+    // Turno 2: mesma conversa (mesma primeira mensagem), histórico cresceu
+    const msgs2 = [
+      ...msgs1,
+      { role: 'assistant', content: 'resposta' },
+      { role: 'user', content: 'segunda pergunta' },
+    ];
+    assert.equal(getPreviousAutoModel(msgs2, 'app1', 'auto'), 'code-specialist');
+  });
+
+  it('isola conversas diferentes (primeira mensagem diferente)', () => {
+    rememberAutoModel([{ role: 'user', content: 'conversa A' }], 'app', 'auto', 'paid-high');
+    assert.equal(getPreviousAutoModel([{ role: 'user', content: 'conversa B' }], 'app', 'auto'), undefined);
+  });
+
+  it('isola apps/clientes diferentes (namespace)', () => {
+    rememberAutoModel([{ role: 'user', content: 'oi' }], 'app1', 'auto', 'paid-high');
+    assert.equal(getPreviousAutoModel([{ role: 'user', content: 'oi' }], 'app2', 'auto'), undefined);
+  });
+
+  it('isola modos auto vs auto-free', () => {
+    rememberAutoModel([{ role: 'user', content: 'oi' }], 'app', 'auto', 'paid-high');
+    assert.equal(getPreviousAutoModel([{ role: 'user', content: 'oi' }], 'app', 'auto-free'), undefined);
+  });
+
+  it('não vaza modelo entre conversas com system diferente', () => {
+    const msgsA = [{ role: 'system', content: 'Você é A' }, { role: 'user', content: 'oi' }];
+    const msgsB = [{ role: 'system', content: 'Você é B' }, { role: 'user', content: 'oi' }];
+    rememberAutoModel(msgsA, 'app', 'auto', 'paid-high');
+    assert.equal(getPreviousAutoModel(msgsB, 'app', 'auto'), undefined);
+  });
+
+  it('fluxo completo: decisão → memória → próximo turno reusa o modelo', () => {
+    updateAutoRouterConfig(makeConfig({ costPolicy: 'economy' }));
+    const msgs1 = [{ role: 'user', content: 'escreva um poema' }];
+    const d1 = routeRequest(msgs1, 'escreva um poema', testAvailableIds());
+    assert.ok(d1.selectedModelId, '1º turno deve escolher modelo');
+    rememberAutoModel(msgs1, 'app', 'auto', d1.selectedModelId);
+
+    const msgs2 = [
+      ...msgs1,
+      { role: 'assistant', content: 'poema' },
+      { role: 'user', content: 'agora mais longo' },
+    ];
+    const prev = getPreviousAutoModel(msgs2, 'app', 'auto');
+    assert.equal(prev, d1.selectedModelId, 'deve lembrar o modelo do 1º turno');
+    const d2 = routeRequest(msgs2, 'agora mais longo', testAvailableIds(), prev);
+    assert.ok(d2.selectedModelId, '2º turno deve escolher modelo');
+    // Com o bonus de estabilidade, o modelo anterior (se ainda elegível no top
+    // 3) é mantido — nunca troca para piorar continuidade.
+    assert.equal(d2.selectedModelId, d1.selectedModelId, 'deve manter o modelo entre turnos');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Inferência de capacidades de modelos dinâmicos
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Capabilities Inference', () => {
+  it('modelo desconhecido mantém valores neutros (não extremos)', () => {
+    const caps = inferCapabilities('random-model-xyz');
+    assert.equal(caps.reasoning, 5);
+    assert.equal(caps.coding, 5);
+    assert.equal(caps.vision, 0);
+    assert.equal(caps.general, 5);
+  });
+
+  it('gemini-flash tem visão, é capaz e rápido-por-natureza (visão ligeiramente menor que pro)', () => {
+    const flash = inferCapabilities('gemini-2.5-flash');
+    assert.ok(flash.vision >= 7, 'gemini tem visão');
+    assert.ok(flash.general >= 7, 'gemini é capaz no geral');
+    const pro = inferCapabilities('gemini-2.5-pro');
+    assert.ok(pro.reasoning >= 9, 'pro tem raciocínio máximo');
+    assert.ok(pro.coding >= 9, 'pro é excelente em código');
+  });
+
+  it('deepseek-r1 é modelo de raciocínio/matemática', () => {
+    const caps = inferCapabilities('deepseek-r1');
+    assert.equal(caps.reasoning, 9);
+    assert.equal(caps.math, 9);
+    assert.ok(caps.coding >= 8, 'deepseek é forte em código');
+  });
+
+  it('qwen-coder-plus prioriza código e raciocínio', () => {
+    const caps = inferCapabilities('qwen-coder-plus');
+    assert.ok(caps.coding >= 9, 'coder deve ter coding máximo');
+    assert.ok(caps.reasoning >= 8, 'plus deve ter raciocínio forte');
+  });
+
+  it('claude-opus é top em escrita, código e visão', () => {
+    const caps = inferCapabilities('claude-opus-4.5');
+    assert.equal(caps.reasoning, 9);
+    assert.equal(caps.coding, 9);
+    assert.equal(caps.writing, 9);
+    assert.ok(caps.vision >= 8, 'claude tem visão');
+  });
+
+  it('modelo local grande (70b) ganha capacidades, leve (7b) não', () => {
+    const big = inferCapabilities('my-local-70b');
+    assert.ok(big.reasoning >= 7);
+    assert.ok(big.general >= 7);
+    const small = inferCapabilities('my-local-7b');
+    assert.equal(small.reasoning, 5);
+  });
+
+  it('registerModel aplica inferência a modelos dinâmicos', () => {
+    registerModel('exotic-coder-v2', { providerId: 'p' });
+    registerModel('plain-unknown', { providerId: 'p' });
+    assert.ok(getModelMetadata('exotic-coder-v2')!.capabilities.coding >= 8, 'coder inferido');
+    assert.equal(getModelMetadata('plain-unknown')!.capabilities.coding, 5, 'desconhecido neutro');
+  });
+
+  it('roteia tarefa de código para modelo dinâmico com coding no nome', () => {
+    registerModel('x-coder-9', { providerId: 'p' });
+    registerModel('y-generic-2', { providerId: 'p' });
+    clearDecisionCache();
+    const result = routeRequest(
+      [],
+      'Escreva uma função em Python para ordenar uma lista',
+      [
+        { id: 'x-coder-9', providerId: 'p' },
+        { id: 'y-generic-2', providerId: 'p' },
+      ]
+    );
+    assert.equal(result.selectedModelId, 'x-coder-9', 'deve escolher o modelo com coding no nome');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Métricas de saúde por modelo
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Model Metrics', () => {
+  beforeEach(() => {
+    resetModelMetrics();
+    resetModelHealth();
+  });
+
+  it('começa sem métricas registradas', () => {
+    assert.equal(getModelMetrics().length, 0);
+    assert.equal(getModelMetricsFor('paid-high'), undefined);
+  });
+
+  it('acumula requests, sucessos e falhas', () => {
+    recordModelRequest('paid-high');
+    recordModelOutcome('paid-high', true);
+    recordModelRequest('paid-high');
+    recordModelOutcome('paid-high', false, 'HTTP 500');
+    const m = getModelMetricsFor('paid-high')!;
+    assert.equal(m.requests, 2);
+    assert.equal(m.successes, 1);
+    assert.equal(m.failures, 1);
+    assert.equal(m.successRate, 0.5);
+    assert.equal(m.lastError, 'HTTP 500');
+  });
+
+  it('calcula latência média e última', () => {
+    recordModelRequest('free-fast');
+    recordModelLatency('free-fast', 100);
+    recordModelRequest('free-fast');
+    recordModelLatency('free-fast', 300);
+    const m = getModelMetricsFor('free-fast')!;
+    assert.equal(m.lastLatencyMs, 300);
+    assert.equal(m.avgLatencyMs, 200);
+  });
+
+  it('marca o último request e sucesso', () => {
+    recordModelRequest('free-fast');
+    recordModelOutcome('free-fast', true);
+    const m = getModelMetricsFor('free-fast')!;
+    assert.ok(m.lastRequestAt, 'deve ter lastRequestAt');
+    assert.ok(m.lastSuccessAt, 'deve ter lastSuccessAt');
+  });
+
+  it('falha sem sucesso não define lastSuccessAt', () => {
+    recordModelRequest('paid-mid');
+    recordModelOutcome('paid-mid', false, 'timeout');
+    const m = getModelMetricsFor('paid-mid')!;
+    assert.equal(m.lastSuccessAt, undefined);
+    assert.equal(m.lastError, 'timeout');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Cadeia de failover (buildAutoFailoverChain)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Failover Chain', () => {
+  beforeEach(() => {
+    setupTestModels();
+    clearDecisionCache();
+    resetModelHealth();
+    resetModelMetrics();
+  });
+
+  it('começa pelo modelo selecionado e segue o fallbackChain sem duplicatas', () => {
+    const decision = routeRequest([], 'Escreva um poema sobre o mar', testAvailableIds());
+    assert.ok(decision.selectedModelId, 'deve escolher um modelo');
+    const chain = buildAutoFailoverChain(decision.selectedModelId, decision, TEST_MODELS.map((m) => m.id));
+    assert.equal(chain[0], decision.selectedModelId, 'selecionado vem primeiro');
+    assert.equal(new Set(chain).size, chain.length, 'sem duplicatas');
+    assert.ok(chain.length >= 2, 'deve ter pelo menos o selecionado + alternativas');
+  });
+
+  it('inclui apenas modelos que existem no catálogo informado', () => {
+    const decision = {
+      selectedModelId: 'paid-mid',
+      fallbackChain: ['free-fast', 'paid-high'],
+    } as any;
+    const chain = buildAutoFailoverChain('paid-high', decision, ['paid-high']);
+    assert.deepEqual(chain, ['paid-high']);
+  });
+
+  it('remove modelos que o circuit breaker marcou como down', () => {
+    recordModelFailure('paid-high');
+    // Escolhe manualmente com cadeia contendo paid-high (down) e free-fast (ok)
+    const decision = {
+      selectedModelId: 'paid-high',
+      fallbackChain: ['free-fast', 'paid-mid'],
+    } as any;
+    const chain = buildAutoFailoverChain('paid-high', decision, ['paid-high', 'free-fast', 'paid-mid']);
+    assert.ok(!chain.includes('paid-high'), 'down não entra na cadeia');
+    assert.ok(chain.includes('free-fast'), 'saudável entra');
+  });
+
+  it('status expõe o resumo de tráfego das métricas', () => {
+    recordModelRequest('free-fast');
+    recordModelOutcome('free-fast', true);
+    recordModelRequest('paid-mid');
+    recordModelOutcome('paid-mid', false, 'HTTP 503');
+    const status = getAutoRouterStatus();
+    assert.equal(status.metrics.totalRequests, 2);
+    assert.equal(status.metrics.totalSuccesses, 1);
+    assert.equal(status.metrics.totalFailures, 1);
   });
 });

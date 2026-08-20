@@ -23,6 +23,9 @@ import {
   getAllModelMetadata,
   syncWithCatalog,
   setModelAvailability,
+  isModelDown,
+  getModelHealthState,
+  getModelMetrics,
 } from './model-metadata.ts';
 
 // ── Configuração padrão ────────────────────────────────────────────────
@@ -89,9 +92,11 @@ export function routeRequest(
     classification.categories.vision = Math.max(classification.categories.vision || 0, 8);
   }
 
-  // 4. Obter metadados apenas dos modelos disponíveis no catálogo
+  // 4. Obter metadados apenas dos modelos disponíveis no catálogo e não down
   const availableIds = new Set(availableModels.map((m) => m.id));
-  let candidates = getAllModelMetadata().filter((m) => m.isAvailable && availableIds.has(m.id));
+  let candidates = getAllModelMetadata().filter(
+    (m) => m.isAvailable && availableIds.has(m.id) && !isModelDown(m.id)
+  );
 
   // 4b. Se browserOnly, filtrar para apenas provedores Playwright (gratuitos)
   if (browserOnly) {
@@ -185,13 +190,126 @@ function buildConversationHash(messages: Array<{ role: string; content: string |
   return `${hasTools ? 'tools' : 'text'}:${hash}`;
 }
 
+// ── Estabilidade entre turnos da mesma conversa ─────────────────────────
+// O histórico OpenAI não carrega o modelo usado na última resposta, então o
+// servidor guarda aqui o último modelo auto por conversa (namespace + modo +
+// assinatura da conversa). Isso alimenta o previousModelId do selectBestModel,
+// que dá +0.05 de estabilidade se o modelo anterior estiver no top 3.
+
+interface ConvModel {
+  modelId: string;
+  at: number;
+}
+
+const lastModelByConv = new Map<string, ConvModel>();
+const CONV_TTL_MS = 30 * 60 * 1000; // 30min sem uso = conversa nova
+const MAX_CONV_ENTRIES = 500;
+
+function conversationKey(
+  messages: Array<{ role: string; content: string | any[] }>,
+  namespace: string,
+  mode: 'auto' | 'auto-free'
+): string {
+  // Assinatura estável: system + primeira mensagem do usuário. Não muda entre
+  // turnos (o histórico só cresce), então identifica a conversa de forma estável.
+  const systems = messages
+    .filter((m) => m.role === 'system')
+    .map((m) => (typeof m.content === 'string' ? m.content.slice(0, 120) : ''))
+    .join('|');
+  const firstUser = messages.find((m) => m.role === 'user');
+  const firstUserText = firstUser
+    ? (typeof firstUser.content === 'string'
+        ? firstUser.content
+        : JSON.stringify(firstUser.content)
+      ).slice(0, 120)
+    : '';
+  return `${namespace}|${mode}|${systems}|${firstUserText}`;
+}
+
+/** Modelo usado na última resposta desta conversa (se ainda dentro do TTL). */
+export function getPreviousAutoModel(
+  messages: Array<{ role: string; content: string | any[] }>,
+  namespace: string,
+  mode: 'auto' | 'auto-free'
+): string | undefined {
+  const entry = lastModelByConv.get(conversationKey(messages, namespace, mode));
+  if (entry && Date.now() - entry.at < CONV_TTL_MS) return entry.modelId;
+  return undefined;
+}
+
+/** Registra o modelo escolhido para esta conversa (próximo turno usa como previous). */
+export function rememberAutoModel(
+  messages: Array<{ role: string; content: string | any[] }>,
+  namespace: string,
+  mode: 'auto' | 'auto-free',
+  modelId: string
+): void {
+  if (lastModelByConv.size >= MAX_CONV_ENTRIES) {
+    let oldestKey: string | null = null;
+    let oldestAt = Infinity;
+    for (const [k, v] of lastModelByConv) {
+      if (v.at < oldestAt) {
+        oldestAt = v.at;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) lastModelByConv.delete(oldestKey);
+  }
+  lastModelByConv.set(conversationKey(messages, namespace, mode), { modelId, at: Date.now() });
+}
+
+/** Limpa o rastreamento de conversas (usado nos testes). */
+export function clearConversationMemory(): void {
+  lastModelByConv.clear();
+}
+
+// ── Cadeia de failover ───────────────────────────────────────────────────
+// Ordena os candidatos para retentativa quando o modelo escolhido falha:
+// [escolhido, ...fallbackChain] sem duplicatas, restrito ao catálogo real e
+// sem modelos que o circuit breaker marcou como down agora.
+
+export function buildAutoFailoverChain(
+  selectedModelId: string,
+  decision: RoutingDecision,
+  catalogIds: string[]
+): string[] {
+  const valid = new Set(catalogIds);
+  const chain: string[] = [];
+  const push = (id: string | undefined) => {
+    if (id && !chain.includes(id) && valid.has(id) && !isModelDown(id)) chain.push(id);
+  };
+  push(selectedModelId);
+  push(decision.selectedModelId);
+  for (const id of decision.fallbackChain ?? []) push(id);
+  return chain;
+}
+
 // ── API para o dashboard ────────────────────────────────────────────────
 
 export function getAutoRouterStatus() {
+  const all = getAllModelMetadata();
+  const now = Date.now();
+  const metrics = getModelMetrics();
+  const withRequests = metrics.filter((m) => m.requests > 0);
   return {
     config: currentConfig,
-    modelCount: getAllModelMetadata().length,
-    availableCount: getAllModelMetadata().filter((m) => m.isAvailable).length,
+    modelCount: all.length,
+    availableCount: all.filter((m) => m.isAvailable).length,
+    downedCount: getModelHealthState().filter((h) => h.isDown).length,
+    downedModels: getModelHealthState()
+      .filter((h) => h.isDown)
+      .map((h) => ({
+        modelId: h.modelId,
+        failures: h.failures,
+        retryInMs: Math.max(0, h.downUntil - now),
+      })),
+    metrics: {
+      modelsTracked: metrics.length,
+      modelsWithTraffic: withRequests.length,
+      totalRequests: withRequests.reduce((s, m) => s + m.requests, 0),
+      totalSuccesses: withRequests.reduce((s, m) => s + m.successes, 0),
+      totalFailures: withRequests.reduce((s, m) => s + m.failures, 0),
+    },
     cacheSize: decisionCache.size,
   };
 }

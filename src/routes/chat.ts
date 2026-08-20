@@ -26,7 +26,7 @@ import {
   isGeminiWebProvider,
   normalizeModelId,
 } from '../services/config.ts';
-import type { Provider } from '../services/config.ts';
+import type { Provider, ProviderRegistry } from '../services/config.ts';
 import { resolveModelEntry, providerFromCatalogEntry, getModelCatalog } from '../services/modelCatalog.ts';
 import type { GatewayApp } from '../services/gateway.ts';
 import { dispatchAdapterChat, isAdapterProvider } from '../services/adapters/index.ts';
@@ -56,7 +56,7 @@ import {
 } from '../services/agent.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { applyPhase1Optimizations, cacheSystemPrompt, getCachedPrompt, optimizedFetch } from '../services/optimizations.ts';
-import { routeRequest, getAutoRouterConfig, getModelMetadata } from '../services/auto-router/index.ts';
+import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome } from '../services/auto-router/index.ts';
 
 interface DeepSeekAccumulated {
   reasoning: string;
@@ -356,7 +356,7 @@ async function resolveAutoModel(
   c: Context,
   body: OpenAIRequest,
   isBrowserOnly: boolean
-): Promise<{ model: string; message?: string; status?: number }> {
+): Promise<{ model: string; message?: string; status?: number; failoverChain?: string[] }> {
   const registry = resolveRegistry(c.req.header('Cookie'));
   const catalog = await getModelCatalog(registry);
   const availableModels = catalog
@@ -372,11 +372,18 @@ async function resolveAutoModel(
         ? lastUserMsg.content.map((p: any) => p.text || '').join('')
         : '';
 
+  // Namespace evita colisão entre clientes/apps do gateway que compartilham o
+  // servidor: a estabilidade da conversa vale por app/cliente, não global.
+  const gwEntry = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
+  const namespace = gwEntry?.id ?? 'direct';
+  const mode = isBrowserOnly ? 'auto-free' : 'auto';
+  const previousModelId = getPreviousAutoModel(messages as Array<{ role: string; content: string | any[] }>, namespace, mode);
+
   const decision = routeRequest(
     messages as Array<{ role: string; content: string | any[] }>,
     currentMessage,
     availableModels,
-    undefined,
+    previousModelId,
     isBrowserOnly,
     hasTools(body)
   );
@@ -392,10 +399,11 @@ async function resolveAutoModel(
   if (!model) {
     console.warn(`[auto-router] modelo selecionado "${decision.selectedModelId}" não está no catálogo; usando fallback`);
     const realCatalog = fullCatalog.filter((m) => m.id !== 'auto' && m.id !== 'auto-free');
-    const browserPool = realCatalog.filter(
+    const realUp = realCatalog.filter((m) => !isModelDown(m.id));
+    const browserPool = realUp.filter(
       (m) => m.providerType === 'gemini-web' || m.providerType === 'deepseek' || m.providerType === 'qwen'
     );
-    const pool = browserPool.length ? browserPool : realCatalog;
+    const pool = browserPool.length ? browserPool : realUp;
     if (pool.length) {
       const sorted = hasTools(body)
         ? [...pool].sort(
@@ -427,11 +435,150 @@ async function resolveAutoModel(
     c.header('X-AutoRouter-Mode', 'free-browser');
   }
 
-  return { model };
+  // Guarda o modelo escolhido no contexto para o chatCompletions reportar o
+  // resultado (sucesso/falha) ao circuit breaker do Auto Router.
+  c.set('autoRoutedModel', model);
+
+  // Cadeia de failover: ordem de modelos a tentar se o escolhido falhar.
+  // Usada pelo chatCompletions para retentar com o próximo melhor modelo.
+  const failoverChain = buildAutoFailoverChain(
+    model,
+    decision,
+    fullCatalog.map((m) => m.id)
+  );
+
+  // Registra o modelo usado nesta conversa: o próximo turno o usará como
+  // previousModelId (bonus de estabilidade no selectBestModel).
+  rememberAutoModel(messages as Array<{ role: string; content: string | any[] }>, namespace, mode, model);
+
+  return { model, failoverChain };
+}
+
+/**
+ * Reporta o resultado de um request roteado via "auto"/"auto-free" ao circuit
+ * breaker: sucesso fecha o circuito, falha HTTP/erro/reposta vazia abre com
+ * backoff. Quando o request não veio do auto router (autoRouted vazio), não faz
+ * nada.
+ */
+function reportAutoOutcome(autoRouted: string | undefined, ok: boolean, extra?: string): void {
+  if (!autoRouted) return;
+  // Métricas observacionais: contagem de sucesso/falha e último erro.
+  recordModelOutcome(autoRouted, ok, ok ? undefined : extra);
+  // Circuit breaker: sucesso fecha o circuito, falha abre com backoff.
+  if (ok) {
+    recordModelSuccess(autoRouted);
+  } else {
+    recordModelFailure(autoRouted, undefined, extra);
+  }
+}
+
+/**
+ * Tenta os candidatos da cadeia de failover na ordem até um responder com
+ * sucesso (status < 400). Cada tentativa reporta ao circuit breaker e às
+ * métricas o resultado do modelo tentado. Retorna null quando o primeiro
+ * candidato é DeepSeek (fluxo próprio do chat.ts cuida dele) ou quando não há
+ * candidatos não-DeepSeek a tentar.
+ */
+async function attemptFailoverChain(
+  c: Context,
+  body: OpenAIRequest,
+  registry: ProviderRegistry,
+  enabled: Provider[],
+  primary: Provider,
+  chain: string[],
+  maybeStoreCache: (res: Response, modelId?: string) => Promise<Response>
+): Promise<Response | null> {
+  const tried: string[] = [];
+  let lastRes: Response | null = null;
+  let lastError: any = null;
+
+  for (const modelId of chain) {
+    if (tried.includes(modelId)) continue;
+    tried.push(modelId);
+
+    // Resolve o provedor deste candidato (mesma lógica do fluxo principal).
+    const t = await resolveTargetForModel(c, modelId, registry, enabled, primary);
+    if (!t) continue;
+    if (isDeepseekProvider(t)) {
+      // DeepSeek é o fluxo original (streaming/sessão própria): não entra no
+      // failover. Se for o primeiro candidato, devolve o controle ao fluxo.
+      if (tried.length === 1) return null;
+      continue;
+    }
+
+    const startedLat = Date.now();
+    recordModelRequest(modelId);
+    try {
+      body.model = modelId;
+      let res: Response;
+      if (isQwenProvider(t)) {
+        res = await qwenChatCompletions(c, body);
+      } else if (isGeminiWebProvider(t)) {
+        res = await geminiChatCompletions(c, body);
+      } else {
+        res = await forwardChatCompletions(c, body, t);
+      }
+      recordModelLatency(modelId, Date.now() - startedLat);
+      const stored = await maybeStoreCache(res, modelId);
+      lastRes = stored;
+      if (stored.status < 400) {
+        c.header('X-AutoRouter-FinalModel', modelId);
+        if (tried.length > 1) c.header('X-AutoRouter-Failover', String(tried.length - 1));
+        console.log(`[auto-router] failover: "${modelId}" respondeu OK na ${tried.length}ª tentativa`);
+        return stored;
+      }
+    } catch (err: any) {
+      lastError = err;
+      recordModelLatency(modelId, Date.now() - startedLat);
+      reportAutoOutcome(modelId, false, err?.message);
+      console.warn(`[auto-router] tentativa "${modelId}" falhou: ${err?.message}`);
+    }
+  }
+
+  // Esgotou os candidatos não-DeepSeek: devolve a última falha (ou 502).
+  if (lastRes) return lastRes;
+  return c.json(
+    { error: { message: lastError?.message || 'Auto Router: todos os modelos falharam.' } },
+    502 as any
+  );
+}
+
+/**
+ * Resolve o provedor que atende um modelo, replicando a lógica do fluxo
+ * principal: catálogo → roteamento por nome (DeepSeek/Qwen) → dono do modelo →
+ * provedor principal. Retorna null quando nenhum provedor atende (ex.: app do
+ * gateway com modelo fora do catálogo).
+ */
+async function resolveTargetForModel(
+  c: Context,
+  modelId: string,
+  registry: ProviderRegistry,
+  enabled: Provider[],
+  primary: Provider
+): Promise<Provider | null> {
+  const gwEntry = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
+  const entry = await resolveModelEntry(modelId, registry);
+  if (entry) return providerFromCatalogEntry(entry);
+  if (gwEntry) return null;
+  // Porta 3005 (direta): fallback por nome de modelo conhecido.
+  const deepseekEnabled = enabled.some((p) => isDeepseekProvider(p));
+  const qwenEnabled = enabled.some((p) => isQwenProvider(p));
+  if (isDeepseekModel(modelId) && deepseekEnabled) {
+    return enabled.find((p) => isDeepseekProvider(p)) ?? primary;
+  }
+  if (isQwenModel(modelId) && qwenEnabled) {
+    return enabled.find((p) => isQwenProvider(p)) ?? primary;
+  }
+  if (!isDeepseekModel(modelId) && !isQwenModel(modelId)) {
+    const owner = await findProviderForModel(enabled, modelId);
+    if (owner) return owner;
+  }
+  return primary;
 }
 
 export async function chatCompletions(c: Context) {
   const startedAt = Date.now();
+  let autoRouted: string | undefined = undefined;
   try {
     let body: OpenAIRequest = await c.req.json();
     // Normaliza o id do modelo (ex.: cliente envia "models/gemini-2.5-flash"
@@ -472,6 +619,7 @@ export async function chatCompletions(c: Context) {
     // modelo (vale para o cliente direto e para apps do gateway com modelo auto).
     const isAutoMode = body.model === 'auto' || body.model === 'auto-free';
     const isBrowserOnly = body.model === 'auto-free';
+    let autoFailoverChain: string[] = [];
     if (isAutoMode) {
       const resolved = await resolveAutoModel(c, body, isBrowserOnly);
       if (resolved.status || !resolved.model) {
@@ -481,7 +629,9 @@ export async function chatCompletions(c: Context) {
         );
       }
       body.model = resolved.model;
+      autoFailoverChain = resolved.failoverChain || [];
     }
+    autoRouted = c.get('autoRoutedModel') as string | undefined;
 
     let target: Provider = primary;
 
@@ -585,32 +735,58 @@ export async function chatCompletions(c: Context) {
       }
     }
 
-    const maybeStoreCache = async (res: Response): Promise<Response> => {
+    const maybeStoreCache = async (res: Response, modelId?: string): Promise<Response> => {
+      // modelId é o modelo desta tentativa (no failover cada tentativa usa um
+      // modelo diferente; fora dele usa o autoRouted original).
+      const m = modelId ?? autoRouted;
       if (cacheKey && res.status === 200) {
         try {
           const json = await res.clone().json();
           if (hasMeaningfulContent(json)) {
             responseCacheSet(cacheKey, res.status, json);
+            reportAutoOutcome(m, true);
           } else {
             console.log(`[economy] resposta vazia NÃO cacheada ${cacheKey.slice(0, 10)}…`);
+            reportAutoOutcome(m, false, 'resposta vazia');
           }
         } catch {
           // stream ou corpo não-JSON: não cacheia
+          reportAutoOutcome(m, res.status < 400);
         }
+      } else {
+        reportAutoOutcome(m, res.status < 400, res.status >= 400 ? `HTTP ${res.status}` : undefined);
       }
       return res;
     };
 
+    // ── Failover automático (provedores não-DeepSeek) ─────────────────────
+    // Quando o modelo roteado falhar (erro HTTP/resposta vazia), tenta o
+    // próximo melhor modelo da cadeia antes de devolver erro ao cliente. Cada
+    // tentativa alimenta o circuit breaker e as métricas do modelo tentado.
+    if (autoFailoverChain.length > 1) {
+      const failoverRes = await attemptFailoverChain(c, body, registry, enabled, primary, autoFailoverChain, maybeStoreCache);
+      if (failoverRes) return failoverRes;
+    }
+
+    // Mede latência do request para as métricas do modelo (apenas auto-router).
+    const trackSend = async (modelId: string | undefined, fn: () => Promise<Response>): Promise<Response> => {
+      const t0 = Date.now();
+      if (modelId) recordModelRequest(modelId);
+      const res = await fn();
+      if (modelId) recordModelLatency(modelId, Date.now() - t0);
+      return res;
+    };
+
     if (isQwenProvider(target)) {
-      return maybeStoreCache(await qwenChatCompletions(c, body));
+      return await trackSend(autoRouted, async () => maybeStoreCache(await qwenChatCompletions(c, body)));
     }
 
     if (isGeminiWebProvider(target)) {
-      return maybeStoreCache(await geminiChatCompletions(c, body));
+      return await trackSend(autoRouted, async () => maybeStoreCache(await geminiChatCompletions(c, body)));
     }
 
     if (!isDeepseekProvider(target)) {
-      return maybeStoreCache(await forwardChatCompletions(c, body, target));
+      return await trackSend(autoRouted, async () => maybeStoreCache(await forwardChatCompletions(c, body, target)));
     }
 
     const finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
@@ -656,10 +832,17 @@ export async function chatCompletions(c: Context) {
 
     // Requisição não-streaming: responde com JSON único em vez de SSE.
     if (!isStream) {
-      return handleDeepSeekNonStreaming(c, body, finalPrompt, isThinkingModel, isNewSession, refFileIds, visionOpts);
+      const t0 = Date.now();
+      if (autoRouted) recordModelRequest(autoRouted);
+      const res = await handleDeepSeekNonStreaming(c, body, finalPrompt, isThinkingModel, isNewSession, refFileIds, visionOpts);
+      if (autoRouted) recordModelLatency(autoRouted, Date.now() - t0);
+      reportAutoOutcome(autoRouted, res.status < 400, res.status >= 400 ? `HTTP ${res.status}` : undefined);
+      return res;
     }
 
     // Empty response retry logic
+    const t0 = Date.now();
+    if (autoRouted) recordModelRequest(autoRouted);
     let stream: ReadableStream;
     let uiSessionId = '';
     let retries = 3;
@@ -677,6 +860,7 @@ export async function chatCompletions(c: Context) {
         await new Promise(r => setTimeout(r, 1000));
       }
     }
+    if (autoRouted) recordModelLatency(autoRouted, Date.now() - t0);
 
     c.header('Content-Type', 'text/event-stream');
     c.header('Cache-Control', 'no-cache');
@@ -979,6 +1163,7 @@ export async function chatCompletions(c: Context) {
     });
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);
+    reportAutoOutcome(autoRouted, false, err?.message);
     return c.json({ error: { message: err.message } }, 500);
   }
 }

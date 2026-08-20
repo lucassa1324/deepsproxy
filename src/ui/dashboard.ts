@@ -847,6 +847,9 @@ import {
   getAutoRouterConfig,
   getAutoRouterStatus,
   getAllModelMetadata,
+  isModelDown,
+  getModelHealthState,
+  getModelMetricsFor,
 } from '../services/auto-router/index.ts';
 
 dashboard.get('/api/auto-router', (c) => {
@@ -860,5 +863,18 @@ dashboard.patch('/api/auto-router', async (c) => {
 });
 
 dashboard.get('/api/auto-router/metadata', (c) => {
-  return c.json(getAllModelMetadata());
+  const now = Date.now();
+  return c.json(
+    getAllModelMetadata().map((m) => {
+      const metrics = getModelMetricsFor(m.id);
+      return {
+        ...m,
+        down: isModelDown(m.id, now),
+        retryInMs: isModelDown(m.id, now)
+          ? Math.max(0, getModelHealthState().find((h) => h.modelId === m.id)!.downUntil - now)
+          : 0,
+        metrics: metrics ?? null,
+      };
+    })
+  );
 });

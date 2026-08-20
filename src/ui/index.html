@@ -989,7 +989,7 @@
       </p>
 
       <!-- Status overview -->
-      <div class="grid cols-4" style="margin-bottom:16px;">
+      <div class="grid cols-5" style="margin-bottom:16px;">
         <div class="card">
           <h3>Modelos no Catálogo</h3>
           <div class="value" id="arModelCount">—</div>
@@ -1006,6 +1006,20 @@
           <h3>Política Atual</h3>
           <div class="value" id="arCurrentPolicy">—</div>
         </div>
+        <div class="card">
+          <h3>Tráfego Roteado</h3>
+          <div class="value" id="arTraffic" style="font-size:12px;">—</div>
+        </div>
+      </div>
+
+      <!-- Circuit breaker -->
+      <div class="card" id="arDownedCard" style="margin-bottom:16px;display:none;">
+        <h3>Modelos em manutenção (circuit breaker)</h3>
+        <p class="note" style="margin:0 0 10px;">
+          Modelos que falharam na prática (erro HTTP, timeout, resposta vazia) ficam
+          fora do roteamento por um tempo. Voltarão sozinhos após o cooldown.
+        </p>
+        <div id="arDownedList" style="display:flex;flex-direction:column;gap:8px;"></div>
       </div>
 
       <!-- Config -->
@@ -4273,6 +4287,27 @@ for await (const chunk of stream) {
       if ($("#arAvailableCount")) $("#arAvailableCount").textContent = data.availableCount ?? "—";
       if ($("#arCacheSize")) $("#arCacheSize").textContent = data.cacheSize ?? 0;
       if ($("#arCurrentPolicy")) $("#arCurrentPolicy").textContent = cfg.costPolicy || "balanced";
+      if ($("#arTraffic")) {
+        const m = data.metrics || {};
+        $("#arTraffic").textContent = `${m.totalRequests ?? 0} req · ${m.totalSuccesses ?? 0} ok · ${m.totalFailures ?? 0} falhas`;
+      }
+
+      // Circuit breaker: lista os modelos fora do roteamento
+      const downed = data.downedModels || [];
+      const downedCard = $("#arDownedCard");
+      const downedList = $("#arDownedList");
+      if (downedCard) downedCard.style.display = downed.length ? "" : "none";
+      if (downedList) {
+        downedList.innerHTML = downed.length
+          ? downed.map((d) => {
+              const retryMin = Math.max(1, Math.round((d.retryInMs || 0) / 60000 * 10) / 10);
+              return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;">
+                <b>${d.modelId}</b>
+                <span class="pill err"><span class="s"></span>volta em ~${retryMin}min (${d.failures} falhas)</span>
+              </div>`;
+            }).join("")
+          : "";
+      }
     } catch {
       console.error("Erro ao carregar config do Auto Router");
     }
@@ -4300,11 +4335,24 @@ for await (const chunk of stream) {
           </div>`;
         const costStr = m.isFree ? "Gratuito" : `$${(m.cost?.input||0).toFixed(2)}/$${(m.cost?.output||0).toFixed(2)} per 1M`;
         const avail = m.isAvailable !== false;
-        return `<div class="card" style="opacity:${avail?1:0.5}">
+        const downed = !!m.down;
+        const statusLabel = downed ? "Em manutenção" : (avail ? "Ativo" : "Inativo");
+        const statusPill = downed ? "warn" : (avail ? "ok" : "err");
+        const retryInfo = downed && m.retryInMs
+          ? `<div style="font-size:10px;color:var(--muted);margin-top:4px;">circuit breaker: volta em ~${Math.max(1, Math.round((m.retryInMs/60000)*10)/10)}min</div>`
+          : "";
+        const met = m.metrics;
+        const metricsInfo = met && met.requests > 0
+          ? `<div style="margin-top:6px;font-size:10px;color:var(--muted);display:flex;justify-content:space-between;">
+              <span>${met.requests} req · ${Math.round((met.successRate||0)*100)}% ok</span>
+              <span>lat ${met.avgLatencyMs||0}ms${met.lastError ? ` · err: ${(met.lastError||"").slice(0,28)}` : ""}</span>
+            </div>`
+          : "";
+        return `<div class="card" style="opacity:${(avail && !downed)?1:0.5}">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
             <b style="font-size:13px;">${m.name || m.id}</b>
-            <span class="pill ${avail?'ok':'err'}" style="font-size:10px;">
-              <span class="s"></span>${avail?'Ativo':'Inativo'}
+            <span class="pill ${statusPill}" style="font-size:10px;">
+              <span class="s"></span>${statusLabel}
             </span>
           </div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">${m.providerId||'?'} · ${costStr} · Vel: ${m.speed||'?'}/10</div>
@@ -4316,6 +4364,8 @@ for await (const chunk of stream) {
             ${capBar('Visão', caps.vision)}
             ${capBar('Geral', caps.general)}
           </div>
+          ${metricsInfo}
+          ${retryInfo}
           ${m.tags?.length ? `<div style="margin-top:6px;display:flex;gap:4px;flex-wrap:wrap;">${m.tags.map(t=>`<span class="pill" style="font-size:9px;">${t}</span>`).join('')}</div>` : ''}
         </div>`;
       }).join("");

@@ -726,6 +726,99 @@
       </div>
     </div>
 
+    <!-- Modal: AI Config Wizard -->
+    <div id="aiConfigModal" class="hidden" style="position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px;">
+      <div style="background:var(--panel); border:1px solid var(--border); border-radius:14px; max-width:720px; width:100%; max-height:90vh; overflow:auto;">
+        <div style="display:flex; align-items:center; justify-content:space-between; padding:18px 20px; border-bottom:1px solid var(--border);">
+          <h3 style="margin:0; display:flex; align-items:center; gap:10px;">
+            <span style="font-size:20px;">🤖</span> Configuração Inteligente por IA
+          </h3>
+          <button id="aiConfigClose" class="btn ghost" style="padding:6px 10px; font-size:18px; line-height:1;">✕</button>
+        </div>
+        <div style="padding:20px;">
+          <p class="note" style="margin:0 0 16px;">
+            Descreva <b>o caso de uso e o perfil de resposta desejado</b> (ex.: "refatoração de código e arquitetura — respostas determinísticas, alta precisão em lógica, sem enrolação",
+            "geração de ideias e cópias de marketing — respostas criativas e variadas",
+            "análise de dados e logs — estruturado, preciso, foco em extrair insights").
+            A IA vai otimizar temperatura, top_p, system prompt, max tokens, economia de tokens e booster para esse perfil.
+          </p>
+          
+          <!-- Current Settings Card -->
+          <div id="aiConfigCurrentSettings" style="margin-bottom:16px; padding:12px; background:var(--bg); border:1px solid var(--border); border-radius:8px;">
+            <h4 style="margin:0 0 8px; font-size:13px; color:var(--muted); text-transform:uppercase; letter-spacing:0.5px;">Configurações Atuais da Aplicação</h4>
+            <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:8px; font-size:12px;">
+              <div><b>Temperatura:</b> <span id="currTemp">—</span></div>
+              <div><b>Top P:</b> <span id="currTopP">—</span></div>
+              <div><b>Max Tokens:</b> <span id="currMaxTokens">—</span></div>
+              <div><b>System Prompt:</b> <span id="currSysPrompt" style="max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:middle;">—</span></div>
+            </div>
+          </div>
+
+          <label class="field">
+            <span>Descrição do caso de uso</span>
+            <textarea id="aiConfigDesc" rows="4" placeholder="Ex.: Vou usar esta aplicação para refatoração de código e arquitetura. Preciso de respostas determinísticas, alta precisão em lógica e sem enrolação."></textarea>
+          </label>
+          <div id="aiConfigCurrentApp" class="note" style="margin:10px 0 0; font-size:12px; color:var(--muted);"></div>
+          <div class="row" style="margin-top:16px; gap:10px;">
+            <button class="btn" id="aiConfigGenerate" type="button" style="flex:1;">
+              <span class="spinner hidden" id="aiConfigSpinner"></span>
+              <span id="aiConfigBtnText">Gerar configuração com IA</span>
+            </button>
+            <button class="btn ghost" id="aiConfigManualToggle" type="button">✏️ Edição Manual</button>
+            <button class="btn ghost" id="aiConfigCancel" type="button">Cancelar</button>
+          </div>
+          
+          <!-- Manual Edit Section -->
+          <div id="aiConfigManual" class="hidden" style="margin-top:16px; padding:16px; background:var(--bg); border:1px solid var(--border); border-radius:8px;">
+            <h4 style="margin:0 0 12px; display:flex; align-items:center; gap:8px;">
+              <span>✏️</span> Edição Manual de Hiperparâmetros
+            </h4>
+            <p class="note" style="margin:0 0 12px;">Ajuste fino direto — salva imediatamente na aplicação sem chamar a IA.</p>
+            
+            <div style="display:grid; gap:12px; margin-bottom:12px;">
+              <label class="field" style="grid-template-columns:140px 1fr;">
+                <span>Temperatura (0–2)</span>
+                <input id="manualTemp" type="number" step="0.05" min="0" max="2" placeholder="padrão" style="width:100px;" />
+              </label>
+              <label class="field" style="grid-template-columns:140px 1fr;">
+                <span>Top P (0–1)</span>
+                <input id="manualTopP" type="number" step="0.05" min="0" max="1" placeholder="padrão" style="width:100px;" />
+              </label>
+              <label class="field" style="grid-template-columns:140px 1fr;">
+                <span>Max Tokens</span>
+                <input id="manualMaxTokens" type="number" step="100" min="0" placeholder="padrão do modelo" style="width:120px;" />
+              </label>
+              <label class="field" style="grid-template-columns:140px 1fr;">
+                <span>System Prompt</span>
+                <textarea id="manualSysPrompt" rows="4" placeholder="Instruções customizadas para esta aplicação…" style="min-height:80px;"></textarea>
+              </label>
+            </div>
+            
+            <div class="row" style="gap:10px;">
+              <button class="btn" id="aiConfigManualSave" type="button">💾 Salvar Alterações</button>
+              <button class="btn ghost" id="aiConfigManualClose" type="button">Fechar</button>
+            </div>
+            <div id="aiConfigManualFeedback" class="note" style="margin-top:8px; min-height:1.2em;"></div>
+          </div>
+          
+          <!-- Diff Preview Area -->
+          <div id="aiConfigDiff" class="hidden" style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">
+            <h4 style="margin:0 0 12px; display:flex; align-items:center; gap:8px;">
+              <span>🔄</span> Preview: Atual → Otimizado
+            </h4>
+            <div id="aiConfigDiffContent" style="max-height:400px; overflow:auto;"></div>
+            <div class="note" id="aiConfigReasoning" style="margin:10px 0 0;"></div>
+            <div class="row" style="margin-top:14px; gap:10px;">
+              <button class="btn" id="aiConfigApply" type="button">Aplicar Configurações</button>
+              <button class="btn ghost" id="aiConfigEdit" type="button">Editar descrição</button>
+            </div>
+          </div>
+
+          <div id="aiConfigError" class="hidden" style="margin-top:12px; padding:10px; background:rgba(242,100,95,0.1); border:1px solid var(--red); border-radius:8px; color:var(--red);"></div>
+        </div>
+      </div>
+    </div>
+
     <div class="card" id="ecoPanel" style="margin-top:14px;">
       <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
         <h3 style="margin:0;">⚡ Modo Economia de Tokens</h3>
@@ -3102,6 +3195,7 @@ for await (const chunk of stream) {
         '<div class="row" style="flex-shrink:0;align-items:center;">' +
           '<label class="checkbox" title="Ligar/desligar esta aplicação"><input type="checkbox" data-act="toggle" data-id="' + a.id + '"' + (a.enabled === false ? "" : " checked") + ' /> Ativa</label>' +
           '<button class="btn ghost" data-act="key" data-id="' + a.id + '" title="Gera uma nova chave (a anterior é revogada)">Nova chave</button>' +
+          '<button class="btn ghost" data-act="ai-config" data-id="' + a.id + '" title="Configurar automaticamente com IA (describe o uso)"><span style="font-size:16px;">⚙️</span></button>' +
           '<button class="btn ghost danger" data-act="delete" data-id="' + a.id + '">Excluir</button>' +
         '</div>';
       list.appendChild(row);
@@ -3214,6 +3308,8 @@ for await (const chunk of stream) {
           "Model:    default  (o gateway usa \"" + (data.app.model || "") + "\" — a chave anterior foi revogada)";
         $("#appKeyBox").classList.remove("hidden");
         loadApps();
+      } else if (btn.dataset.act === "ai-config") {
+        openAiConfigModal(id);
       }
     } catch (err) {
       alert("Erro: " + err.message);
@@ -3235,7 +3331,301 @@ for await (const chunk of stream) {
     dedupConsecutive: false,
   };
 
-  // Pre-configurações para modelos conhecidos (melhores práticas para cada um)
+  // ======== AI Config Wizard Modal ========
+  let aiConfigModalAppId = null;
+
+  function openAiConfigModal(appId) {
+    aiConfigModalAppId = appId;
+    const app = apps.find(a => a.id === appId);
+    const modal = $("#aiConfigModal");
+    const desc = $("#aiConfigDesc");
+    const diff = $("#aiConfigDiff");
+    const error = $("#aiConfigError");
+    const currentApp = $("#aiConfigCurrentApp");
+    const btnText = $("#aiConfigBtnText");
+    const spinner = $("#aiConfigSpinner");
+
+    if (!app) return;
+
+    desc.value = "";
+    diff.classList.add("hidden");
+    error.classList.add("hidden");
+    error.textContent = "";
+    currentApp.textContent = "App: " + app.name + " · Modelo atual: " + (app.model || "auto") + " · Provedor: " + (app.providerName || "—");
+    
+    // Populate current settings card
+    $("#currTemp").textContent = app.temperature !== undefined ? String(app.temperature) : "padrão (do cliente)";
+    $("#currTopP").textContent = app.top_p !== undefined ? String(app.top_p) : "padrão (do cliente)";
+    $("#currMaxTokens").textContent = app.maxTokens !== undefined ? String(app.maxTokens) : "padrão (do modelo)";
+    const sp = app.systemPromptOverride;
+    $("#currSysPrompt").textContent = sp ? (sp.length > 60 ? sp.slice(0, 60) + "…" : sp) : "—";
+    $("#currSysPrompt").title = sp || "—";
+
+    // Fetch current token economy settings for diff
+    fetch("/api/settings/token-economy")
+      .then(r => r.json())
+      .then(data => {
+        if (data.ok && data.settings) {
+          window.currentTokenEconomy = data.settings;
+        }
+      })
+      .catch(() => { window.currentTokenEconomy = null; });
+
+    btnText.textContent = "Gerar configuração com IA";
+    spinner.classList.add("hidden");
+    $("#aiConfigGenerate").disabled = false;
+
+    modal.classList.remove("hidden");
+    setTimeout(() => desc.focus(), 100);
+  }
+
+  function closeAiConfigModal() {
+    $("#aiConfigModal").classList.add("hidden");
+    aiConfigModalAppId = null;
+  }
+
+  function formatDiffValue(val) {
+    if (val === undefined || val === null) return '<span class="note">padrão</span>';
+    if (typeof val === 'string') {
+      if (val.length > 80) return '<span title="' + val.replace(/"/g, '"') + '">' + val.slice(0, 80) + '…</span>';
+      return '"' + val + '"';
+    }
+    return String(val);
+  }
+
+  function renderDiff(current, proposed) {
+    const fields = [
+      { key: 'temperature', label: 'Temperatura', current: current.temperature, proposed: proposed.llmParams?.temperature },
+      { key: 'top_p', label: 'Top P', current: current.top_p, proposed: proposed.llmParams?.top_p },
+      { key: 'maxTokens', label: 'Max Tokens', current: current.maxTokens, proposed: proposed.llmParams?.maxTokens },
+      { key: 'systemPromptOverride', label: 'System Prompt Override', current: current.systemPromptOverride, proposed: proposed.llmParams?.systemPromptOverride },
+    ];
+    
+    // Add tokenEconomy fields if present
+    if (proposed.tokenEconomy) {
+      const teKeys = Object.keys(proposed.tokenEconomy);
+      for (const k of teKeys) {
+        fields.push({ 
+          key: 'tokenEconomy.' + k, 
+          label: 'Economia: ' + k, 
+          current: current.tokenEconomy?.[k], 
+          proposed: proposed.tokenEconomy[k] 
+        });
+      }
+    }
+    
+    // Add booster fields if present
+    if (proposed.booster) {
+      const bKeys = Object.keys(proposed.booster);
+      for (const k of bKeys) {
+        fields.push({ 
+          key: 'booster.' + k, 
+          label: 'Booster: ' + k, 
+          current: current.booster?.[k], 
+          proposed: proposed.booster[k] 
+        });
+      }
+    }
+
+    let html = '<table style="width:100%; border-collapse:collapse; font-size:12px;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--border); text-align:left;">';
+    html += '<th style="padding:8px; width:30%;">Parâmetro</th>';
+    html += '<th style="padding:8px; width:35%;">Atual</th>';
+    html += '<th style="padding:8px; width:35%;">Otimizado</th>';
+    html += '</tr></thead><tbody>';
+    
+    for (const f of fields) {
+      const isChanged = JSON.stringify(f.current) !== JSON.stringify(f.proposed);
+      const rowStyle = isChanged ? 'background:rgba(255,200,50,0.1);' : '';
+      const arrow = isChanged ? ' <span style="color:var(--amber);">➜</span> ' : '';
+      html += '<tr style="' + rowStyle + '">';
+      html += '<td style="padding:8px; border-bottom:1px solid var(--border); font-weight:500;">' + f.label + '</td>';
+      html += '<td style="padding:8px; border-bottom:1px solid var(--border); color:var(--muted);">' + formatDiffValue(f.current) + '</td>';
+      html += '<td style="padding:8px; border-bottom:1px solid var(--border); font-weight:600;' + (isChanged ? ' color:var(--green);' : '') + '">' + formatDiffValue(f.proposed) + '</td>';
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
+    
+    if (proposed.recommendedModel) {
+      html += '<div style="margin-top:12px; padding:8px; background:rgba(0,180,255,0.1); border:1px solid var(--blue); border-radius:6px;">';
+      html += '<b>🔄 Modelo recomendado:</b> <code>' + proposed.recommendedModel + '</code>';
+      html += '</div>';
+    }
+    
+    return html;
+  }
+
+  $("#aiConfigClose")?.addEventListener("click", closeAiConfigModal);
+  $("#aiConfigCancel")?.addEventListener("click", closeAiConfigModal);
+  $("#aiConfigModal")?.addEventListener("click", (e) => {
+    if (e.target === $("#aiConfigModal")) closeAiConfigModal();
+  });
+
+  $("#aiConfigGenerate")?.addEventListener("click", async () => {
+    const desc = $("#aiConfigDesc").value.trim();
+    if (!desc) { alert("Descreva o caso de uso."); return; }
+
+    const btn = $("#aiConfigGenerate");
+    const btnText = $("#aiConfigBtnText");
+    const spinner = $("#aiConfigSpinner");
+    const error = $("#aiConfigError");
+    const diff = $("#aiConfigDiff");
+    const diffContent = $("#aiConfigDiffContent");
+    const reasoningEl = $("#aiConfigReasoning");
+
+    btn.disabled = true;
+    btnText.textContent = "Gerando...";
+    spinner.classList.remove("hidden");
+    error.classList.add("hidden");
+    diff.classList.add("hidden");
+
+    try {
+      const res = await fetch("/api/apps/" + encodeURIComponent(aiConfigModalAppId) + "/ai-config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description: desc })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+      const app = apps.find(a => a.id === aiConfigModalAppId);
+      const currentSettings = {
+        temperature: app?.temperature,
+        top_p: app?.top_p,
+        maxTokens: app?.maxTokens,
+        systemPromptOverride: app?.systemPromptOverride,
+        tokenEconomy: window.currentTokenEconomy || null,
+        booster: null
+      };
+      
+      diffContent.innerHTML = renderDiff(currentSettings, data.config);
+      if (data.config?.reasoning) reasoningEl.textContent = "💡 " + data.config.reasoning;
+      else reasoningEl.textContent = "";
+      diff.classList.remove("hidden");
+      btnText.textContent = "Regenerar";
+    } catch (err) {
+      error.textContent = err.message;
+      error.classList.remove("hidden");
+      btnText.textContent = "Tentar novamente";
+    } finally {
+      btn.disabled = false;
+      spinner.classList.add("hidden");
+    }
+  });
+
+  $("#aiConfigApply")?.addEventListener("click", async () => {
+    if (!aiConfigModalAppId) return;
+    const btn = $("#aiConfigApply");
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = "Aplicando...";
+    try {
+      await loadApps();
+      closeAiConfigModal();
+      alert("Configuração aplicada com sucesso!");
+    } catch (err) {
+      alert("Erro ao aplicar: " + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = original;
+    }
+  });
+
+  $("#aiConfigEdit")?.addEventListener("click", () => {
+    $("#aiConfigDesc").focus();
+    $("#aiConfigDiff").classList.add("hidden");
+  });
+
+  // ======== Manual Edit Handlers ========
+  $("#aiConfigManualToggle")?.addEventListener("click", () => {
+    const manualSection = $("#aiConfigManual");
+    const isHidden = manualSection.classList.toggle("hidden");
+    if (!isHidden) {
+      // Populate fields with current app values
+      const app = apps.find(a => a.id === aiConfigModalAppId);
+      if (app) {
+        $("#manualTemp").value = app.temperature !== undefined ? String(app.temperature) : "";
+        $("#manualTopP").value = app.top_p !== undefined ? String(app.top_p) : "";
+        $("#manualMaxTokens").value = app.maxTokens !== undefined ? String(app.maxTokens) : "";
+        $("#manualSysPrompt").value = app.systemPromptOverride || "";
+      }
+      $("#manualTemp").focus();
+    }
+    $("#aiConfigManualFeedback").textContent = "";
+  });
+
+  $("#aiConfigManualClose")?.addEventListener("click", () => {
+    $("#aiConfigManual").classList.add("hidden");
+    $("#aiConfigManualFeedback").textContent = "";
+  });
+
+  $("#aiConfigManualSave")?.addEventListener("click", async () => {
+    if (!aiConfigModalAppId) return;
+    
+    const btn = $("#aiConfigManualSave");
+    const feedback = $("#aiConfigManualFeedback");
+    const originalText = btn.textContent;
+    
+    const temperature = $("#manualTemp").value.trim();
+    const top_p = $("#manualTopP").value.trim();
+    const maxTokens = $("#manualMaxTokens").value.trim();
+    const systemPromptOverride = $("#manualSysPrompt").value.trim();
+    
+    const patch = {};
+    if (temperature) patch.temperature = parseFloat(temperature);
+    if (top_p) patch.top_p = parseFloat(top_p);
+    if (maxTokens) patch.maxTokens = parseInt(maxTokens, 10);
+    if (systemPromptOverride) patch.systemPromptOverride = systemPromptOverride;
+    // Allow clearing by sending null (handled by backend)
+    if (!temperature && $("#manualTemp").value === "") patch.temperature = null;
+    if (!top_p && $("#manualTopP").value === "") patch.top_p = null;
+    if (!maxTokens && $("#manualMaxTokens").value === "") patch.maxTokens = null;
+    if (!systemPromptOverride && $("#manualSysPrompt").value === "") patch.systemPromptOverride = null;
+
+    btn.disabled = true;
+    btn.textContent = "Salvando...";
+    feedback.textContent = "";
+    feedback.style.color = "";
+
+    try {
+      const res = await fetch("/api/apps/" + encodeURIComponent(aiConfigModalAppId), {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch)
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+
+      // Update local cache
+      await loadApps();
+      
+      // Refresh current settings card
+      const app = apps.find(a => a.id === aiConfigModalAppId);
+      if (app) {
+        $("#currTemp").textContent = app.temperature !== undefined ? String(app.temperature) : "padrão (do cliente)";
+        $("#currTopP").textContent = app.top_p !== undefined ? String(app.top_p) : "padrão (do cliente)";
+        $("#currMaxTokens").textContent = app.maxTokens !== undefined ? String(app.maxTokens) : "padrão (do modelo)";
+        const sp = app.systemPromptOverride;
+        $("#currSysPrompt").textContent = sp ? (sp.length > 60 ? sp.slice(0, 60) + "…" : sp) : "—";
+        $("#currSysPrompt").title = sp || "—";
+      }
+
+      feedback.textContent = "✅ Salvo com sucesso!";
+      feedback.style.color = "var(--green)";
+      $("#aiConfigManual").classList.add("hidden");
+      
+      // Also hide diff if open since values changed
+      $("#aiConfigDiff").classList.add("hidden");
+    } catch (err) {
+      feedback.textContent = "❌ " + err.message;
+      feedback.style.color = "var(--red)";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = originalText;
+    }
+  });
+
+  // ======== Model Presets ========
   const MODEL_PRESETS = {
     // === DeepSeek ===
     "deepseek-thinking": {
@@ -3496,15 +3886,15 @@ for await (const chunk of stream) {
 
   // ── FASE 5: Impact indicators ────────────────────────────────────────
   const IMPACT_DATA = {
-    truncateHistory:    { tokens: 2000, quality: "alto",    desc: "Pode perder contexto importante" },
-    summarizeHistory:   { tokens: 1500, quality: "médio",   desc: "Preserva essência, perde detalhes" },
-    truncateToolOutput: { tokens: 3000, quality: "médio",   desc: "Pode cortar dados de ferramentas" },
-    stripReasoning:     { tokens: 2500, quality: "baixo",   desc: "Raramente afeta respostas" },
-    cachePrefix:        { tokens: 0,    quality: "nenhum",  desc: "Acelera sem afetar qualidade" },
-    responseCache:      { tokens: 0,    quality: "nenhum",  desc: "Reusa respostas idênticas" },
-    tokenEstimation:    { tokens: 0,    quality: "nenhum",  desc: "Apenas log, sem efeito" },
-    smartTruncation:    { tokens: 2500, quality: "médio",   desc: "Preserva o mais importante" },
-    dedupConsecutive:   { tokens: 500,  quality: "baixo",   desc: "Remove apenas duplicatas exatas" },
+    truncateHistory:    { tokens: 2000, quality: "alto",   desc: "Pode perder contexto importante" },
+    summarizeHistory:   { tokens: 1500, quality: "medio",  desc: "Preserva essência, perde detalhes" },
+    truncateToolOutput: { tokens: 3000, quality: "medio",  desc: "Pode cortar dados de ferramentas" },
+    stripReasoning:     { tokens: 2500, quality: "baixo",  desc: "Raramente afeta respostas" },
+    cachePrefix:        { tokens: 0,    quality: "nenhum", desc: "Acelera sem afetar qualidade" },
+    responseCache:      { tokens: 0,    quality: "nenhum", desc: "Reusa respostas idênticas" },
+    tokenEstimation:    { tokens: 0,    quality: "nenhum", desc: "Apenas log, sem efeito" },
+    smartTruncation:    { tokens: 2500, quality: "medio",  desc: "Preserva o mais importante" },
+    dedupConsecutive:   { tokens: 500,  quality: "baixo",  desc: "Remove apenas duplicatas exatas" },
   };
 
   function updateImpactBar() {
@@ -3515,8 +3905,8 @@ for await (const chunk of stream) {
 
     let totalTokens = 0;
     let maxQuality = 0;
-    const qualityLevels = { nenhum: 0, baixo: 1, médio: 2, alto: 3 };
-    const qualityNames = ["nenhum", "baixo", "médio", "alto"];
+    const qualityLevels = { nenhum: 0, baixo: 1, medio: 2, alto: 3 };
+    const qualityNames = ["nenhum", "baixo", "medio", "alto"];
     let activeCount = 0;
 
     for (const [key, data] of Object.entries(IMPACT_DATA)) {

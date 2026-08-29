@@ -17,17 +17,18 @@ import { startKeepAlive } from '../utils/sse.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
 import { StreamingToolParser } from '../tools/stream-parser.ts';
 import {
+  buildGeminiWebPrompt,
+  smartTruncateHistory,
+  MAX_GEMINI_WEB_CHARS,
+  GEMINI_WEB_COMPOSER_SAFE_CHARS,
   createGeminiWebStream,
   consumeGeminiWebStream,
   getMockGeminiPage,
   FakeGeminiPage,
   toGeminiPageLike,
-  smartTruncateHistory,
-  buildGeminiWebPrompt,
-  MAX_GEMINI_WEB_CHARS,
-  GEMINI_WEB_COMPOSER_SAFE_CHARS,
   type GeminiPageLike,
 } from '../services/gemini-web.ts';
+import { injectHighPrecisionProtocol } from '../utils/system-prompt.ts';
 import {
   acquireGeminiStreamPage,
   releaseGeminiStreamPage,
@@ -119,7 +120,9 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
     //      usuário) é descartado e o Gemini responde só o system prompt.
     const originalMsgCount = (body.messages || []).length;
     body = smartTruncateHistory(body);
-    const finalPrompt = buildGeminiWebPrompt(body);
+    let finalPrompt = buildGeminiWebPrompt(body);
+    // Injeta HIGH-PRECISION AGENT PROTOCOL
+    finalPrompt = injectHighPrecisionProtocol(finalPrompt);
     const truncatedMsgCount = (body.messages || []).length;
 
     if (truncatedMsgCount !== originalMsgCount) {

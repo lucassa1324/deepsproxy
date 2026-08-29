@@ -12,6 +12,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { createQwenStream, updateSessionParent } from '../services/qwen.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
+import { injectHighPrecisionProtocol } from '../utils/system-prompt.ts';
 import { robustParseJSON } from '../utils/robust-json.ts';
 import { isModelBoosted } from '../services/booster.ts';
 import { StreamingToolParser } from '../tools/stream-parser.ts';
@@ -214,7 +215,8 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
     const isStream = body.stream ?? false;
     const messages = body.messages || [];
 
-    const finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
+    let finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
+    // HIGH-PRECISION AGENT PROTOCOL já injetado dentro de buildAgentPrompt
     const isThinkingModel = !body.model.includes('no-thinking');
 
     // A session is new if it doesn't have any assistant messages yet.

@@ -732,7 +732,7 @@ class ChatComponent {
     this._raf = null;
     this._debounce = null;
     this._startTime = 0;
-    this._stickToBottom = true;
+    this._stickToBottomEnabled = true;
     this._pendingStream = false;
     this._attachments = []; // { id, dataUrl, mime, name, status }
   }
@@ -1250,7 +1250,7 @@ class ChatComponent {
 
   _onScroll() {
     const thread = this._thread;
-    this._stickToBottom = thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 40;
+    this._stickToBottomEnabled = thread.scrollTop + thread.clientHeight >= thread.scrollHeight - 40;
     if (this._raf) cancelAnimationFrame(this._raf);
     this._raf = requestAnimationFrame(() => this._render());
   }
@@ -1446,7 +1446,7 @@ class ChatComponent {
 
   _stickToBottom() {
     if (!this._thread) return;
-    if (this._stickToBottom) this._thread.scrollTop = this._thread.scrollHeight;
+    if (this._stickToBottomEnabled) this._thread.scrollTop = this._thread.scrollHeight;
   }
 
   /* --------------------- Virtual scrolling ----------------------------- */

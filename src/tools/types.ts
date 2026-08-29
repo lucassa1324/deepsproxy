@@ -80,6 +80,8 @@ export interface ToolContext {
   turn: number;
   /** The model being used */
   model: string;
+  /** Raiz do workspace para normalização de caminhos */
+  workspaceRoot?: string;
 }
 
 /**

@@ -31,6 +31,15 @@ import { resolveModelEntry, providerFromCatalogEntry, getModelCatalog } from '..
 import type { GatewayApp } from '../services/gateway.ts';
 import { dispatchAdapterChat, isAdapterProvider } from '../services/adapters/index.ts';
 import {
+  validateResponse,
+  maybeInjectDiagnosticDirective,
+  buildGenericRejection,
+  buildNullEditRejection,
+} from '../services/validation-guard.ts';
+import { getWorkspaceMap, clearWorkspaceCache } from '../services/workspace.ts';
+import { normalizeToolCallArgs, clearPathIndexCache, getPathIndex, normalizePath } from '../services/path-normalizer.ts';
+import { applyPromptCaching } from '../services/prompt-cache.ts';
+import {
   getTokenEconomy,
   applyTokenEconomy,
   cachePayloadKey,
@@ -235,6 +244,19 @@ async function handleDeepSeekNonStreaming(
   const { textContent, toolCalls } = parseToolCallsFromContent(acc.content);
   const promptTokens = Math.ceil(finalPrompt.length / 3.5);
 
+  // Normaliza caminhos nos tool_calls antes de devolver ao cliente
+  const workspaceRootForNormalization = (body as any).workspacePath || (body as any).rootPath || process.cwd();
+  const normalizedToolCalls = toolCalls.map((tc) => {
+    let normalizedArgs = tc.arguments;
+    if (typeof normalizedArgs === 'object' && normalizedArgs !== null) {
+      normalizedArgs = normalizeToolCallArgs(tc.name, normalizedArgs, workspaceRootForNormalization);
+    }
+    return {
+      ...tc,
+      arguments: typeof normalizedArgs === 'string' ? normalizedArgs : JSON.stringify(normalizedArgs),
+    };
+  });
+
   const message: any = {
     role: 'assistant',
     content: toolCalls.length > 0 ? (textContent || null) : textContent,
@@ -242,13 +264,13 @@ async function handleDeepSeekNonStreaming(
   if (acc.reasoning) {
     message.reasoning_content = acc.reasoning;
   }
-  if (toolCalls.length > 0) {
-    message.tool_calls = toolCalls.map((tc) => ({
+  if (normalizedToolCalls.length > 0) {
+    message.tool_calls = normalizedToolCalls.map((tc) => ({
       id: tc.id,
       type: 'function',
       function: {
         name: tc.name,
-        arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
+        arguments: tc.arguments,
       },
     }));
   }
@@ -341,6 +363,155 @@ async function summarizeDropped(dropped: any[], target: Provider): Promise<strin
     // fallback para digest
   }
   return digest;
+}
+
+/**
+ * Anti-Lazy Loop com 3 travas de validação:
+ * 1. Validação de Diff Efetivo (Anti-Nulo): rejeita edições +0 -0
+ * 2. Injeção Dinâmica de Diagnóstico Terminal: obriga rodar build/tsc antes de editar
+ * 3. Circuit Breaker Progressivo: max 2 tentativas, depois aborta com aviso
+ * 
+ * @param res - Response do provedor
+ * @param currentBody - Body da requisição original
+ * @param currentTarget - Provider usado
+ * @returns Response final (original, retry enriquecido, ou resposta final com aviso)
+ */
+async function applyAntiLazyLoop(
+  c: Context,
+  res: Response,
+  currentBody: OpenAIRequest,
+  currentTarget: Provider
+): Promise<Response> {
+  if (res.status !== 200) return res;
+
+  // Extrai flags com padrão TRUE (enabled by default).
+  // Cliente pode desativar enviando explicitamente: false
+  const enableDiagnosticDirective = (currentBody as any).enableDiagnosticDirective !== false;
+  const enableNullDiffValidation = (currentBody as any).enableNullDiffValidation !== false;
+  const enableAntiLazyLoop = (currentBody as any).enableAntiLazyLoop !== false;
+
+  // Se todas as flags foram explicitamente desativadas, passa direto
+  if (!enableDiagnosticDirective && !enableNullDiffValidation && !enableAntiLazyLoop) {
+    return res;
+  }
+
+  // 1. Injeta diretiva de diagnóstico se flag ativa e usuário mencionar erro técnico
+  let bodyWithDiagnostic = currentBody;
+  if (enableDiagnosticDirective) {
+    bodyWithDiagnostic = maybeInjectDiagnosticDirective(currentBody);
+  }
+
+  // 2. Validação completa via validation-guard (flags são lidas dentro do body)
+  const validation = await validateResponse(c, res, bodyWithDiagnostic, currentTarget);
+  
+  if (validation.isValid) {
+    return res;
+  }
+
+  // 3. Se deve abortar (circuit breaker): em vez de devolver ao usuário,
+  // injeta Re-Prompt Interno Forçado (Emergency Step) para tentar recuperar
+  if (validation.shouldAbort) {
+    console.log('[anti-lazy] Circuit breaker ativado. Injetando Emergency Re-Prompt forçado...');
+    if (validation.rejectionMessage && validation.modifiedBody) {
+      const emergencyBody = validation.modifiedBody;
+      
+      // Injeta mensagem de emergência no system prompt para forçar uso do WORKSPACE MAP
+      const emergencyPrompt = 
+        `[PROXY EMERGENCY STEP]: Você está preso em um loop de buscas vazias. ` +
+        `Consulte a mensagem inicial [WORKSPACE MAP] onde o caminho dos arquivos já foi listado. ` +
+        `Execute read_file com o caminho exato da subpasta (ex: 'github-edit-view/src/lib/interaction-math.ts'). ` +
+        `NÃO responda com texto — USE A FERRAMENTA read_file AGORA com o caminho completo.`;
+      
+      // Adiciona a mensagem de emergência como system message
+      emergencyBody.messages = [
+        ...emergencyBody.messages,
+        { role: 'system', content: emergencyPrompt }
+      ];
+      
+      // Re-chama o provedor com o emergency prompt
+      let emergencyRes: Response;
+      if (isQwenProvider(currentTarget)) {
+        emergencyRes = await qwenChatCompletions(c, emergencyBody);
+      } else if (isGeminiWebProvider(currentTarget)) {
+        emergencyRes = await geminiChatCompletions(c, emergencyBody);
+      } else {
+        emergencyRes = await forwardChatCompletions(c, emergencyBody, currentTarget);
+      }
+      
+      // Valida a resposta de emergência
+      const emergencyValidation = await validateResponse(c, emergencyRes, emergencyBody, currentTarget);
+      if (emergencyValidation.isValid) {
+        console.log('[anti-lazy] Emergency re-prompt bem-sucedido. Loop quebrado.');
+        return emergencyRes;
+      }
+      
+      // Se ainda falhar, devolve a resposta de emergência mesmo assim (evita loop infinito)
+      console.log('[anti-lazy] Emergency re-prompt falhou. Devolvendo resposta de emergência para evitar loop.');
+      return emergencyRes;
+    }
+    return res;
+  }
+
+  // 4. Re-prompt forçado (tentativa 1 de 2)
+  console.log('[anti-lazy] Rejeição detectada. Iniciando re-prompt forçado...');
+  if (!validation.rejectionMessage || !validation.modifiedBody) {
+    return res;
+  }
+
+  const retryBody = validation.modifiedBody;
+  
+  // Re-chama o provedor
+  let retryRes: Response;
+  if (isQwenProvider(currentTarget)) {
+    retryRes = await qwenChatCompletions(c, retryBody);
+  } else if (isGeminiWebProvider(currentTarget)) {
+    retryRes = await geminiChatCompletions(c, retryBody);
+  } else {
+    retryRes = await forwardChatCompletions(c, retryBody, currentTarget);
+  }
+
+  // 5. Valida a retry
+  const retryValidation = await validateResponse(c, retryRes, retryBody, currentTarget);
+  
+  if (retryValidation.isValid) {
+    console.log('[anti-lazy] Re-prompt bem-sucedido. Resposta enriquecida.');
+    return retryRes;
+  }
+
+  // 6. Se retry também falhou e deve abortar: injeta Emergency Re-Prompt final
+  if (retryValidation.shouldAbort) {
+    console.log('[anti-lazy] Segunda tentativa falhou. Injetando Emergency Re-Prompt final...');
+    if (retryValidation.rejectionMessage && retryValidation.modifiedBody) {
+      const emergencyBody = retryValidation.modifiedBody;
+      
+      const emergencyPrompt = 
+        `[PROXY FINAL EMERGENCY STEP]: Segunda tentativa falhou. ` +
+        `Você DEVE usar o [WORKSPACE MAP] para localizar o arquivo exato. ` +
+        `Se o arquivo é 'interaction-math.ts' e o mapa mostra 'github-edit-view/src/lib/interaction-math.ts', ` +
+        `use EXATAMENTE esse caminho no read_file. ` +
+        `NÃO responda com explicações — EXECUTE A FERRAMENTA AGORA.`;
+      
+      emergencyBody.messages = [
+        ...emergencyBody.messages,
+        { role: 'system', content: emergencyPrompt }
+      ];
+      
+      let emergencyRes: Response;
+      if (isQwenProvider(currentTarget)) {
+        emergencyRes = await qwenChatCompletions(c, emergencyBody);
+      } else if (isGeminiWebProvider(currentTarget)) {
+        emergencyRes = await geminiChatCompletions(c, emergencyBody);
+      } else {
+        emergencyRes = await forwardChatCompletions(c, emergencyBody, currentTarget);
+      }
+      
+      return emergencyRes;
+    }
+    return retryRes;
+  }
+
+  // 7. Retry melhorou mas ainda não ideal - devolve mesmo assim
+  return retryRes;
 }
 
 /**
@@ -510,6 +681,10 @@ async function attemptFailoverChain(
     recordModelRequest(modelId);
     try {
       body.model = modelId;
+
+      // Prompt Caching no failover também
+      body = applyPromptCaching(body, t);
+
       let res: Response;
       if (isQwenProvider(t)) {
         res = await qwenChatCompletions(c, body);
@@ -518,6 +693,10 @@ async function attemptFailoverChain(
       } else {
         res = await forwardChatCompletions(c, body, t);
       }
+      
+      // Anti-Lazy Loop no failover
+      res = await applyAntiLazyLoop(c, res, body, t);
+      
       recordModelLatency(modelId, Date.now() - startedLat);
       const stored = await maybeStoreCache(res, modelId);
       lastRes = stored;
@@ -588,6 +767,90 @@ export async function chatCompletions(c: Context) {
     const isStream = body.stream ?? false;
     const economy: TokenEconomySettings = getTokenEconomy();
 
+    // Limpa cache de workspace no início de cada requisição HTTP
+    clearWorkspaceCache();
+    clearPathIndexCache();
+
+    // Injeta [WORKSPACE MAP] no system prompt (uma vez por request)
+    // Permite override via body.workspacePath ou body.rootPath
+    const explicitWorkspaceRoot = (body as any).workspacePath || (body as any).rootPath;
+    const workspaceMap = getWorkspaceMap(explicitWorkspaceRoot);
+    if (workspaceMap && workspaceMap.trim()) {
+      const existingSystem = body.messages.find(m => m.role === 'system');
+      if (existingSystem) {
+        existingSystem.content = workspaceMap + '\n\n' + (existingSystem.content || '');
+      } else {
+        body.messages.unshift({ role: 'system', content: workspaceMap });
+      }
+    }
+
+    // ─── Tratamento de Falha de Leitura (Re-Prompt Transparente) ───
+    // Se a mensagem anterior contém resultado de tool com erro de leitura,
+    // injeta mensagem corretiva com o caminho correto do workspace map
+    const workspaceRootForCorrection = explicitWorkspaceRoot || process.cwd();
+    const pathIndex = getPathIndex(workspaceRootForCorrection);
+    const failedToolResults = body.messages.filter((m: any) => 
+      m.role === 'tool' && typeof m.content === 'string' && 
+      (m.content.includes('Failed to read') || 
+       m.content.includes('Error:') || 
+       m.content.includes('ENOENT') ||
+       m.content.includes('not found') ||
+       m.content.includes('arquivo não encontrado') ||
+       m.content.includes('file not found'))
+    );
+    
+    if (failedToolResults.length > 0) {
+      for (const toolResult of failedToolResults) {
+        // Tenta extrair o caminho que falhou do tool_call_id ou do conteúdo
+        const toolCallId = toolResult.tool_call_id;
+        // Busca o tool_call anterior para saber qual arquivo tentaram ler
+        const prevAssistantMsg = body.messages
+          .slice()
+          .reverse()
+          .find((m: any) => m.role === 'assistant' && Array.isArray(m.tool_calls) && 
+            m.tool_calls.some((tc: any) => tc.id === toolCallId));
+        
+        if (prevAssistantMsg && Array.isArray(prevAssistantMsg.tool_calls)) {
+          const failedCall = prevAssistantMsg.tool_calls.find((tc: any) => tc.id === toolCallId);
+          if (failedCall && failedCall.function?.arguments) {
+            let args: any = {};
+            try {
+              args = typeof failedCall.function.arguments === 'string' 
+                ? JSON.parse(failedCall.function.arguments) 
+                : failedCall.function.arguments;
+            } catch {}
+            
+            const failedPath = args.path || args.file_path || args.file;
+            if (failedPath && typeof failedPath === 'string') {
+              // Tenta encontrar o caminho correto no índice
+              let correctPath = normalizePath(failedPath, workspaceRootForCorrection);
+              if (correctPath === failedPath && pathIndex.size > 0) {
+                // Busca fuzzy: procura arquivo com mesmo basename
+                const basename = failedPath.split('/').pop() || failedPath;
+                for (const [key, value] of pathIndex.entries()) {
+                  if (key === basename || key.endsWith('/' + basename)) {
+                    correctPath = value;
+                    break;
+                  }
+                }
+              }
+              
+              if (correctPath !== failedPath) {
+                const correctionMsg = `[PROXY SYSTEM NOTICE]: Falha ao ler '${failedPath}'. O caminho relativo exato registrado no mapa do projeto é '${correctPath}'. Tente ler novamente usando este caminho exato.`;
+                
+                // Injeta como mensagem de usuário (system-like) antes da última mensagem do assistente
+                const insertIdx = body.messages.findIndex((m: any) => m === prevAssistantMsg);
+                if (insertIdx >= 0) {
+                  body.messages.splice(insertIdx, 0, { role: 'user', content: correctionMsg });
+                  console.log(`[READ FAILURE HANDLER] Injetado re-prompt corretivo para: ${failedPath} -> ${correctPath}`);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // ── Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE ──
     // pelo catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
     //  - porta 3006 (gateway): o model enviado pelo cliente é ignorado; vale o
@@ -613,6 +876,50 @@ export async function chatCompletions(c: Context) {
         );
       }
       body.model = appModel;
+
+      // Aplica parâmetros LLM por aplicação (se configurados)
+      if (gwEntry.temperature !== undefined && body.temperature === undefined) {
+        body.temperature = gwEntry.temperature;
+      }
+      if (gwEntry.top_p !== undefined && body.top_p === undefined) {
+        body.top_p = gwEntry.top_p;
+      }
+      if (gwEntry.maxTokens !== undefined && body.max_tokens === undefined) {
+        body.max_tokens = gwEntry.maxTokens;
+      }
+      if (gwEntry.systemPromptOverride) {
+        // Anexa o system prompt override ao system prompt existente ou cria novo
+        const existingSystem = body.messages.find(m => m.role === 'system');
+        const override = gwEntry.systemPromptOverride.trim();
+        if (existingSystem) {
+          existingSystem.content = (existingSystem.content || '') + '\n\n' + override;
+        } else {
+          body.messages.unshift({ role: 'system', content: override });
+        }
+      } else {
+        // Diretiva autônoma de arquivos padrão (injeção quando app não tem override próprio)
+        // Ensina a IA a NÃO perguntar "onde está o arquivo" e usar ferramentas para localizar.
+        const autonomousFileDirective = `AUTONOMIA DE ARQUIVOS (Padrão do Proxy):
+- NÃO pergunte "onde está o arquivo", "qual o caminho", "me dê o path".
+- O usuário PODE ser leigo e não saber o caminho exato.
+- Use as ferramentas disponíveis (glob, grep, read_file, list_dir) para LOCALIZAR e LER arquivos automaticamente.
+- Se o usuário disser "altere o título do relatório", use glob/grep para achar "relatório", leia, e altere.
+- Assuma que você tem acesso ao sistema de arquivos do projeto. Aja como engenheiro autônomo.
+
+BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
+- Se uma busca por caminho exato falhar (ex: "front_end", "src/components"), NÃO trave no literal.
+- IMEDIATAMENTE use busca por curinga/regex: *front*, *src*, *component*, *dashboard*, etc.
+- Use glob com padrões: **/*front*/**, **/front_end/**, **/*front*/**.
+- Tente variações: front-end, front_end, frontend, front, FE, fe.
+- A busca exata é tentativa 1; a busca por curinga é tentativa 2 AUTOMÁTICA.`;
+
+        const existingSystem = body.messages.find(m => m.role === 'system');
+        if (existingSystem) {
+          existingSystem.content = autonomousFileDirective + '\n\n' + (existingSystem.content || '');
+        } else {
+          body.messages.unshift({ role: 'system', content: autonomousFileDirective });
+        }
+      }
     }
 
     // ── Auto Router: quando modelo="auto" ou "auto-free", seleciona o melhor
@@ -691,8 +998,10 @@ export async function chatCompletions(c: Context) {
     body = applyPhase1Optimizations(body, {
       stripMetadata: economy.stripMetadata,
       compressTools: economy.compressTools,
-    });
-
+});
+ 
+    // Reforço de contexto + limpeza de arquivo ativo: se a última mensagem do usuário
+    // for uma confirmação curta (ex.: "pode implementar", "sim", "faz aí"), o Proxy:
     // Modo agente nativo: o proxy executa as tools de servidor (web_search)
     // num loop agêntico, sem depender da IDE. Só funciona com provedores HTTP
     // (adapters e openai-compatible); deepseek/qwen respondem 400.
@@ -712,7 +1021,12 @@ export async function chatCompletions(c: Context) {
         if (toolList.length === 0) {
           return c.json({ error: { message: 'Nenhuma tool de servidor registrada.' } }, 400);
         }
-        const agentResult = await runServerAgent(body, target);
+        // Passa workspaceRoot para o agente (para normalização de caminhos)
+        const bodyWithWorkspace = {
+          ...body,
+          workspaceRoot: (body as any).workspacePath || (body as any).rootPath || process.cwd(),
+        };
+        const agentResult = await runServerAgent(bodyWithWorkspace, target);
         console.log(
           `[agent] done model=${body.model} turns=${agentResult.turns} tools=[${toolList.map((t) => t.name).join(', ')}] ${Date.now() - startedAt}ms`
         );
@@ -777,16 +1091,28 @@ export async function chatCompletions(c: Context) {
       return res;
     };
 
+    // Prompt Caching: aplica cache_control (Anthropic) ou garante system estável (OpenAI)
+    body = applyPromptCaching(body, target);
+
     if (isQwenProvider(target)) {
-      return await trackSend(autoRouted, async () => maybeStoreCache(await qwenChatCompletions(c, body)));
+      return await trackSend(autoRouted, async () => {
+        const res = await maybeStoreCache(await qwenChatCompletions(c, body));
+        return applyAntiLazyLoop(c, res, body, target);
+      });
     }
 
     if (isGeminiWebProvider(target)) {
-      return await trackSend(autoRouted, async () => maybeStoreCache(await geminiChatCompletions(c, body)));
+      return await trackSend(autoRouted, async () => {
+        const res = await maybeStoreCache(await geminiChatCompletions(c, body));
+        return applyAntiLazyLoop(c, res, body, target);
+      });
     }
 
     if (!isDeepseekProvider(target)) {
-      return await trackSend(autoRouted, async () => maybeStoreCache(await forwardChatCompletions(c, body, target)));
+      return await trackSend(autoRouted, async () => {
+        const res = await maybeStoreCache(await forwardChatCompletions(c, body, target));
+        return applyAntiLazyLoop(c, res, body, target);
+      });
     }
 
     const finalPrompt = buildAgentPrompt(body, { booster: isModelBoosted(body.model) });
@@ -1073,6 +1399,13 @@ export async function chatCompletions(c: Context) {
                         const toolCallObj = robustParseJSON(toolJsonStr);
                         const toolId = 'call_' + uuidv4();
                         
+                        // Normaliza caminhos no tool_call usando o workspace map
+                        const workspaceRootForNormalization = (body as any).workspacePath || (body as any).rootPath || process.cwd();
+                        let normalizedArgs = toolCallObj.arguments;
+                        if (toolCallObj.name && typeof normalizedArgs === 'object' && normalizedArgs !== null) {
+                          normalizedArgs = normalizeToolCallArgs(toolCallObj.name, normalizedArgs, workspaceRootForNormalization);
+                        }
+                        
                         await writeEvent({
                           id: completionId,
                           object: 'chat.completion.chunk',
@@ -1085,9 +1418,9 @@ export async function chatCompletions(c: Context) {
                               type: 'function',
                               function: {
                                 name: toolCallObj.name || '',
-                                arguments: typeof toolCallObj.arguments === 'object'
-                                  ? JSON.stringify(toolCallObj.arguments)
-                                  : String(toolCallObj.arguments || '')
+                                arguments: typeof normalizedArgs === 'object'
+                                  ? JSON.stringify(normalizedArgs)
+                                  : String(normalizedArgs || '')
                               }
                             }]
                           })]

@@ -189,6 +189,14 @@ export async function runServerAgent(
   let reasoning = '';
   const usage = { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };
   const messages: unknown[] = [...(baseBody.messages || [])];
+  
+  // Injeta workspaceRoot na primeira mensagem se não estiver presente
+  if (messages.length > 0 && (baseBody as any).workspaceRoot) {
+    messages[0] = {
+      ...messages[0] as Record<string, unknown>,
+      workspaceRoot: (baseBody as any).workspaceRoot,
+    };
+  }
 
   const content = await runExecutionLoop(
     async (msgs, toolsArr, model) => {

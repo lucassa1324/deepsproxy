@@ -9,6 +9,7 @@
 
 import { OpenAIRequest } from './types.ts';
 import { cacheSystemPrompt, getCachedPrompt } from '../services/optimizations.ts';
+import { injectHighPrecisionProtocol } from './system-prompt.ts';
 
 export interface PromptOptions {
   /**
@@ -228,8 +229,10 @@ export function buildAgentPrompt(body: OpenAIRequest, opts: PromptOptions = {}):
 
   // Cache o system prompt parseado (evita reconstruir a cada request)
   if (systemPrompt) {
+    const enhancedPrompt = injectHighPrecisionProtocol(systemPrompt);
     const cacheKey = `agent_${body.model || 'default'}`;
-    cacheSystemPrompt(cacheKey, systemPrompt);
+    cacheSystemPrompt(cacheKey, enhancedPrompt);
+    return `${enhancedPrompt}\n${prompt}`;
   }
 
   return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;
@@ -281,8 +284,10 @@ export function buildFullHistoryPrompt(body: OpenAIRequest, opts: PromptOptions 
 
   // Cache o system prompt parseado
   if (systemPrompt) {
+    const enhancedPrompt = injectHighPrecisionProtocol(systemPrompt);
     const cacheKey = `fullhist_${body.model || 'default'}`;
-    cacheSystemPrompt(cacheKey, systemPrompt);
+    cacheSystemPrompt(cacheKey, enhancedPrompt);
+    return `${enhancedPrompt}\n${prompt}`;
   }
 
   return systemPrompt ? `${systemPrompt}\n${prompt}` : prompt;

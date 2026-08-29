@@ -34,6 +34,13 @@ export interface GatewayApp {
   model: string;
   enabled: boolean;
   createdAt: number;
+  /** Parâmetros LLM por aplicação (opcionais; se ausentes, usa valores do cliente/padrão). */
+  temperature?: number;
+  top_p?: number;
+  /** System prompt override para esta aplicação (anexado ao system prompt da requisição). */
+  systemPromptOverride?: string;
+  /** Limite de tokens de resposta para esta aplicação. */
+  maxTokens?: number;
 }
 
 export interface AppCreationResult {
@@ -47,6 +54,10 @@ export interface AppUpdatePatch {
   providerId?: string;
   model?: string;
   enabled?: boolean;
+  temperature?: number | null;
+  top_p?: number | null;
+  systemPromptOverride?: string | null;
+  maxTokens?: number | null;
 }
 
 const VIRTUAL_KEY_PREFIX = 'app_';
@@ -171,6 +182,10 @@ export function updateApp(id: string, patch: AppUpdatePatch): GatewayApp | null 
     providerId: patch.providerId !== undefined ? patch.providerId : apps[idx].providerId,
     model: patch.model !== undefined ? String(patch.model).trim() : apps[idx].model,
     enabled: patch.enabled !== undefined ? patch.enabled !== false : apps[idx].enabled,
+    temperature: patch.temperature !== undefined ? (patch.temperature === null ? undefined : patch.temperature) : apps[idx].temperature,
+    top_p: patch.top_p !== undefined ? (patch.top_p === null ? undefined : patch.top_p) : apps[idx].top_p,
+    systemPromptOverride: patch.systemPromptOverride !== undefined ? (patch.systemPromptOverride === null ? undefined : patch.systemPromptOverride) : apps[idx].systemPromptOverride,
+    maxTokens: patch.maxTokens !== undefined ? (patch.maxTokens === null ? undefined : patch.maxTokens) : apps[idx].maxTokens,
   };
   apps[idx] = next;
   appsCache = apps;

@@ -19,6 +19,7 @@ import { defaultBaseUrl, isAdapterType, normalizeModelId } from './config.ts';
 import { isAdapterProvider, fetchProviderModels, dispatchAdapterChat } from './adapters/index.ts';
 import { shouldFallback as localShouldFallback, getLocalInstance, getFallbackConfig } from './local-discovery.ts';
 import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
+import { injectHighPrecisionProtocol, injectProtocolIntoMessages } from '../utils/system-prompt.ts';
 import { isModelBoosted } from './booster.ts';
 import { OpenAIRequest } from '../utils/types.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
@@ -160,7 +161,10 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
 async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Provider) {
   const isStream = body.stream ?? false;
 
-  const payload: any = { ...body, stream: isStream };
+  // Injeta HIGH-PRECISION AGENT PROTOCOL nas mensagens (mesmo sem tools)
+  const messages = injectProtocolIntoMessages(body.messages || []);
+
+  const payload: any = { ...body, messages, stream: isStream };
   const model = effectiveModel(provider, body);
   if (model) {
     payload.model = model;
@@ -267,9 +271,13 @@ function buildAgenticMessagesWithImages(body: OpenAIRequest): any[] {
 async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provider) {
   const isStream = body.stream ?? false;
   const hasImages = hasImageParts(body.messages || []);
-  const messages = hasImages
+  let messages = hasImages
     ? buildAgenticMessagesWithImages(body)
     : [{ role: 'user', content: buildAgentPrompt(body, { booster: isModelBoosted(body.model) }) }];
+
+  // Injeta HIGH-PRECISION AGENT PROTOCOL no system message
+  messages = injectProtocolIntoMessages(messages);
+
   const model = effectiveModel(provider, body);
 
   const payload: any = { ...body, messages, stream: isStream };

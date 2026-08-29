@@ -76,6 +76,7 @@ import { getModelCatalog, resolveModelEntry } from '../services/modelCatalog.ts'
 import { getTokenEconomy, updateTokenEconomy } from '../services/token-economy.ts';
 import { getBoosterSettings, updateBoosterSettings, toggleModelBooster, isModelBoosted } from '../services/booster.ts';
 import { APP_VERSION, APP_TAG } from '../version.ts';
+import { buildAgentPrompt } from '../utils/prompt.ts';
 export const dashboard = new Hono();
 
 // Incrementado quando o registro de provedores muda. As páginas (chat e
@@ -778,6 +779,10 @@ dashboard.patch('/api/apps/:id', async (c) => {
       name: body.name,
       model: body.model,
       enabled: body.enabled,
+      temperature: body.temperature,
+      top_p: body.top_p,
+      systemPromptOverride: body.systemPromptOverride,
+      maxTokens: body.maxTokens,
     });
     if (!app) return c.json({ ok: false, error: 'Aplicação não encontrada.' }, 404);
     const registry = resolveRegistry(c.req.header('Cookie'));
@@ -802,6 +807,281 @@ dashboard.post('/api/apps/:id/key', async (c) => {
   const registry = resolveRegistry(c.req.header('Cookie'));
   return c.json({ ok: true, app: await enrichApp(result.app, registry), apiKey: result.apiKey });
 });
+
+// ── AI Config Wizard: configura automaticamente a app baseada na descrição do uso ──
+dashboard.post('/api/apps/:id/ai-config', async (c) => {
+  try {
+    const id = c.req.param('id');
+    const body: any = await c.req.json().catch(() => ({}));
+    const description = String(body.description || '').trim();
+    if (!description) {
+      return c.json({ ok: false, error: 'Descreva para que vai usar esta aplicação.' }, 400);
+    }
+
+    const app = getAppById(id);
+    if (!app) return c.json({ ok: false, error: 'Aplicação não encontrada.' }, 404);
+
+    const registry = resolveRegistry(c.req.header('Cookie'));
+    const enabled = enabledProviders(registry);
+    const catalog = await getModelCatalog(registry);
+
+    // Usa o modelo atual da app ou o modelo principal do registry
+    const currentModel = app.model || '';
+    const modelEntry = currentModel ? await resolveModelEntry(currentModel, registry) : null;
+    const providerType = modelEntry?.providerType || (enabled[0]?.type || 'openai-compatible');
+
+    // Prompt para a IA gerar a configuração ideal
+    const systemPrompt = `
+Você é um especialista em configuração de modelos LLM para o DeepsProxy.
+Sua tarefa: receber a descrição do caso de uso e retornar um JSON com a configuração ideal
+para aquela aplicação, incluindo parâmetros LLM, economia de tokens e booster.
+
+CONTEXTO DO SISTEMA:
+- Provedor atual: ${providerType}
+- Modelo atual: ${currentModel || 'auto'}
+- Modelos disponíveis: ${catalog.map(m => m.id).slice(0, 20).join(', ')}
+
+CONFIGURAÇÕES POSSÍVEIS (parâmetros LLM por aplicação):
+- temperature: 0.0 a 2.0 (controla aleatoriedade; 0.1 = determinístico, 0.7 = equilibrado, 1.0+ = criativo)
+- top_p: 0.0 a 1.0 (nucleus sampling; 0.95 = padrão, 0.1 = muito focado)
+- systemPromptOverride: string (instruções extras anexadas ao system prompt da requisição)
+- maxTokens: número (limite de tokens na resposta; 0 = sem limite/usa padrão do modelo)
+
+CONFIGURAÇÕES POSSÍVEIS (token-economy):
+- enabled: master toggle (true/false)
+- cachePrefix: prompt caching (prefixo estável) — sem impacto na qualidade, economiza 10-25% no Anthropic/Gemini
+- truncateHistory: trunca histórico antigo — alto risco (pode perder contexto)
+- summarizeHistory: resume histórico descartado — médio risco
+- stripReasoning: remove thinking do histórico — baixo risco, economiza muito em modelos de raciocínio
+- truncateToolOutput: limita saída de tools a 4k chars — médio risco
+- responseCache: cache de respostas idênticas (60s) — sem impacto
+- tokenEstimation: log de tokens no servidor — apenas informativo
+- smartTruncation: trunca por importância — médio risco
+- dedupConsecutive: remove duplicatas exatas — baixo risco
+- maxContextTokens: janela máxima (default 56000)
+
+CONFIGURAÇÕES POSSÍVEIS (booster - para modelos fracos):
+- enabled: master toggle
+- promptReinforcement: injeta regras + exemplo de tool_call
+- correctiveLoop: loop corretivo quando tool falha
+- tolerantParser: parser que repara JSON quebrado
+- models: array de ids de modelos que recebem booster
+
+REGRAS DE DECISÃO (parâmetros LLM):
+1. PROGRAMAÇÃO/AGENTE DE CÓDIGO: temperature=0.1, top_p=0.95, systemPromptOverride com instruções de precisão, maxTokens=8000
+2. CHAT/CONVERSAÇÃO GERAL: temperature=0.7, top_p=0.95, systemPromptOverride vazio, maxTokens=4000
+3. ANÁLISE DE DADOS/ARQUIVOS GRANDES: temperature=0.2, top_p=0.9, systemPromptOverride focado em estrutura, maxTokens=8000
+4. ESCRITA CRIATIVA/MARKETING: temperature=0.9, top_p=0.95, systemPromptOverride para estilo, maxTokens=4000
+5. RACIOCÍNIO COMPLEXO/MATEMÁTICA: temperature=0.1, top_p=0.9, systemPromptOverride para chain-of-thought, maxTokens=16000
+6. MODELOS DE RACIOCÍNIO (deepseek-thinking, qwen-max): temperature=0.1, stripReasoning=true obrigatório
+
+REGRAS DE DECISÃO (token-economy/booster):
+1. PROGRAMAÇÃO/AGENTE DE CÓDIGO: stripReasoning=true, truncateToolOutput=true, cachePrefix=true, responseCache=false, booster habilitado se modelo fraco
+2. CHAT/CONVERSAÇÃO GERAL: cachePrefix=true, responseCache=true, truncateHistory=false
+3. ANÁLISE DE DADOS/ARQUIVOS GRANDES: truncateHistory=true, summarizeHistory=true, truncateToolOutput=true
+4. MODELO DE RACIOCÍNIO (deepseek-thinking, qwen-max, etc): stripReasoning=true obrigatório
+5. MODELOS LOCAIS PEQUENOS (<=7B): truncateHistory=true, truncateToolOutput=true, smartTruncation=true
+6. MODELOS COM CONTEXTO GRANDE (Gemini 1M, Claude 200k): desligar truncateHistory
+7. USE CASE "AGENTE AUTÔNOMO": booster.enabled=true com promptReinforcement+correctiveLoop+tolerantParser
+
+RETORNE APENAS JSON VÁLIDO:
+{
+  "llmParams": {
+    "temperature": 0.1,
+    "top_p": 0.95,
+    "systemPromptOverride": "Instruções extras para o caso de uso...",
+    "maxTokens": 8000
+  },
+  "tokenEconomy": { ... },
+  "booster": { ... },
+  "recommendedModel": "id_do_modelo_recomendado_ou_vazio",
+  "reasoning": "explicação breve em português"
+}
+    `.trim();
+
+    const userPrompt = `Caso de uso: ${description}`;
+
+    // Chama o modelo ativo para gerar a configuração
+    const primary = resolveActiveProvider(c.req.header('Cookie'));
+    let configJson = null;
+
+    // Tenta usar o provedor ativo (precisa ser HTTP, não browser)
+    if (primary.type !== 'deepseek' && primary.type !== 'qwen' && primary.type !== 'gemini-web') {
+      try {
+        const payload = {
+          model: primary.model || 'default',
+          stream: false,
+          temperature: 0.1,
+          max_tokens: 800,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        };
+
+        let resp: Response | null = null;
+        if (primary.type === 'gemini' || primary.type === 'anthropic' || primary.type === 'ollama') {
+          const { dispatchAdapterChat } = await import('../services/adapters/index.ts');
+          resp = await dispatchAdapterChat(payload, primary);
+        } else if (primary.type === 'openai-compatible' && primary.baseUrl && primary.apiKey) {
+          const { optimizedFetch } = await import('../services/optimizations.ts');
+          resp = await optimizedFetch(`${primary.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${primary.apiKey}` },
+            body: JSON.stringify(payload)
+          });
+        }
+
+        if (resp && resp.ok) {
+          const data = await resp.json();
+          const content = data.choices?.[0]?.message?.content || '';
+          try {
+            configJson = JSON.parse(content);
+          } catch {
+            // Tenta extrair JSON do texto
+            const match = content.match(/\{[\s\S]*\}/);
+            if (match) configJson = JSON.parse(match[0]);
+          }
+        }
+      } catch (e) {
+        console.warn('[ai-config] Falha ao chamar LLM para config, usando fallback:', (e as Error).message);
+      }
+    }
+
+    // Fallback heurístico se a IA falhou
+    if (!configJson) {
+      configJson = generateHeuristicConfig(description, providerType, currentModel, catalog);
+    }
+
+    // Aplica a configuração no servidor (token-economy global)
+    if (configJson.tokenEconomy) {
+      await updateTokenEconomy(configJson.tokenEconomy);
+    }
+
+    // Aplica booster se recomendado
+    if (configJson.booster && configJson.booster.enabled) {
+      const { updateBoosterSettings } = await import('../services/booster.ts');
+      await updateBoosterSettings(configJson.booster);
+    }
+
+    // Se recomendou trocar de modelo, atualiza a app
+    if (configJson.recommendedModel && configJson.recommendedModel !== currentModel) {
+      const entry = await resolveModelEntry(configJson.recommendedModel, registry);
+      if (entry) {
+        const updated = updateApp(id, { model: configJson.recommendedModel });
+        console.log(`[ai-config] Modelo da app ${id} alterado para ${configJson.recommendedModel}`);
+      }
+    }
+
+    // Aplica parâmetros LLM por aplicação
+    if (configJson.llmParams) {
+      const { temperature, top_p, systemPromptOverride, maxTokens } = configJson.llmParams;
+      const updated = updateApp(id, { temperature, top_p, systemPromptOverride, maxTokens });
+      if (updated) {
+        console.log(`[ai-config] Parâmetros LLM da app ${id} atualizados:`, configJson.llmParams);
+      }
+    }
+
+    return c.json({ ok: true, config: configJson, app: await enrichApp(app, registry) });
+  } catch (e: any) {
+    console.error('[ai-config] Erro:', e);
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+function generateHeuristicConfig(description: string, providerType: string, currentModel: string, catalog: any[]): any {
+  const desc = description.toLowerCase();
+  const isCoding = /programa|c[oó]digo|desenvolv|agent|aut[oô]nom|refator|debug|bug|arquivo|edit|write|read|file|code|coding/i.test(desc);
+  const isChat = /chat|conversa|atendimento|suporte|assistente|geral/i.test(desc);
+  const isData = /dados|an[aá]lise|relat[oó]rio|processar|arquivo grande|log|csv|json|dataset/i.test(desc);
+  const isCreative = /criativ|escrita|texto|hist[oó]ria|poesia|marketing|copy|redes sociais/i.test(desc);
+  const isReasoning = /racioc[io]nio|l[oó]gica|matem[aá]tica|complexo|dif[íi]cil|pensar|thinking/i.test(desc);
+  const isLocalSmall = /local|ollama|lm studio|pequen|3b|7b|1b/i.test(desc) || catalog.some(m => /:3b|:7b|:1b/.test(m.id) && m.id === currentModel);
+
+  const tokenEconomy: any = {
+    enabled: true,
+    cachePrefix: true,
+    responseCache: !isCoding, // agentes de código não cacheiam respostas
+    tokenEstimation: true,
+    maxContextTokens: 56000,
+  };
+
+  const booster: any = { enabled: false };
+
+  if (isCoding) {
+    tokenEconomy.stripReasoning = true;
+    tokenEconomy.truncateToolOutput = true;
+    tokenEconomy.truncateHistory = false;
+    tokenEconomy.summarizeHistory = false;
+    tokenEconomy.smartTruncation = false;
+    tokenEconomy.dedupConsecutive = true;
+    // Booster para agentes de código com modelos fracos
+    if (isLocalSmall || /qwen|codellama|deepseek-coder|starcoder/i.test(currentModel)) {
+      booster.enabled = true;
+      booster.promptReinforcement = true;
+      booster.correctiveLoop = true;
+      booster.tolerantParser = true;
+      booster.models = ['*'];
+    }
+  } else if (isData) {
+    tokenEconomy.truncateHistory = true;
+    tokenEconomy.summarizeHistory = true;
+    tokenEconomy.truncateToolOutput = true;
+    tokenEconomy.stripReasoning = true;
+    tokenEconomy.smartTruncation = true;
+    tokenEconomy.dedupConsecutive = true;
+  } else if (isCreative) {
+    tokenEconomy.truncateHistory = false;
+    tokenEconomy.stripReasoning = false;
+    tokenEconomy.responseCache = false;
+  } else if (isReasoning) {
+    tokenEconomy.stripReasoning = true;
+    tokenEconomy.cachePrefix = true;
+  } else {
+    // Chat geral
+    tokenEconomy.truncateHistory = false;
+    tokenEconomy.stripReasoning = false;
+    tokenEconomy.responseCache = true;
+  }
+
+  // Ajuste por tipo de provedor/modelo
+  if (/gemini-2\.5|gemini-3|claude-.*-4|claude-opus/.test(currentModel)) {
+    tokenEconomy.truncateHistory = false;
+    tokenEconomy.maxContextTokens = 200000;
+  }
+  if (/deepseek-thinking/.test(currentModel)) {
+    tokenEconomy.stripReasoning = true;
+    tokenEconomy.maxContextTokens = 64000;
+  }
+
+  let recommendedModel = '';
+  if (isCoding && !/coder|coding|code/.test(currentModel)) {
+    const codeModel = catalog.find(m => /coder|coding|code/.test(m.id));
+    if (codeModel) recommendedModel = codeModel.id;
+  }
+
+  // Parâmetros LLM por caso de uso
+  let llmParams: any = { temperature: 0.7, top_p: 0.95, systemPromptOverride: '', maxTokens: 4000 };
+  if (isCoding) {
+    llmParams = { temperature: 0.1, top_p: 0.95, systemPromptOverride: 'Responda de forma direta, precisa e técnica. Priorize correção e completude do código. Evite explicações desnecessárias.', maxTokens: 8000 };
+  } else if (isData) {
+    llmParams = { temperature: 0.2, top_p: 0.9, systemPromptOverride: 'Foque em estrutura, precisão e completude dos dados. Retorne formatos estruturados (JSON, tabelas) quando apropriado.', maxTokens: 8000 };
+  } else if (isCreative) {
+    llmParams = { temperature: 0.9, top_p: 0.95, systemPromptOverride: 'Seja criativo, variado e expressivo. Use linguagem rica e envolvente.', maxTokens: 4000 };
+  } else if (isReasoning) {
+    llmParams = { temperature: 0.1, top_p: 0.9, systemPromptOverride: 'Use raciocínio passo a passo (chain-of-thought). Mostre o processo lógico antes da conclusão.', maxTokens: 16000 };
+  } else {
+    llmParams = { temperature: 0.7, top_p: 0.95, systemPromptOverride: '', maxTokens: 4000 };
+  }
+
+  return {
+    llmParams,
+    tokenEconomy,
+    booster,
+    recommendedModel,
+    reasoning: `Configuração heurística baseada em: ${isCoding ? 'programação/agente' : isData ? 'análise de dados' : isCreative ? 'escrita criativa' : isReasoning ? 'raciocínio complexo' : 'chat geral'}${isLocalSmall ? ' + modelo local pequeno' : ''}.`
+  };
+}
 
 // ── FASE 4: Local Models ──────────────────────────────────────────────────
 

@@ -82,6 +82,10 @@ export interface OpenAIRequest {
   max_tokens?: number;
   /** Modo agente nativo: o proxy executa as tools de servidor (ex.: web_search) */
   agent?: boolean;
+  /** Habilita prompt caching (Anthropic: cache_control; OpenAI: automático >1024 tokens). Default: true */
+  enablePromptCache?: boolean;
+  /** Headers extras para provedores específicos (ex.: anthropic-beta para prompt caching) */
+  extraHeaders?: Record<string, string>;
 }
 
 // --- Response Types ---

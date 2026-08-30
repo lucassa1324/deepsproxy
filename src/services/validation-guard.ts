@@ -144,6 +144,7 @@ const PASSIVE_PATTERNS = [
   /loop.?breaker/i,
   /n[ãa]o\s+foi\s+poss[ií]vel\s+(localizar|encontrar|ler)/i,
   /me\s+passe\s+o\s+(caminho|arquivo|c[oó]digo)/i,
+  /ocorreu\s+um\s+erro\s+ao\s+tentar/i,
 ];
 
 /**
@@ -158,6 +159,20 @@ export function isPassiveResponse(content: string, toolCalls: MessageToolCall[] 
   if (lower.length === 0) return false;
   
   return PASSIVE_PATTERNS.some(p => p.test(lower));
+}
+
+/**
+ * Gera mensagem de emergência para forçar o modelo a usar o WORKSPACE MAP
+ * quando o Loop-Breaker é acionado (em vez de devolver desculpa ao usuário)
+ */
+export function handleLoopBreakerTriggered(): { role: 'user'; content: string } {
+  return {
+    role: 'user',
+    content: `[PROXY REJECTED - AUTOMATED CORRECTION]: Você está em um loop de buscas sem sucesso. 
+Consulte o [WORKSPACE MAP] injetado no início da conversa. 
+Os caminhos de arquivo possuem o prefixo da subpasta (ex: 'github-edit-view/src/lib/interaction-math.ts'). 
+Abra o arquivo diretamente com read_file e execute a alteração solicitada imediatamente sem fazer perguntas.`
+  };
 }
 
 /**

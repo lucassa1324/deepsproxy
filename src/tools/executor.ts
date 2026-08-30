@@ -10,7 +10,7 @@ import type { ParsedToolCall, ToolCallResult, ToolContext } from './types.ts';
 import { SchemaValidationError } from './schema.ts';
 import { registry } from './registry.ts';
 import { robustParseJSON } from '../utils/robust-json.ts';
-import { normalizeToolCallArgs } from '../services/path-normalizer.ts';
+import { normalizeToolCallArgs, interceptToolResult, getPathIndex } from '../services/path-normalizer.ts';
 
 export interface ExecutionLoopConfig {
   maxTurns?: number;
@@ -148,27 +148,37 @@ export async function executeToolCalls(
       // Normaliza caminhos nos argumentos antes de executar
       const normalizedArgs = normalizeToolCallArgs(tc.name, tc.arguments, workspaceRoot);
 
-      const result = await registry.execute(tc.name, normalizedArgs, context);
-      
-      // Tratamento de retorno nulo/vazio: injeta erro estruturado para a IA
-      // não assumir que o arquivo está limpo ou a operação "passou"
-      const isEmptyOrNull = result === null || result === undefined || 
-        (typeof result === 'string' && result.trim() === '');
-      
-      const finalResult = isEmptyOrNull
-        ? JSON.stringify({
-            system_error: `A ferramenta "${tc.name}" retornou resultado vazio ou nulo. ` +
-              `Isso geralmente indica: arquivo não encontrado, sem permissão de leitura, ` +
-              `ou a operação não produziu saída. Verifique o caminho e parâmetros.`
-          })
-        : result;
+const result = await registry.execute(tc.name, normalizedArgs, context);
+       
+       // Tratamento de retorno nulo/vazio: injeta erro estruturado para a IA
+       // não assumir que o arquivo está limpo ou a operação "passou"
+       const isEmptyOrNull = result === null || result === undefined || 
+         (typeof result === 'string' && result.trim() === '');
+       
+       let finalResult = isEmptyOrNull
+         ? JSON.stringify({
+             system_error: `A ferramenta "${tc.name}" retornou resultado vazio ou nulo. ` +
+               `Isso geralmente indica: arquivo não encontrado, sem permissão de leitura, ` +
+               `ou a operação não produziu saída. Verifique o caminho e parâmetros.`
+           })
+         : result;
 
-      results.push({
-        toolCallId: tc.id,
-        name: tc.name,
-        result: finalResult,
-        isError: isEmptyOrNull, // marca como erro para o modelo tratar como falha
-      });
+       // Intercepta falha de leitura e injeta correção com caminho do workspace map
+       if (toolCalls.length > 0) {
+         const workspaceRoot = (context as any).workspaceRoot || process.cwd();
+         const pathIndex = getPathIndex(workspaceRoot);
+         const indexedFiles = Array.from(pathIndex.values());
+finalResult = interceptToolResult(tc.name, finalResult, 
+            String(normalizedArgs.path || normalizedArgs.target_file || normalizedArgs.file_path || normalizedArgs.file || ''), 
+            indexedFiles);
+       }
+
+       results.push({
+         toolCallId: tc.id,
+         name: tc.name,
+         result: finalResult,
+         isError: isEmptyOrNull || (typeof finalResult === 'string' && finalResult.includes('PROXY SYSTEM CORRECTION')), // marca como erro para o modelo tratar como falha
+       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       const isValidation = err instanceof SchemaValidationError;

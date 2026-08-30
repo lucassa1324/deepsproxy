@@ -203,3 +203,89 @@ export function normalizeToolCalls(
     arguments: normalizeToolCallArgs(tc.name, tc.arguments, workspaceRoot),
   }));
 }
+
+/**
+ * Normaliza argumentos de tool_call cruzando com o índice de arquivos do workspace
+ * Assinatura alternativa que recebe o toolCall completo e array de arquivos indexados
+ */
+export function normalizeToolCallArgsByIndex(
+  toolCall: { name: string; arguments: Record<string, unknown> },
+  indexedFiles: string[]
+): { name: string; arguments: Record<string, unknown> } {
+  const fileTools = ['read_file', 'edit_file', 'write_file', 'read_file_content', 'apply_patch', 'str_replace_editor'];
+
+  if (!fileTools.includes(toolCall.name.toLowerCase())) {
+    return toolCall;
+  }
+
+  const rawPath = toolCall.arguments?.path || toolCall.arguments?.target_file || toolCall.arguments?.file_path || toolCall.arguments?.file;
+  if (!rawPath || typeof rawPath !== 'string') return toolCall;
+
+  const normalizedRaw = rawPath.replace(/\\/g, '/');
+
+  // 1. Busca por correspondência exata no final do caminho (Sufixo Exato)
+  let matched = indexedFiles.find(file => {
+    const normFile = file.replace(/\\/g, '/');
+    return normFile.endsWith(normalizedRaw);
+  });
+
+  // 2. Se não encontrou, busca pelo Basename (apenas o nome do arquivo)
+  if (!matched) {
+    const baseName = normalizedRaw.split('/').pop() || normalizedRaw;
+    matched = indexedFiles.find(file => {
+      const normFile = file.replace(/\\/g, '/');
+      return normFile.split('/').pop() === baseName;
+    });
+  }
+
+  // 3. Se ainda não encontrou, busca por substring (contém o caminho)
+  if (!matched) {
+    matched = indexedFiles.find(file => {
+      const normFile = file.replace(/\\/g, '/');
+      return normFile.includes(normalizedRaw);
+    });
+  }
+
+  // Se encontrou no mapa do workspace, sobrescreve o argumento da Tool Call
+  if (matched) {
+    const normalized = { ...toolCall.arguments };
+    if (normalized.path) normalized.path = matched;
+    if (normalized.target_file) normalized.target_file = matched;
+    if (normalized.file_path) normalized.file_path = matched;
+    if (normalized.file) normalized.file = matched;
+    return { ...toolCall, arguments: normalized };
+  }
+
+  return toolCall;
+}
+
+/**
+ * Intercepta resultado de ferramenta e injeta correção se falha de leitura
+ */
+export function interceptToolResult(
+  toolName: string,
+  result: any,
+  targetPath: string,
+  indexedFiles: string[]
+): any {
+  const isReadError = typeof result === 'string' && 
+    (result.includes('Failed to read') || 
+     result.includes('Error:') || 
+     result.includes('ENOENT') ||
+     result.includes('not found') ||
+     result.includes('arquivo não encontrado') ||
+     result.includes('file not found'));
+
+  if (toolName === 'read_file' && isReadError) {
+    const baseName = targetPath.split('/').pop() || targetPath;
+    const candidate = indexedFiles.find(f => f.includes(baseName));
+
+    if (candidate) {
+      return `[PROXY SYSTEM CORRECTION]: Não foi possível ler '${targetPath}'. ` +
+             `O caminho absoluto/relativo correto registrado no mapa do projeto é: '${candidate}'. ` +
+             `Tente executar a ferramenta read_file usando exatamente esse caminho.`;
+    }
+  }
+
+  return result;
+}

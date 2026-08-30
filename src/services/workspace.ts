@@ -91,25 +91,34 @@ export function resolveProjectRoot(startDir: string): string {
 
 /**
  * Resolve a raiz do workspace considerando prioridades:
- * 1. Variável de ambiente TARGET_WORKSPACE_PATH
- * 2. Caminho passado explicitamente (projectRoot)
- * 3. Busca ascendente a partir de process.cwd()
+ * 1. Variável de ambiente TARGET_WORKSPACE_PATH (compatibilidade)
+ * 2. Variável de ambiente USER_WORKSPACE_PATH (caminho do projeto do usuário)
+ * 3. Caminho passado explicitamente (projectRoot via request body)
+ * 4. Busca ascendente a partir de process.cwd() (fallback - proxy directory)
  */
 export function getResolvedWorkspaceRoot(explicitPath?: string): string {
-  // 1. Variável de ambiente tem prioridade máxima
-  const envPath = process.env.TARGET_WORKSPACE_PATH;
-  if (envPath && existsSync(envPath)) {
-    console.log(`[PROXY WORKSPACE]: Usando TARGET_WORKSPACE_PATH: ${envPath}`);
-    return resolve(envPath);
+  // 1. TARGET_WORKSPACE_PATH (compatibilidade)
+  const targetEnvPath = process.env.TARGET_WORKSPACE_PATH;
+  if (targetEnvPath && existsSync(targetEnvPath)) {
+    console.log(`[PROXY WORKSPACE]: Usando TARGET_WORKSPACE_PATH: ${targetEnvPath}`);
+    return resolve(targetEnvPath);
   }
 
-  // 2. Caminho explícito passado (ex: via body da requisição)
+  // 2. USER_WORKSPACE_PATH - caminho do projeto do usuário (configurável)
+  const userEnvPath = process.env.USER_WORKSPACE_PATH;
+  if (userEnvPath && existsSync(userEnvPath)) {
+    console.log(`[PROXY WORKSPACE]: Usando USER_WORKSPACE_PATH: ${userEnvPath}`);
+    return resolve(userEnvPath);
+  }
+
+  // 3. Caminho explícito passado (ex: via body da requisição)
   if (explicitPath && existsSync(explicitPath)) {
     console.log(`[PROXY WORKSPACE]: Usando caminho explícito: ${explicitPath}`);
     return resolve(explicitPath);
   }
 
-  // 3. Busca ascendente a partir do cwd
+  // 4. Busca ascendente a partir do cwd (fallback - diretório do proxy)
+  console.log(`[PROXY WORKSPACE]: Fallback para busca ascendente a partir de ${process.cwd()}`);
   return resolveProjectRoot(process.cwd());
 }
 

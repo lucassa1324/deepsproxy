@@ -36,7 +36,7 @@ import {
   buildGenericRejection,
   buildNullEditRejection,
 } from '../services/validation-guard.ts';
-import { getWorkspaceMap, clearWorkspaceCache } from '../services/workspace.ts';
+import { getWorkspaceMap, clearWorkspaceCache, getResolvedWorkspaceRoot } from '../services/workspace.ts';
 import { normalizeToolCallArgs, clearPathIndexCache, getPathIndex, normalizePath } from '../services/path-normalizer.ts';
 import { applyPromptCaching } from '../services/prompt-cache.ts';
 import {
@@ -245,7 +245,7 @@ async function handleDeepSeekNonStreaming(
   const promptTokens = Math.ceil(finalPrompt.length / 3.5);
 
   // Normaliza caminhos nos tool_calls antes de devolver ao cliente
-  const workspaceRootForNormalization = (body as any).workspacePath || (body as any).rootPath || process.cwd();
+  const workspaceRootForNormalization = getResolvedWorkspaceRoot((body as any).workspacePath || (body as any).rootPath);
   const normalizedToolCalls = toolCalls.map((tc) => {
     let normalizedArgs = tc.arguments;
     if (typeof normalizedArgs === 'object' && normalizedArgs !== null) {
@@ -784,10 +784,13 @@ export async function chatCompletions(c: Context) {
       }
     }
 
+    // Resolve workspace root for path normalization (uses project markers like package.json)
+    const workspaceRootForNormalization = getResolvedWorkspaceRoot(explicitWorkspaceRoot);
+
     // ─── Tratamento de Falha de Leitura (Re-Prompt Transparente) ───
     // Se a mensagem anterior contém resultado de tool com erro de leitura,
     // injeta mensagem corretiva com o caminho correto do workspace map
-    const workspaceRootForCorrection = explicitWorkspaceRoot || process.cwd();
+    const workspaceRootForCorrection = workspaceRootForNormalization;
     const pathIndex = getPathIndex(workspaceRootForCorrection);
     const failedToolResults = body.messages.filter((m: any) => 
       m.role === 'tool' && typeof m.content === 'string' && 
@@ -1024,7 +1027,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
         // Passa workspaceRoot para o agente (para normalização de caminhos)
         const bodyWithWorkspace = {
           ...body,
-          workspaceRoot: (body as any).workspacePath || (body as any).rootPath || process.cwd(),
+          workspaceRoot: workspaceRootForNormalization,
         };
         const agentResult = await runServerAgent(bodyWithWorkspace, target);
         console.log(
@@ -1400,7 +1403,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
                         const toolId = 'call_' + uuidv4();
                         
                         // Normaliza caminhos no tool_call usando o workspace map
-                        const workspaceRootForNormalization = (body as any).workspacePath || (body as any).rootPath || process.cwd();
+                        const workspaceRootForNormalization = getResolvedWorkspaceRoot((body as any).workspacePath || (body as any).rootPath);
                         let normalizedArgs = toolCallObj.arguments;
                         if (toolCallObj.name && typeof normalizedArgs === 'object' && normalizedArgs !== null) {
                           normalizedArgs = normalizeToolCallArgs(toolCallObj.name, normalizedArgs, workspaceRootForNormalization);

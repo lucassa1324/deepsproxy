@@ -150,9 +150,10 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
       502
     );
   }
-  if (hasTools(body)) {
-    return forwardAgentic(c, body, provider);
-  }
+  // Desativado: tools/function calling - sempre usa passthrough direto
+  // if (hasTools(body)) {
+  //   return forwardAgentic(c, body, provider);
+  // }
   return forwardPassthrough(c, body, provider);
 }
 
@@ -162,9 +163,15 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
   const isStream = body.stream ?? false;
 
   // Injeta HIGH-PRECISION AGENT PROTOCOL nas mensagens (mesmo sem tools)
-  const messages = injectProtocolIntoMessages(body.messages || []);
+  // DESATIVADO: roteador puro sem injeção de protocol
+  // const messages = injectProtocolIntoMessages(body.messages || []);
+  const messages = body.messages || [];
 
   const payload: any = { ...body, messages, stream: isStream };
+  delete payload._eco;
+  // DESATIVADO: não encaminha tools para o upstream (roteador puro)
+  delete payload.tools;
+  delete payload.tool_choice;
   const model = effectiveModel(provider, body);
   if (model) {
     payload.model = model;
@@ -176,6 +183,8 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
     ? provider.baseUrl.slice(0, -1)
     : provider.baseUrl;
 
+  console.log(`[local] forward passthrough → ${provider.name} (${provider.type}) model=${model || body.model} stream=${isStream}`);
+
   const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: buildHeaders(provider),
@@ -184,6 +193,7 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
+    console.error(`[local] upstream error ${provider.name}: HTTP ${response.status} - ${errText}`);
     return c.json(
       { error: { message: `Upstream ${provider.baseUrl} respondeu ${response.status}: ${errText}` } },
       502
@@ -281,6 +291,7 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
   const model = effectiveModel(provider, body);
 
   const payload: any = { ...body, messages, stream: isStream };
+  delete payload._eco;
   if (model) {
     payload.model = model;
   } else {
@@ -293,6 +304,8 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
     ? provider.baseUrl.slice(0, -1)
     : provider.baseUrl;
 
+  console.log(`[local] forward agentic → ${provider.name} (${provider.type}) model=${model || body.model} stream=${isStream}`);
+
   const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
     method: 'POST',
     headers: buildHeaders(provider),
@@ -301,6 +314,7 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
+    console.error(`[local] upstream error ${provider.name}: HTTP ${response.status} - ${errText}`);
     return c.json(
       { error: { message: `Upstream ${provider.baseUrl} respondeu ${response.status}: ${errText}` } },
       502
@@ -524,7 +538,7 @@ export async function fetchModels(provider: Provider, force = false): Promise<an
     return cached.models;
   }
   try {
-    const models = await fetchModelsFrom(provider.baseUrl, provider.apiKey, 5000);
+    const models = await fetchModelsFrom(provider.baseUrl, provider.apiKey, 3000);
     modelsCache.set(provider.id, { models, ts: Date.now() });
     return models;
   } catch {

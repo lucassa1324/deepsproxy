@@ -474,7 +474,12 @@ export class GeminiAdapter implements ProviderAdapter {
     if (!apiKey) return null;
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     try {
-      const res = await optimizedFetch(`${baseUrl}/models?key=${encodeURIComponent(apiKey)}`);
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await optimizedFetch(`${baseUrl}/models?key=${encodeURIComponent(apiKey)}`, {
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
       if (!res.ok) return null;
       const data: any = await res.json();
       const list = Array.isArray(data?.models) ? data.models : [];

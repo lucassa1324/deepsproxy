@@ -382,14 +382,18 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
     url = `${target.baseUrl}/embeddings`;
   }
 
+  console.log(`[embeddings] forward → ${target.name} (${target.type}) model=${model}`);
+
   let resp: Response;
   try {
     resp = await optimizedFetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
   } catch (err: any) {
+    console.error(`[embeddings] connection error ${target.name}: ${err?.message || String(err)}`);
     return c.json({ error: { message: `Falha ao conectar com ${target.name}: ${err?.message || String(err)}` } }, 502);
   }
   if (!resp.ok) {
     const errText = await resp.text().catch(() => '');
+    console.error(`[embeddings] upstream error ${target.name}: HTTP ${resp.status} - ${errText}`);
     return c.json(
       { error: { message: `Upstream ${target.name} respondeu ${resp.status}: ${errText.slice(0, 300)}` } },
       502
@@ -429,9 +433,11 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
   const max = Math.min(Math.max(Number(body.max_results) || 5, 1), 10);
 
   try {
+    console.log(`[web-search] query="${query}" max=${max}`);
     const results = await webSearch(query, max);
     return c.json({ query, results });
   } catch (err: any) {
+    console.error(`[web-search] error: ${err?.message || String(err)}`);
     return c.json({ error: { message: err?.message || String(err) } }, 502);
   }
   });

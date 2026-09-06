@@ -170,9 +170,11 @@ test('local provider: passthrough preserves image_url content parts (vision)', a
     const data = await res.json();
     assert.strictEqual(data.choices[0].message.content, 'Vejo a imagem.');
 
-    assert.ok(Array.isArray(capturedBody.messages[0].content), 'content must stay an array');
-    assert.strictEqual(capturedBody.messages[0].content[1].type, 'image_url');
-    assert.strictEqual(capturedBody.messages[0].content[1].image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
+    assert.ok(Array.isArray(capturedBody.messages[0].content) || capturedBody.messages[0].role === 'system', 'messages[0] pode ser o system do gateway');
+    const imgMsg = capturedBody.messages.find((m: any) => m.role === 'user');
+    assert.ok(Array.isArray(imgMsg.content), 'content must stay an array');
+    assert.strictEqual(imgMsg.content[1].type, 'image_url');
+    assert.strictEqual(imgMsg.content[1].image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
     assert.ok(!('tools' in capturedBody));
   } finally {
     restore();

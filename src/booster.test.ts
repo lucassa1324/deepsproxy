@@ -4,8 +4,10 @@
  * Testes do Modo Booster (suporte a modelos fracos):
  *  - config por modelo (gateway-booster.json);
  *  - reforço de prompt (regras + few-shot com tool real);
- *  - loop corretivo (tool call que falhou recebe correção e nova chance);
  *  - detecção de tool_call quebrado.
+ *
+ * O loop corretivo Turn 1..10 (runExecutionLoop) foi removido no refator do
+ * Gateway HTTP Puro — a execução local de ferramentas não existe mais.
  */
 
 import { test } from 'node:test';
@@ -22,13 +24,7 @@ import {
   DEFAULT_BOOSTER,
 } from './services/booster.ts';
 import { buildToolsInstructions } from './utils/prompt.ts';
-import {
-  runExecutionLoop,
-  looksLikeBrokenToolCall,
-  buildCorrectionMessage,
-} from './tools/executor.ts';
-import type { LLMResponse } from './tools/executor.ts';
-import type { ParsedToolCall } from './tools/types.ts';
+import { looksLikeBrokenToolCall, buildCorrectionMessage } from './tools/executor.ts';
 
 const TEST_BOOSTER_FILE = join(tmpdir(), 'deepsproxy-booster-test.json');
 
@@ -148,74 +144,6 @@ test('booster: looksLikeBrokenToolCall detecta tag aberta e name solto', () => {
   assert.equal(looksLikeBrokenToolCall('{"name": "Write", "arguments": {}}'), true);
   assert.equal(looksLikeBrokenToolCall('resposta normal do modelo'), false);
   assert.equal(looksLikeBrokenToolCall(''), false);
-});
-
-test('booster: loop corretivo dá nova chance quando tool desconhecida falha', async () => {
-  const seenMessages: unknown[][] = [];
-  let call = 0;
-  const resp1: LLMResponse = {
-    content: null,
-    toolCalls: [{ id: 'call_x', name: 'tool_inexistente', arguments: { a: 1 } } as ParsedToolCall],
-    finishReason: 'tool_calls',
-  };
-  const resp2: LLMResponse = { content: 'Resposta final correta.', toolCalls: [], finishReason: 'stop' };
-
-  const result = await runExecutionLoop(
-    async (messages) => {
-      seenMessages.push([...messages]);
-      call++;
-      return call === 1 ? resp1 : resp2;
-    },
-    [{ role: 'user', content: 'x' }],
-    'meu-modelo-fraco',
-    { booster: true, maxTurns: 3 }
-  );
-
-  assert.equal(result, 'Resposta final correta.');
-  assert.equal(call, 2);
-  const second = seenMessages[1];
-  assert.ok(second.some((m: any) => m.role === 'tool'), 'resultado da tool no histórico');
-  assert.ok(
-    second.some((m: any) => m.role === 'user' && String(m.content || '').includes('CORREÇÃO AUTOMÁTICA')),
-    'mensagem corretiva injetada'
-  );
-});
-
-test('booster: tool_call quebrado não vira texto — modelo recebe correção', async () => {
-  let call = 0;
-  const result = await runExecutionLoop(
-    async () => {
-      call++;
-      if (call === 1) {
-        return {
-          content: '<tool_call>{"name": "web_search", "arguments": {"query": "preço"}}',
-          toolCalls: [],
-          finishReason: 'stop',
-        } as LLMResponse;
-      }
-      return { content: 'O preço é X.', toolCalls: [], finishReason: 'stop' } as LLMResponse;
-    },
-    [{ role: 'user', content: 'quanto custa?' }],
-    'meu-modelo-fraco',
-    { booster: true, maxTurns: 3 }
-  );
-
-  assert.equal(result, 'O preço é X.');
-  assert.equal(call, 2, 'ganhou uma segunda chance');
-});
-
-test('booster: sem booster o tool_call quebrado é devolvido como texto (comportamento antigo)', async () => {
-  const result = await runExecutionLoop(
-    async () => ({
-      content: '<tool_call>{"name": "web_search"',
-      toolCalls: [],
-      finishReason: 'stop',
-    }),
-    [{ role: 'user', content: 'x' }],
-    'gemini-3-pro',
-    { booster: false, maxTurns: 2 }
-  );
-  assert.equal(result, '<tool_call>{"name": "web_search"');
 });
 
 test('booster: buildCorrectionMessage é explícito sobre não inventar resultado', () => {

@@ -356,7 +356,7 @@ test('gateway e2e: /api/settings/token-economy GET/PATCH', async () => {
   }
 });
 
-test('gateway e2e: agent:true executa web_search server-side e responde final', async () => {
+test('gateway e2e: agent:true é recusado (Gateway HTTP Puro, sem execução local)', async () => {
   resetModelCatalogCache();
   const registry = {
     active: 'openai',
@@ -368,55 +368,12 @@ test('gateway e2e: agent:true executa web_search server-side e responde final', 
 
   const { app } = await import('./index.ts');
 
-  let completionsCall = 0;
-  let lastBody: any = null;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : ('url' in input ? input.url : String(input));
     if (url.includes('/v1/models')) {
       return new Response(
         JSON.stringify({ object: 'list', data: [{ id: 'gpt-test' }] }),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      );
-    }
-    if (url.includes('html.duckduckgo.com')) {
-      return new Response(
-        '<a class="result__a" href="https://ex.com">Ex</a><a class="result__snippet">Trecho.</a>',
-        { status: 200, headers: { 'content-type': 'text/html' } }
-      );
-    }
-    if (url.includes('/chat/completions')) {
-      completionsCall++;
-      lastBody = JSON.parse(String(init?.body));
-      const choices =
-        completionsCall === 1
-          ? [
-              {
-                index: 0,
-                message: {
-                  role: 'assistant',
-                  content: null,
-                  tool_calls: [
-                    { id: 'call_ws', type: 'function', function: { name: 'web_search', arguments: '{"query":"notícias"}' } },
-                  ],
-                },
-                finish_reason: 'tool_calls',
-              },
-            ]
-          : [
-              {
-                index: 0,
-                message: { role: 'assistant', content: 'Resposta com busca.', reasoning_content: 'procurei' },
-                finish_reason: 'stop',
-              },
-            ];
-      return new Response(
-        JSON.stringify({
-          id: 'x',
-          object: 'chat.completion',
-          choices,
-          usage: { prompt_tokens: 5, completion_tokens: 7, total_tokens: 12 },
-        }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       );
     }
@@ -429,20 +386,14 @@ test('gateway e2e: agent:true executa web_search server-side e responde final', 
       headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({
         model: 'gpt-test',
-        messages: [{ role: 'user', content: 'Busque notícias e resuma.' }],
+        messages: [{ role: 'user', content: 'Busque notícias.' }],
         stream: false,
         agent: true,
       }),
     });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 400);
     const data: any = await res.json();
-    assert.equal(data.choices[0].message.content, 'Resposta com busca.');
-    assert.equal(data.choices[0].message.reasoning_content, 'procurei');
-    assert.equal(data.agent.turns, 2);
-    assert.ok(data.agent.tools.includes('web_search'));
-    // A segunda chamada ao LLM recebeu o resultado da tool.
-    assert.ok(Array.isArray(lastBody.messages));
-    assert.ok(lastBody.messages.some((m: any) => m.role === 'tool' && m.content.includes('Trecho.')));
+    assert.ok(String(data.error?.message || '').includes('Gateway HTTP Puro'));
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -17,6 +17,10 @@ import { robustParseJSON } from '../utils/robust-json.ts';
 import { isModelBoosted } from '../services/booster.ts';
 import { StreamingToolParser } from '../tools/stream-parser.ts';
 import { startKeepAlive } from '../utils/sse.ts';
+import {
+  getWorkspaceRootFromContext,
+  sanitizeToolCallArguments,
+} from '../services/relay-path.ts';
 
 function getIncrementalDelta(oldStr: string, newStr: string): string {
   if (!oldStr) return newStr;
@@ -170,14 +174,20 @@ async function handleQwenNonStreaming(
     message.reasoning_content = acc.reasoning;
   }
   if (toolCalls.length > 0) {
-    message.tool_calls = toolCalls.map((tc) => ({
-      id: tc.id,
-      type: 'function',
-      function: {
-        name: tc.name,
-        arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
-      },
-    }));
+    // Camada de Relay: sanitiza caminhos (relativo -> absoluto via
+    // x-workspace-root; '\' -> '/') antes de entregar a Tool Call à IDE.
+    const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+    message.tool_calls = toolCalls.map((tc) => {
+      const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+      return {
+        id: tc.id,
+        type: 'function',
+        function: {
+          name: tc.name,
+          arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
+        },
+      };
+    });
   }
 
   const completionId = 'chatcmpl-' + uuidv4();
@@ -252,6 +262,10 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
     c.header('Connection', 'keep-alive');
 
     const completionId = 'chatcmpl-' + uuidv4();
+
+    // Raiz do workspace (header 'x-workspace-root' ou body) para sanitização
+    // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
+    const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -377,6 +391,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
                 }
 
                 for (const tc of toolCalls) {
+                  const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
                   await writeEvent({
                     id: completionId,
                     object: 'chat.completion.chunk',
@@ -389,7 +404,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
                         type: 'function',
                         function: {
                           name: tc.name,
-                          arguments: JSON.stringify(tc.arguments)
+                          arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs)
                         }
                       }]
                     })]
@@ -415,6 +430,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
         });
       }
       for (const tc of remainingToolCalls) {
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',
@@ -427,7 +443,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
               type: 'function',
               function: {
                 name: tc.name,
-                arguments: JSON.stringify(tc.arguments)
+                arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs)
               }
             }]
           })]

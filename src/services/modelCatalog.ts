@@ -113,7 +113,16 @@ async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogMod
     apiKey: '',
   });
 
-  for (const p of enabled) {
+  // Separa provedores que precisam de fetch assíncrono dos que têm modelos fixos
+  const providersNeedingFetch = enabled.filter(
+    (p) => !isDeepseekProvider(p) && !isQwenProvider(p) && p.type !== 'gemini-web'
+  );
+  const providersWithFixedModels = enabled.filter(
+    (p) => isDeepseekProvider(p) || isQwenProvider(p) || p.type === 'gemini-web'
+  );
+
+  // 1. Adiciona modelos fixos (DeepSeek, Qwen, Gemini Web) - rápido, sem I/O
+  for (const p of providersWithFixedModels) {
     const base = {
       provider: p.id,
       providerName: p.name,
@@ -142,26 +151,56 @@ async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogMod
       for (const m of GEMINI_KNOWN_MODELS) {
         push({ id: m.id, name: m.name || m.id, ...base });
       }
-    } else {
+    }
+
+    // Modelo de override do provedor
+    if (p.model) {
+      push({ id: p.model, name: p.model, ...base });
+    }
+  }
+
+  // 2. Busca modelos dos provedores que precisam de I/O EM PARALELO
+  if (providersNeedingFetch.length > 0) {
+    const fetchPromises = providersNeedingFetch.map(async (p) => {
+      const base = {
+        provider: p.id,
+        providerName: p.name,
+        providerType: p.type,
+        baseUrl: p.baseUrl || defaultBaseUrl(p.type),
+        apiKeyEnvVar: apiKeyEnvVarFor(p),
+        apiKey: resolvedApiKey(p),
+      };
+
       let models: any[] | null = null;
       try {
         models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
       } catch {
         models = null;
       }
+
+      const result: CatalogModel[] = [];
       if (models) {
         for (const m of models) {
           const id = normalizeModelId(m.id);
           if (!id) continue;
           if (hasGeminiWeb && geminiWebIds.has(id)) continue;
-          push({ id, name: m.name || m.model || id, ...base });
+          result.push({ id, name: m.name || m.model || id, ...base });
         }
       }
-    }
+      // Modelo de override do provedor
+      if (p.model) {
+        result.push({ id: p.model, name: p.model, ...base });
+      }
+      return result;
+    });
 
-    // Modelo de override do provedor (quando o cliente não envia model).
-    if (p.model) {
-      push({ id: p.model, name: p.model, ...base });
+    const results = await Promise.allSettled(fetchPromises);
+    for (const result of results) {
+      if (result.status === 'fulfilled') {
+        for (const m of result.value) {
+          push(m);
+        }
+      }
     }
   }
 

@@ -18,6 +18,10 @@ import { isQwenModel } from '../services/qwen.ts';
 import { qwenChatCompletions } from './qwen.ts';
 import { geminiChatCompletions } from './gemini.ts';
 import {
+  getWorkspaceRootFromContext,
+  sanitizeToolCallArguments,
+} from '../services/relay-path.ts';
+import {
   resolveRegistry,
   resolveActiveProvider,
   enabledProviders,
@@ -36,8 +40,7 @@ import {
   buildGenericRejection,
   buildNullEditRejection,
 } from '../services/validation-guard.ts';
-import { getWorkspaceMap, clearWorkspaceCache, getResolvedWorkspaceRoot } from '../services/workspace.ts';
-import { normalizeToolCallArgs, clearPathIndexCache, getPathIndex, normalizePath } from '../services/path-normalizer.ts';
+import { injectAntiLazyDirective } from '../middlewares/anti-lazy.ts';
 import { applyPromptCaching } from '../services/prompt-cache.ts';
 import {
   getTokenEconomy,
@@ -57,12 +60,6 @@ import { robustParseJSON } from '../utils/robust-json.ts';
 import { isModelBoosted } from '../services/booster.ts';
 import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
-import {
-  isServerAgentSupported,
-  listServerTools,
-  runServerAgent,
-  respondAgentResult,
-} from '../services/agent.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { applyPhase1Optimizations, cacheSystemPrompt, getCachedPrompt, optimizedFetch } from '../services/optimizations.ts';
 import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome } from '../services/auto-router/index.ts';
@@ -244,16 +241,14 @@ async function handleDeepSeekNonStreaming(
   const { textContent, toolCalls } = parseToolCallsFromContent(acc.content);
   const promptTokens = Math.ceil(finalPrompt.length / 3.5);
 
-  // Normaliza caminhos nos tool_calls antes de devolver ao cliente
-  const workspaceRootForNormalization = getResolvedWorkspaceRoot((body as any).workspacePath || (body as any).rootPath);
+  // Camada de Relay: sanitiza os caminhos dos tool_calls (relativo -> absoluto
+  // via x-workspace-root; '\' -> '/') antes de entregá-los à IDE. Sem I/O local.
+  const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
   const normalizedToolCalls = toolCalls.map((tc) => {
-    let normalizedArgs = tc.arguments;
-    if (typeof normalizedArgs === 'object' && normalizedArgs !== null) {
-      normalizedArgs = normalizeToolCallArgs(tc.name, normalizedArgs, workspaceRootForNormalization);
-    }
+    const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
     return {
       ...tc,
-      arguments: typeof normalizedArgs === 'string' ? normalizedArgs : JSON.stringify(normalizedArgs),
+      arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
     };
   });
 
@@ -563,9 +558,8 @@ async function resolveAutoModel(
     return { model: '', status: 503, message: `Auto Router: ${decision.reason}` };
   }
 
-  // Garante que o modelo escolhido existe no catálogo atual (nunca o próprio
-  // "auto"/"auto-free", que não é encaminhável).
-  const fullCatalog = await getModelCatalog(registry);
+  // Reutiliza o catálogo já obtido (evita buscar duas vezes)
+  const fullCatalog = catalog;
   let model = fullCatalog.find((m) => m.id === decision.selectedModelId)?.id ?? '';
   if (!model) {
     console.warn(`[auto-router] modelo selecionado "${decision.selectedModelId}" não está no catálogo; usando fallback`);
@@ -767,92 +761,11 @@ export async function chatCompletions(c: Context) {
     const isStream = body.stream ?? false;
     const economy: TokenEconomySettings = getTokenEconomy();
 
-    // Limpa cache de workspace no início de cada requisição HTTP
-    clearWorkspaceCache();
-    clearPathIndexCache();
-
-    // Injeta [WORKSPACE MAP] no system prompt (uma vez por request)
-    // Permite override via body.workspacePath ou body.rootPath
-    const explicitWorkspaceRoot = (body as any).workspacePath || (body as any).rootPath;
-    const workspaceMap = getWorkspaceMap(explicitWorkspaceRoot);
-    if (workspaceMap && workspaceMap.trim()) {
-      const existingSystem = body.messages.find(m => m.role === 'system');
-      if (existingSystem) {
-        existingSystem.content = workspaceMap + '\n\n' + (existingSystem.content || '');
-      } else {
-        body.messages.unshift({ role: 'system', content: workspaceMap });
-      }
-    }
-
-    // Resolve workspace root for path normalization (uses project markers like package.json)
-    const workspaceRootForNormalization = getResolvedWorkspaceRoot(explicitWorkspaceRoot);
-
-    // ─── Tratamento de Falha de Leitura (Re-Prompt Transparente) ───
-    // Se a mensagem anterior contém resultado de tool com erro de leitura,
-    // injeta mensagem corretiva com o caminho correto do workspace map
-    const workspaceRootForCorrection = workspaceRootForNormalization;
-    const pathIndex = getPathIndex(workspaceRootForCorrection);
-    const failedToolResults = body.messages.filter((m: any) => 
-      m.role === 'tool' && typeof m.content === 'string' && 
-      (m.content.includes('Failed to read') || 
-       m.content.includes('Error:') || 
-       m.content.includes('ENOENT') ||
-       m.content.includes('not found') ||
-       m.content.includes('arquivo não encontrado') ||
-       m.content.includes('file not found'))
-    );
-    
-    if (failedToolResults.length > 0) {
-      for (const toolResult of failedToolResults) {
-        // Tenta extrair o caminho que falhou do tool_call_id ou do conteúdo
-        const toolCallId = toolResult.tool_call_id;
-        // Busca o tool_call anterior para saber qual arquivo tentaram ler
-        const prevAssistantMsg = body.messages
-          .slice()
-          .reverse()
-          .find((m: any) => m.role === 'assistant' && Array.isArray(m.tool_calls) && 
-            m.tool_calls.some((tc: any) => tc.id === toolCallId));
-        
-        if (prevAssistantMsg && Array.isArray(prevAssistantMsg.tool_calls)) {
-          const failedCall = prevAssistantMsg.tool_calls.find((tc: any) => tc.id === toolCallId);
-          if (failedCall && failedCall.function?.arguments) {
-            let args: any = {};
-            try {
-              args = typeof failedCall.function.arguments === 'string' 
-                ? JSON.parse(failedCall.function.arguments) 
-                : failedCall.function.arguments;
-            } catch {}
-            
-            const failedPath = args.path || args.file_path || args.file;
-            if (failedPath && typeof failedPath === 'string') {
-              // Tenta encontrar o caminho correto no índice
-              let correctPath = normalizePath(failedPath, workspaceRootForCorrection);
-              if (correctPath === failedPath && pathIndex.size > 0) {
-                // Busca fuzzy: procura arquivo com mesmo basename
-                const basename = failedPath.split('/').pop() || failedPath;
-                for (const [key, value] of pathIndex.entries()) {
-                  if (key === basename || key.endsWith('/' + basename)) {
-                    correctPath = value;
-                    break;
-                  }
-                }
-              }
-              
-              if (correctPath !== failedPath) {
-                const correctionMsg = `[PROXY SYSTEM NOTICE]: Falha ao ler '${failedPath}'. O caminho relativo exato registrado no mapa do projeto é '${correctPath}'. Tente ler novamente usando este caminho exato.`;
-                
-                // Injeta como mensagem de usuário (system-like) antes da última mensagem do assistente
-                const insertIdx = body.messages.findIndex((m: any) => m === prevAssistantMsg);
-                if (insertIdx >= 0) {
-                  body.messages.splice(insertIdx, 0, { role: 'user', content: correctionMsg });
-                  console.log(`[READ FAILURE HANDLER] Injetado re-prompt corretivo para: ${failedPath} -> ${correctPath}`);
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    // Sanitização de prompt do Gateway Puro: injeta a diretiva ANTI-LAZY &
+    // AGENTIC EXECUTION no INÍCIO do system message de TODAS as requisições
+    // que atravessam o proxy (idempotente). O I/O local de arquivos foi
+    // removido — o servidor jamais ler/edita/deleta arquivos do workspace.
+    body = injectAntiLazyDirective(body);
 
     // ── Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE ──
     // pelo catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
@@ -947,17 +860,26 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
 
     if (gwEntry) {
       const entry = await resolveModelEntry(body.model, registry);
-      if (!entry) {
-        return c.json(
-          {
-            error: {
-              message: `Modelo "${body.model}" não encontrado no catálogo. Configure o provedor na aba Conexão (a lista de modelos é carregada automaticamente).`,
+      if (entry) {
+        target = providerFromCatalogEntry(entry);
+      } else {
+        // Fallback: tenta encontrar o provedor pela lista de modelos (igual à porta 3005)
+        // Isso evita 404 quando o catálogo ainda não carregou os modelos do provedor API.
+        const owner = await findProviderForModel(enabled, body.model);
+        if (owner) {
+          target = owner;
+          console.log(`[gateway] modelo "${body.model}" roteado via fallback para provedor "${owner.name}" (${owner.type})`);
+        } else {
+          return c.json(
+            {
+              error: {
+                message: `Modelo "${body.model}" não encontrado no catálogo. Configure o provedor na aba Conexão (a lista de modelos é carregada automaticamente).`,
+              },
             },
-          },
-          404
-        );
+            404
+          );
+        }
       }
-      target = providerFromCatalogEntry(entry);
     } else {
       // Porta 3005 (direta): o model enviado pelo cliente decide o provedor.
       const entry = await resolveModelEntry(body.model, registry);
@@ -1005,39 +927,20 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
  
     // Reforço de contexto + limpeza de arquivo ativo: se a última mensagem do usuário
     // for uma confirmação curta (ex.: "pode implementar", "sim", "faz aí"), o Proxy:
-    // Modo agente nativo: o proxy executa as tools de servidor (web_search)
-    // num loop agêntico, sem depender da IDE. Só funciona com provedores HTTP
-    // (adapters e openai-compatible); deepseek/qwen respondem 400.
-    if (body.agent === true) {
-      try {
-        if (!isServerAgentSupported(target)) {
-          return c.json(
-            {
-              error: {
-                message: `Modo agente não é suportado para o provedor "${target.type}". Use um provedor HTTP (Gemini, Anthropic, OpenAI-compatível).`,
-              },
-            },
-            400
-          );
-        }
-        const toolList = listServerTools();
-        if (toolList.length === 0) {
-          return c.json({ error: { message: 'Nenhuma tool de servidor registrada.' } }, 400);
-        }
-        // Passa workspaceRoot para o agente (para normalização de caminhos)
-        const bodyWithWorkspace = {
-          ...body,
-          workspaceRoot: workspaceRootForNormalization,
-        };
-        const agentResult = await runServerAgent(bodyWithWorkspace, target);
-        console.log(
-          `[agent] done model=${body.model} turns=${agentResult.turns} tools=[${toolList.map((t) => t.name).join(', ')}] ${Date.now() - startedAt}ms`
-        );
-        return respondAgentResult(c, body, agentResult);
-      } catch (err: any) {
-        console.error('[agent] erro:', err);
-        return c.json({ error: { message: `[agent] ${err?.message || String(err)}` } }, 502);
-      }
+    // Modo agente nativo — DESATIVADO no Gateway HTTP Puro: o proxy não executa
+    // ferramentas localmente (sem I/O de arquivos, web_search, loop agêntico).
+    // As Tool Calls do modelo são repassadas no payload HTTP/SSE para a IDE.
+    if ((body as any).agent === true) {
+      return c.json(
+        {
+          error: {
+            message:
+              'Modo agente (agent:true) desativado no Gateway HTTP Puro: o servidor não executa ferramentas localmente. ' +
+              'Envie as ferramentas via tools[] e receba as tool_calls no formato OpenAI/Gemini compatível com a IDE.',
+          },
+        },
+        400
+      );
     }
 
     // Cache de respostas idênticas (apenas non-streaming): hash do payload
@@ -1196,6 +1099,10 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     c.header('Connection', 'keep-alive');
 
     const completionId = 'chatcmpl-' + uuidv4();
+
+    // Raiz do workspace (header 'x-workspace-root' ou body) para sanitização
+    // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
+    const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -1401,14 +1308,16 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
 
                         const toolCallObj = robustParseJSON(toolJsonStr);
                         const toolId = 'call_' + uuidv4();
-                        
-                        // Normaliza caminhos no tool_call usando o workspace map
-                        const workspaceRootForNormalization = getResolvedWorkspaceRoot((body as any).workspacePath || (body as any).rootPath);
-                        let normalizedArgs = toolCallObj.arguments;
-                        if (toolCallObj.name && typeof normalizedArgs === 'object' && normalizedArgs !== null) {
-                          normalizedArgs = normalizeToolCallArgs(toolCallObj.name, normalizedArgs, workspaceRootForNormalization);
-                        }
-                        
+
+                        // Scanner de tool_call: sanitiza os caminhos (relativo -> absoluto via
+                        // x-workspace-root; '\' -> '/') antes de entregar à IDE.
+                        const safeArgs = sanitizeToolCallArguments(
+                          toolCallObj.name,
+                          toolCallObj.arguments,
+                          relayWorkspaceRoot
+                        );
+                        const normalizedArgs = safeArgs;
+
                         await writeEvent({
                           id: completionId,
                           object: 'chat.completion.chunk',

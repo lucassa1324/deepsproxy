@@ -1,11 +1,18 @@
 /*
  * File: system-prompt.ts
  * Project: deepsproxy
- * HIGH-PRECISION AGENT PROTOCOL - System Prompt Injection
+ * HIGH-PRECISION AGENT PROTOCOL + ANTI-LAZY DIRECTIVE - System Prompt Injection
  *
- * This module injects the strict ReAct protocol to prevent infinite tool loops,
- * context pollution, and mechanical execution without strategic replanning.
+ * Cada requisição que atravessa o gateway recebe, no INÍCIO do system prompt:
+ *   1. [SYSTEM DIRECTIVE - ANTI-LAZY & AGENTIC EXECUTION] (anti-preguiça);
+ *   2. [SYSTEM DIRECTIVE: HIGH-PRECISION AGENT PROTOCOL] (protocolo cirúrgico).
+ * Ambos são idempotentes por marcador.
  */
+
+import {
+  ANTI_LAZY_AGENTIC_DIRECTIVE,
+  hasAntiLazyDirective,
+} from '../middlewares/anti-lazy.ts';
 
 export const HIGH_PRECISION_AGENT_PROTOCOL = `
 [SYSTEM DIRECTIVE: HIGH-PRECISION AGENT PROTOCOL]
@@ -22,7 +29,7 @@ Você é um agente de desenvolvimento de software focado em alta precisão, efic
    - Limite de chamadas: Você tem no máximo 3 (três) tentativas de busca por arquivos no workspace.
 
 3. PROTOCOLO DE DESISTÊNCIA E PARADA (LOOP-BREAKER):
-   - Se uma ferramenta retornar vazia, falhar ('Failed to list') ou não trouxer o código relevante após 3 tentativas, PARALISE a execução de ferramentas imediatamente.
+   - Se uma ferramenta retornar vazia, falhar ou não trouxer o código relevante após 3 tentativas, PARALISE a execução de ferramentas imediatamente.
    - Em vez de continuar buscando, responda diretamente ao usuário explicando o que você tentou e solicite o caminho exato do arquivo ou o trecho do código onde o bug ocorre.
 
 4. FOCO EM SOLUÇÃO CIRÚRGICA:
@@ -31,36 +38,41 @@ Você é um agente de desenvolvimento de software focado em alta precisão, efic
 `;
 
 /**
- * Injeta o HIGH-PRECISION AGENT PROTOCOL no system prompt.
- * Se já houver system prompt, adiciona no início (maior prioridade).
+ * Bloco completo de diretivas do gateway: anti-preguiça + protocolo de alta
+ * precisão. A ordem garante que a diretiva ANTI-LAZY fique NO INÍCIO.
  */
-export function injectHighPrecisionProtocol(systemPrompt: string): string {
-  if (!systemPrompt || systemPrompt.trim() === '') {
-    return HIGH_PRECISION_AGENT_PROTOCOL.trim();
-  }
-  // Evita duplicação se já injetado
-  if (systemPrompt.includes('HIGH-PRECISION AGENT PROTOCOL')) {
-    return systemPrompt;
-  }
-  return `${HIGH_PRECISION_AGENT_PROTOCOL.trim()}\n\n${systemPrompt.trim()}`;
+export function buildSystemDirectives(): string {
+  return `${ANTI_LAZY_AGENTIC_DIRECTIVE.trim()}\n\n${HIGH_PRECISION_AGENT_PROTOCOL.trim()}`;
 }
 
 /**
- * Injeta o protocolo nas mensagens do formato OpenAI.
+ * Injeta as diretivas no system prompt (anti-preguiça primeiro, protocolo de
+ * alta precisão depois, ambos idempotentes).
+ */
+export function injectHighPrecisionProtocol(systemPrompt: string): string {
+  if (!systemPrompt || systemPrompt.trim() === '') {
+    return buildSystemDirectives().trim();
+  }
+  if (hasAntiLazyDirective(systemPrompt)) {
+    return systemPrompt;
+  }
+  return `${buildSystemDirectives()}\n\n${systemPrompt.trim()}`;
+}
+
+/**
+ * Injeta as diretivas nas mensagens do formato OpenAI.
  * Encontra o(s) system message(s) e injeta no primeiro.
  */
 export function injectProtocolIntoMessages(messages: any[]): any[] {
   const result = [...messages];
   let systemIndex = result.findIndex(m => m.role === 'system');
-  
+
   if (systemIndex === -1) {
-    // Não há system message: cria um no início
     result.unshift({
       role: 'system',
-      content: HIGH_PRECISION_AGENT_PROTOCOL.trim()
+      content: buildSystemDirectives().trim()
     });
   } else {
-    // Injeta no system message existente
     const sysMsg = { ...result[systemIndex] };
     const currentContent = Array.isArray(sysMsg.content)
       ? sysMsg.content.map((c: any) => c.type === 'text' ? c.text : '').join('\n')
@@ -68,13 +80,13 @@ export function injectProtocolIntoMessages(messages: any[]): any[] {
     sysMsg.content = injectHighPrecisionProtocol(currentContent);
     result[systemIndex] = sysMsg;
   }
-  
+
   return result;
 }
 
 /**
- * Verifica se o protocolo já foi injetado no prompt/mensagens.
+ * Verifica se as diretivas já foram injetadas no prompt/mensagens.
  */
 export function hasProtocol(systemPrompt: string): boolean {
-  return systemPrompt.includes('HIGH-PRECISION AGENT PROTOCOL');
+  return hasAntiLazyDirective(systemPrompt);
 }

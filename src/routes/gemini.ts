@@ -7,6 +7,13 @@
  *
  * Cada requisição pega uma aba do pool (gemini-playwright.ts), digita o prompt
  * na UI e lê a resposta do DOM — sem protocolo RPC interno.
+ *
+ * Anti-Preguiça (Gateway Puro):
+ *  - um turno é REPETIDO 1x com mensagem oculta se a resposta chegar vazia,
+ *    curta ou genérica SEM tool_calls (finalização precoce);
+ *  - os tool_calls do modelo são repassados TRANSPARENTEMENTE no payload
+ *    HTTP/SSE no formato OpenAI/Gemini esperado pela IDE;
+ *  - nenhuma ferramenta é executada localmente pelo servidor.
  */
 
 import { Context } from 'hono';
@@ -15,7 +22,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { OpenAIRequest } from '../utils/types.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { parseToolCallsFromContent } from '../tools/executor.ts';
-import { StreamingToolParser } from '../tools/stream-parser.ts';
+import type { ParsedToolCall } from '../tools/types.ts';
 import {
   buildGeminiWebPrompt,
   smartTruncateHistory,
@@ -29,6 +36,14 @@ import {
   type GeminiPageLike,
 } from '../services/gemini-web.ts';
 import { injectHighPrecisionProtocol } from '../utils/system-prompt.ts';
+import {
+  isLazyCompletion,
+  ANTI_LAZY_RETRY_MESSAGE,
+} from '../middlewares/anti-lazy.ts';
+import {
+  getWorkspaceRootFromContext,
+  sanitizeToolCallArguments,
+} from '../services/relay-path.ts';
 import {
   acquireGeminiStreamPage,
   releaseGeminiStreamPage,
@@ -45,38 +60,90 @@ async function pageForGeminiTurn(signal?: AbortSignal): Promise<{ page: GeminiPa
   return { page: toGeminiPageLike(page), release: () => releaseGeminiStreamPage(page) };
 }
 
+interface GeminiTurnOutcome {
+  rawText: string;
+  textContent: string;
+  toolCalls: ParsedToolCall[];
+  error?: string;
+  retried: boolean;
+}
+
+/**
+ * Executa um turno no Gemini Web com retry anti-preguiça (máx. 2 tentativas).
+ * Se a 1ª resposta for vazia/curta/genérica SEM tool_calls, re-submete o
+ * prompt com a mensagem oculta `ANTI_LAZY_RETRY_MESSAGE` (finalização precoce).
+ */
+async function runGeminiTurnWithAntiLazy(
+  page: GeminiPageLike,
+  prompt: string,
+  opts: { abortSignal?: AbortSignal }
+): Promise<GeminiTurnOutcome> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const finalPrompt =
+      attempt > 0 ? `${prompt}\n\nUser: ${ANTI_LAZY_RETRY_MESSAGE}` : prompt;
+    const stream = await createGeminiWebStream(page, finalPrompt, opts);
+    const { text, error } = await consumeGeminiWebStream(stream);
+    if (error) {
+      return { rawText: '', textContent: '', toolCalls: [], error, retried: attempt > 0 };
+    }
+
+    const parsed = parseToolCallsFromContent(text);
+    if (parsed.toolCalls.length > 0 || !isLazyCompletion(parsed.textContent, parsed.toolCalls)) {
+      return { rawText: text, ...parsed, retried: attempt > 0 };
+    }
+
+    console.log(
+      `[gemini-web] ANTI-LAZY: resposta precoce (${parsed.textContent.length} chars, 0 tool_calls) — retry #${attempt + 1} com mensagem oculta`
+    );
+  }
+
+  // Fallback teórico (completo em 2 tentativas): retorna a última resposta.
+  const stream = await createGeminiWebStream(page, prompt, opts);
+  const { text, error } = await consumeGeminiWebStream(stream);
+  const parsed = parseToolCallsFromContent(text);
+  return error
+    ? { rawText: '', textContent: '', toolCalls: [], error, retried: true }
+    : { rawText: text, ...parsed, retried: true };
+}
+
 async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPrompt: string) {
   const signal = c.req.raw?.signal;
   const { page, release } = await pageForGeminiTurn(signal);
   try {
-    const stream = await createGeminiWebStream(page, finalPrompt, { abortSignal: signal });
-    const { text, error } = await consumeGeminiWebStream(stream);
+    const { textContent, toolCalls, error } = await runGeminiTurnWithAntiLazy(page, finalPrompt, {
+      abortSignal: signal,
+    });
     if (error) throw new Error(error);
 
     // O modelo do Gemini Web expressa tools no texto via <tool_call>...</tool_call>
     // (mesmo formato do DeepSeek/Qwen web). Sem esse parse o Trae recebe o JSON
     // cru como conteúdo e NUNCA executa a ferramenta.
-    const { textContent, toolCalls } = parseToolCallsFromContent(text);
-
     const message: any = {
       role: 'assistant',
       content: toolCalls.length > 0 ? (textContent || null) : textContent,
     };
     if (toolCalls.length > 0) {
-      message.tool_calls = toolCalls.map((tc) => ({
-        id: tc.id,
-        type: 'function',
-        function: {
-          name: tc.name,
-          arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments),
-        },
-      }));
+      // Camada de Relay: sanitiza caminhos dos args (relativo -> absoluto via
+      // x-workspace-root, '\' -> '/') ANTES de entregar a Tool Call à IDE. Sem
+      // I/O local — só manipulação de string pura.
+      const workspaceRoot = getWorkspaceRootFromContext(c, body);
+      message.tool_calls = toolCalls.map((tc) => {
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot);
+        return {
+          id: tc.id,
+          type: 'function',
+          function: {
+            name: tc.name,
+            arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
+          },
+        };
+      });
     }
 
     const completionId = 'chatcmpl-' + uuidv4();
     const created = Math.floor(Date.now() / 1000);
     const promptTokens = Math.ceil(finalPrompt.length / 3.5);
-    const completionTokens = Math.ceil(text.length / 3.5);
+    const completionTokens = Math.ceil((textContent || '').length / 3.5);
 
     return c.json({
       id: completionId,
@@ -103,6 +170,36 @@ async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPr
   }
 }
 
+/** Emite conteúdo textual em fatias para simular streaming após o turno. */
+async function emitBufferedText(
+  writeEvent: (data: any) => Promise<void>,
+  completionId: string,
+  model: string,
+  textContent: string
+): Promise<number> {
+  const chunkSize = 256;
+  let emitted = 0;
+  for (let i = 0; i < textContent.length; i += chunkSize) {
+    const slice = textContent.substring(i, i + chunkSize);
+    await writeEvent({
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model,
+      choices: [
+        {
+          index: 0,
+          delta: { content: slice },
+          logprobs: null,
+          finish_reason: null,
+        },
+      ],
+    });
+    emitted += slice.length;
+  }
+  return emitted;
+}
+
 /**
  * Handler principal de chat do Gemini Web. `body` já vem parseado pelo
  * roteador (routes/chat.ts), que decidiu enviar para o provedor gemini-web.
@@ -121,7 +218,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
     const originalMsgCount = (body.messages || []).length;
     body = smartTruncateHistory(body);
     let finalPrompt = buildGeminiWebPrompt(body);
-    // Injeta HIGH-PRECISION AGENT PROTOCOL
+    // Injeta HIGH-PRECISION AGENT PROTOCOL + ANTI-LAZY DIRECTIVE
     finalPrompt = injectHighPrecisionProtocol(finalPrompt);
     const truncatedMsgCount = (body.messages || []).length;
 
@@ -161,6 +258,10 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
 
     const completionId = 'chatcmpl-' + uuidv4();
 
+    // Raiz do workspace (header 'x-workspace-root' ou body) para a camada de
+    // Relay: sanitize dos caminhos dos tool_calls emitidos no SSE.
+    const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+
     // A stream HTTP (headers + primeiro chunk) começa ANTES de tocar no
     // Playwright: o Trae vê TTFB ~0 em vez de esperar o goto+fill+send.
     return honoStream(c, async (streamWriter: any) => {
@@ -187,97 +288,17 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
           choices: [makeChoice({ role: 'assistant', content: '' })],
         });
 
-        const stream = await createGeminiWebStream(page, finalPrompt, { abortSignal: c.req.raw?.signal });
+        // Anti-Preguiça: executa o turno COMPLETO (com 1 retry se precoce) e só
+        // então emite o SSE. Trade-off: TTFB deixa de ser ~0 (a latência do
+        // Gemini Web entra no primeiro chunk), porém garante que o cliente só
+        // receba uma resposta final não-lazy do modelo.
+        const { rawText, textContent, toolCalls, error, retried } = await runGeminiTurnWithAntiLazy(
+          page,
+          finalPrompt,
+          { abortSignal: c.req.raw?.signal }
+        );
 
-        const reader = stream.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let contentLength = 0;
-        let promptTokens = Math.ceil(finalPrompt.length / 3.5);
-        let streamError: string | null = null;
-        // O Gemini Web expressa tools no texto via <tool_call>...</tool_call>;
-        // o parser extrai os blocos do fluxo e emite tool_calls no SSE (senão o
-        // Trae recebe o JSON cru como texto e não executa a ferramenta).
-        const toolParser = new StreamingToolParser();
-
-        const emitToolCalls = async (toolCalls: any[]) => {
-          for (const tc of toolCalls) {
-            await writeEvent({
-              id: completionId,
-              object: 'chat.completion.chunk',
-              created: Math.floor(Date.now() / 1000),
-              model: body.model,
-              choices: [
-                makeChoice({
-                  tool_calls: [
-                    {
-                      index: toolParser.getEmittedToolCallCount() - toolCalls.length + toolCalls.indexOf(tc),
-                      id: tc.id,
-                      type: 'function',
-                      function: {
-                        name: tc.name,
-                        arguments: JSON.stringify(tc.arguments),
-                      },
-                    },
-                  ],
-                }),
-              ],
-            });
-          }
-        };
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            let ev: any;
-            try {
-              ev = JSON.parse(trimmed);
-            } catch {
-              continue;
-            }
-            if (ev.type === 'content') {
-              if (contentLength === 0) {
-                console.log(`[gemini-web] primeiro token ${Date.now() - startedAt}ms`);
-              }
-              contentLength += ev.text.length;
-              const { text, toolCalls } = toolParser.feed(ev.text);
-              if (text) {
-                await writeEvent({
-                  id: completionId,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: body.model,
-                  choices: [makeChoice({ content: text })],
-                });
-              }
-              await emitToolCalls(toolCalls);
-            } else if (ev.type === 'error') {
-              streamError = ev.message;
-            }
-          }
-        }
-
-        // Flush: resto de texto + tool calls parciais que fecharam no fim.
-        const { text: remainingText, toolCalls: remainingToolCalls } = toolParser.flush();
-        if (remainingText) {
-          await writeEvent({
-            id: completionId,
-            object: 'chat.completion.chunk',
-            created: Math.floor(Date.now() / 1000),
-            model: body.model,
-            choices: [makeChoice({ content: remainingText })],
-          });
-        }
-        await emitToolCalls(remainingToolCalls);
-
-        if (streamError) {
+        if (error) {
           await writeEvent({
             id: completionId,
             object: 'chat.completion.chunk',
@@ -286,11 +307,51 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
             choices: [makeChoice({}, 'error')],
           });
           await streamWriter.write('data: [DONE]\n\n');
-          throw new Error(streamError);
+          throw new Error(error);
         }
 
-        const toolCallCount = toolParser.getEmittedToolCallCount();
+        // Regra de streaming (preservada do parser incremental): texto APÓS
+        // <tool_call> não é emitido no SSE — o conteúdo para quando a tool começa.
+        const toolIdx = rawText.indexOf('<tool_call>');
+        const streamText = toolIdx === -1 ? rawText : rawText.slice(0, toolIdx);
+
+        if (streamText) {
+          await emitBufferedText(writeEvent, completionId, body.model, streamText);
+        }
+
+        // Repassa os tool_calls do modelo de forma TRANSPARENTE (formato
+        // OpenAI/Gemini esperado pela IDE) — sem execução local. A camada de
+        // Relay sanitiza os caminhos antes de entregá-los para a IDE.
+        for (const tc of toolCalls) {
+          const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+          await writeEvent({
+            id: completionId,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: body.model,
+            choices: [
+              makeChoice({
+                tool_calls: [
+                  {
+                    index: toolCalls.indexOf(tc),
+                    id: tc.id,
+                    type: 'function',
+                    function: {
+                      name: tc.name,
+                      arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
+                    },
+                  },
+                ],
+              }),
+            ],
+          });
+        }
+
+        const toolCallCount = toolCalls.length;
         const finalFinishReason = toolCallCount > 0 ? 'tool_calls' : 'stop';
+
+        const promptTokens = Math.ceil(finalPrompt.length / 3.5);
+        const contentLength = streamText.length;
 
         const usage = {
           prompt_tokens: promptTokens,
@@ -310,7 +371,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
         await streamWriter.write('data: [DONE]\n\n');
 
         console.log(
-          `[gemini-web] done model=${body.model} ${Date.now() - startedAt}ms chars=${contentLength} toolCalls=${toolCallCount}`
+          `[gemini-web] done model=${body.model} ${Date.now() - startedAt}ms chars=${contentLength} toolCalls=${toolCallCount}${retried ? ' (após retry anti-lazy)' : ''}`
         );
       } finally {
         stopKeepAlive();

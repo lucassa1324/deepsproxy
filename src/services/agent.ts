@@ -17,7 +17,7 @@
 import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
-import { runExecutionLoop, parseToolCallsFromContent } from '../tools/executor.ts';
+import { parseToolCallsFromContent } from '../tools/executor.ts';
 import type { LLMResponse } from '../tools/executor.ts';
 import { registry } from '../tools/registry.ts';
 import type { ParsedToolCall, FunctionToolDefinition, JsonSchema } from '../tools/types.ts';
@@ -198,31 +198,15 @@ export async function runServerAgent(
     };
   }
 
-  const content = await runExecutionLoop(
-    async (msgs, toolsArr, model) => {
-      turns++;
-      const { resp, reasoning: r, usage: u } = await sendTurn(
-        msgs,
-        toolsArr as FunctionToolDefinition[] | undefined,
-        model,
-        provider,
-        baseBody
-      );
-      if (r) reasoning += (reasoning ? '\n\n' : '') + r;
-      if (u) {
-        usage.prompt_tokens += Number(u.prompt_tokens) || 0;
-        usage.completion_tokens += Number(u.completion_tokens) || 0;
-        usage.total_tokens +=
-          Number(u.total_tokens) || Number(u.prompt_tokens) + Number(u.completion_tokens) || 0;
-      }
-      return resp;
-    },
-    messages,
-    baseBody.model,
-    { maxTurns: opts.maxTurns ?? DEFAULT_MAX_TURNS, debug: opts.debug, booster: isModelBoosted(baseBody.model) }
+  // Gateway HTTP Puro: execução local de ferramentas foi removida por design.
+  // O loop agêntico Turn 1..10 não existe no servidor — as Tool Calls são
+  // repassadas diretamente no payload HTTP/SSE para a IDE resolver no
+  // workspace do usuário.
+  throw new Error(
+    'Modo agente nativo (agent:true) desativado no Gateway HTTP Puro. ' +
+    'As Tool Calls são repassadas transparentemente para a IDE via SSE/JSON. ' +
+    'Se o upstream não emite tool_calls, verifique o suporte do modelo.'
   );
-
-  return { content: content || '', reasoning, turns, usage };
 }
 
 /**

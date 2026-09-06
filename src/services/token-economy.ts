@@ -53,19 +53,19 @@ export interface TokenEconomySettings {
 }
 
 export const DEFAULT_ECONOMY: TokenEconomySettings = {
-  enabled: false,
+  enabled: true,
   cachePrefix: true,
-  truncateHistory: false,
-  summarizeHistory: false,
+  truncateHistory: true,
+  summarizeHistory: true,
   stripReasoning: false,
-  truncateToolOutput: false,
+  truncateToolOutput: true,
   responseCache: false,
-  tokenEstimation: false,
+  tokenEstimation: true,
   compressTools: true,
   stripMetadata: true,
-  smartTruncation: false,
-  dedupConsecutive: false,
-  maxContextTokens: 56000,
+  smartTruncation: true,
+  dedupConsecutive: true,
+  maxContextTokens: 8000,
 };
 
 /** Tamanho máximo de um resultado de tool enviado ao modelo. */

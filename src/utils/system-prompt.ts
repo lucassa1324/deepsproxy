@@ -67,6 +67,14 @@ Você é um agente de desenvolvimento de software focado em alta precisão, efic
 11. ENCERRAMENTO AUTÔNOMO E BLOQUEIO DE PERGUNTA:
     - Ao concluir as criações dos arquivos 'index.html', 'style.css' e 'script.js', o agente DEVE emitir a resposta final de conclusão IMEDIATAMENTE, SEM pedir validação do usuário e SEM tentar chamadas de re-checagem redundantes.
     - A entrega final é o fim da execução: nenhuma ferramenta adicional é permitida após a resposta de conclusão.
+
+12. REGRA DE CONCLUSÃO OBRIGATÓRIA (ZERO-POLL PROTOCOL):
+    - Assim que as ferramentas de escrita ('Write' ou 'SearchReplace') confirmarem que os arquivos solicitados no prompt foram criados ou editados com sucesso, é STRICTLY PROIBIDO realizar novas chamadas de leitura ('Read') ou busca ('Search') de validação.
+    - A confirmação de sucesso da ferramenta de escrita é prova suficiente de conclusão: NENHUMA chamada Read/Search/LS de verificação é permitida depois dela.
+
+13. BLOQUEIO DE MENSAGEM DE CONTINUIDADE:
+    - Se os arquivos do prompt do usuário JÁ EXISTEM e estão populados, o agente NUNCA deve perguntar o que o usuário deseja fazer a seguir ou pedir confirmação de próximos passos.
+    - O agente DEVE emitir imediatamente um resumo curto (1-2 linhas) confirmando a conclusão e ENCERRAR o turno de resposta.
 `;
 
 /**

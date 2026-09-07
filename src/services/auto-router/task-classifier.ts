@@ -174,6 +174,8 @@ const COMPLEXITY_INDICATORS: ComplexityIndicator[] = [
   { pattern: /concorr|parallel|thread|async.*múltipl|race condition/i, delta: 0.2, description: 'concorrência/paralelismo' },
   { pattern: /machine learning|ml model|neural|deep learning|treinar.*modelo/i, delta: 0.25, description: 'machine learning' },
   { pattern: /sistema.*complet|full.*system|todo.*sistema|end.?to.?end/i, delta: 0.3, description: 'sistema completo' },
+  { pattern: /refator|refactor|limpeza|limp[ae]r|clean.?up|organiz|reorganiz/i, delta: 0.15, description: 'refatoração/limpeza de código' },
+  { pattern: /lote|batch|v[áa]rios arquivos?|m[uú]ltiplas? ferramentas?|several files?/i, delta: 0.15, description: 'lote de arquivos/ferramentas' },
 
   // Complexidade média
   { pattern: /implement|criar.*funç|create.*function|nova.*rota|new.*route/i, delta: 0.1, description: 'implementação de componente' },

@@ -83,8 +83,9 @@ export function selectBestModel(
   }
 
   // 2. Calcular score para cada modelo
+  const gate = config.complexityGate ?? 0.6;
   const scored: ModelScore[] = eligible.map((model) =>
-    scoreModel(model, classification, weights, config.minCapabilityThreshold)
+    scoreModel(model, classification, weights, config.minCapabilityThreshold, gate)
   );
 
   // 3. Ordenar por score (maior = melhor)
@@ -128,7 +129,8 @@ function scoreModel(
   model: ModelMetadata,
   classification: TaskClassification,
   weights: ScoreWeights,
-  minThreshold: number
+  minThreshold: number,
+  complexityGate: number
 ): ModelScore {
   const cap = classification.categories;
   const complexity = classification.complexity;
@@ -167,6 +169,18 @@ function scoreModel(
   // Penalty: modelos muito fracos para tarefas complexas
   if (complexity > 0.7 && capabilityScore < 0.5) {
     capabilityScore *= 0.5;
+  }
+
+  // Gate de qualidade (complexityGate): tarefa COMPLEXA que exige coding/
+  // reasoning forte (ex.: refatoração em lote, múltiplas tools, correções
+  // profundas) descarta modelos rápidos/baratos de capacidade mediana — o
+  // capabilityScore zera, e o modelo PRO/superior vence mesmo em 'balanced'
+  // (evita repetir o ciclo em que o gemini-flash é escolhido e falha).
+  if (complexity >= complexityGate) {
+    const needsStrong = (cap.coding ?? 0) >= 6 || (cap.reasoning ?? 0) >= 6;
+    if (needsStrong && (model.capabilities.coding < 8 || model.capabilities.reasoning < 7)) {
+      capabilityScore = 0;
+    }
   }
 
   // Cost penalty: normalizado (0 = gratuito, 1 = muito caro)

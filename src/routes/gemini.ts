@@ -47,6 +47,7 @@ import {
   getWorkspaceRootFromContext,
   sanitizeToolCallArguments,
   extractMcpServerNamesFromTools,
+  extractKnownRelativePaths,
   toolCallSignature,
 } from '../services/relay-path.ts';
 import {
@@ -172,8 +173,9 @@ async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPr
       // I/O local — só manipulação de string pura.
       const workspaceRoot = getWorkspaceRootFromContext(c, body);
       const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+      const knownPaths = extractKnownRelativePaths((body as any).messages);
       message.tool_calls = toolCalls.map((tc) => {
-        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot, mcpServers);
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot, mcpServers, knownPaths);
         return {
           id: tc.id,
           type: 'function',
@@ -307,6 +309,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
     // Relay: sanitize dos caminhos dos tool_calls emitidos no SSE.
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
     const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+    const knownPaths = extractKnownRelativePaths((body as any).messages);
 
     // A stream HTTP (headers + primeiro chunk) começa ANTES de tocar no
     // Playwright: o Trae vê TTFB ~0 em vez de esperar o goto+fill+send.
@@ -372,7 +375,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
         // OpenAI/Gemini esperado pela IDE) — sem execução local. A camada de
         // Relay sanitiza os caminhos antes de entregá-los para a IDE.
         for (const tc of toolCalls) {
-          const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
+          const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
           await writeEvent({
             id: completionId,
             object: 'chat.completion.chunk',

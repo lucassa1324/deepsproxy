@@ -59,7 +59,11 @@ export type CostPolicy =
 export interface AutoRouterConfig {
   costPolicy: CostPolicy;
   showDecision: boolean;        // Mostrar qual modelo foi selecionado na resposta
-  minCapabilityThreshold: number; // Capacidade mínima aceita (default: 3)
+  minCapabilityThreshold: number; // Capacidade mínima aceita (default: 5)
+  /** Tarefas com complexidade >= gate exigem capacidade PRO: modelos rápidos/
+   *  baratos com coding < 8 ou reasoning < 7 são descartados (ex.: refatoração
+   *  em lote, múltiplas tools). 0 = sempre ligado; >1 = desligado. Default 0.6. */
+  complexityGate?: number;
 }
 
 // ── Resultado do roteamento ─────────────────────────────────────────────

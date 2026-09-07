@@ -18,6 +18,8 @@ import {
   getWorkspaceRootFromContext,
   sanitizePathValue,
   sanitizeToolCallArguments,
+  sanitizeToolOutput,
+  applyToolOutputSanitization,
   extractWorkspaceRootFromMessages,
   clearWorkspaceRootCache,
   toolCallSignature,
@@ -26,6 +28,8 @@ import {
   applyMcpNativeFilesystemFallback,
   MCP_ACCESS_DENIED_RE,
   MCP_NATIVE_FS_FALLBACK_DIRECTIVE,
+  extractKnownRelativePaths,
+  stripControlChars,
 } from './services/relay-path.ts';
 
 function makeContextWithHeader(name: string, value: string | undefined) {
@@ -133,10 +137,16 @@ describe('relay-path: limpeza de prefixos relativos repetidos', () => {
     }
   });
 
-  it('limpa "./" interno repetido e preserva "../" legítimo', () => {
-    // '././../x.ts' → limpa '././' → '../x.ts' → uma subida a partir de 'projeto'.
-    assert.equal(sanitizePathValue('././../x.ts', ROOT), 'C:\\Users\\Lucas\\x.ts');
-    assert.equal(sanitizePathValue('../x.ts', ROOT), 'C:\\Users\\Lucas\\x.ts');
+  it('purga "../" (path traversal) NUNCA sobe acima do workspaceRoot', () => {
+    // '././../x.ts' → loop de purga remove '././../' → NUNCA resolve para
+    // 'C:\Users\Lucas\x.ts' fora do projeto (defesa contra path traversal).
+    assert.equal(sanitizePathValue('././../x.ts', ROOT), 'C:\\Users\\Lucas\\projeto\\x.ts');
+    assert.equal(sanitizePathValue('../x.ts', ROOT), 'C:\\Users\\Lucas\\projeto\\x.ts');
+    assert.equal(sanitizePathValue('..\\x.ts', ROOT), 'C:\\Users\\Lucas\\projeto\\x.ts');
+    assert.equal(
+      sanitizePathValue('././.././../x.ts', ROOT),
+      'C:\\Users\\Lucas\\projeto\\x.ts'
+    );
   });
 });
 
@@ -647,12 +657,15 @@ describe('relay-path: ferramentas de terminal (RunCommand) — barras sempre par
     assert.equal(out.cwd, './app');
   });
 
-  it('rmdir/mkdir com src\\tests_stress NUNCA chega corrompido ("ests_stress")', () => {
+  it('rmdir /s /q com src\\tests_stress vira node -e (fs.rmSync recursivo) — "tests_stress" intacto', () => {
     const out = sanitizeToolCallArguments('RunCommand', { command: 'rmdir /s /q "src\\tests_stress"' }, ROOT) as any;
-    assert.equal(out.command, 'rmdir /s /q "src/tests_stress"');
+    assert.equal(
+      out.command,
+      'node -e "const fs=require(\'fs\');fs.rmSync(\'src/tests_stress\',{recursive:true,force:true})"'
+    );
     assert.ok(!out.command.includes('\t'));
     assert.ok(out.command.includes('tests_stress'), 'deve manter "tests_stress": ' + out.command);
-    assert.ok(!out.command.includes('ests_stress,'), `não pode ter comido a letra t`);
+    assert.ok(!out.command.includes('ets_stress'), 'não pode ter comido a letra t');
   });
 
   it('CheckCommandStatus: sem barras, payload intacto (timeout preservado)', () => {
@@ -676,10 +689,77 @@ describe('relay-path: ferramentas de terminal (RunCommand) — barras sempre par
     assert.equal(out, 'node run.js src/tests_stress');
   });
 
-  it('barra invertida REAL não virou Tabulação (nenhum U+0009 no resultado)', () => {
+  it('barra invertida REAL não virou Tabulação (mkdir "sub\\tests_stress" → node -e mkdirSync)', () => {
     const out = sanitizeToolCallArguments('RunCommand', { command: 'mkdir "sub\\tests_stress"' }, ROOT) as any;
     assert.ok(!out.command.includes('\t'), JSON.stringify(out.command));
     assert.ok(out.command.includes('/tests_stress'), out.command);
+    assert.ok(out.command.startsWith('node -e '), 'deve ir para node -e: ' + out.command);
+  });
+});
+
+describe('relay-path: terminal — lote Windows vira UMA chamada node -e e Unix-isms são removidos', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it('mkdir -p (com espaço no nome) vira node -e com mkdirSync recursivo', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'mkdir -p "C:/Users/Lucas sá/Projeto temp"' }, ROOT) as any;
+    assert.equal(
+      out.command,
+      'node -e "const fs=require(\'fs\');fs.mkdirSync(\'C:/Users/Lucas sá/Projeto temp\',{recursive:true})"'
+    );
+  });
+
+  it('lote em concurrency (mkdir && move && del) vira UMA chamada node -e', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'mkdir "src\\tmp" && move "src\\tmp\\a.txt" "src\\a.txt" && del "src\\tmp\\b.log"' },
+      ROOT
+    ) as any;
+    assert.equal(
+      out.command,
+      'node -e "const fs=require(\'fs\');' +
+        'fs.mkdirSync(\'src/tmp\',{recursive:false});' +
+        'fs.renameSync(\'src/tmp/a.txt\',\'src/a.txt\');' +
+        'fs.rmSync(\'src/tmp/b.log\',{force:true})"'
+    );
+  });
+
+  it('rmdir /s /q traduz para fs.rmSync recursivo+force', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'rmdir /s /q "src\\old"' }, ROOT) as any;
+    assert.equal(
+      out.command,
+      'node -e "const fs=require(\'fs\');fs.rmSync(\'src/old\',{recursive:true,force:true})"'
+    );
+  });
+
+  it('comando com builtin não-lote (npm test) NÃO é traduzido', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'npm test -- --runInBand' }, ROOT) as any;
+    assert.equal(out.command, 'npm test -- --runInBand');
+  });
+
+  it('"|| true" (no-op Unix) é removido sem quebrar o resto', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'npm run build || true && node server.js' }, ROOT) as any;
+    assert.equal(out.command, 'npm run build && node server.js');
+  });
+
+  it('"2>nul" é removido (redirecionamento que quebra o parse do terminal)', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'node run.js 2>nul' }, ROOT) as any;
+    assert.equal(out.command, 'node run.js');
+  });
+
+  it('multilinha de lote não vira bloco PowerShell InvalidEndOfLine (vira node -e)', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'mkdir a\nmkdir b && mkdir c' }, ROOT) as any;
+    assert.equal(
+      out.command,
+      'node -e "const fs=require(\'fs\');' +
+        'fs.mkdirSync(\'a\',{recursive:false});' +
+        'fs.mkdirSync(\'b\',{recursive:false});' +
+        'fs.mkdirSync(\'c\',{recursive:false})"'
+    );
+  });
+
+  it('flag desconhecida em statement de lote aborta a tradução (repassa intacto)', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'del /weird src/file.ts' }, ROOT) as any;
+    assert.equal(out.command, 'del /weird src/file.ts');
   });
 });
 
@@ -1044,5 +1124,333 @@ describe('relay-path: fallback nativo quando MCP bloqueado (Access denied)', () 
   it('corpo sem messages: intacto', () => {
     const body: any = { model: 'x' };
     assert.strictEqual(applyMcpNativeFilesystemFallback(body), body);
+  });
+});
+
+describe('relay-path: escudo defensivo — colapso de barras duplas', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it("'\/src//*.ts' (glob de busca) colapsa para '\/src/*.ts'", () => {
+    assert.equal(sanitizePathValue('src//*.ts', ROOT), 'C:\\Users\\Lucas\\projeto\\src\\*.ts');
+    const out = sanitizeToolCallArguments('GlobSearch', { query: '/src//*.ts', pattern: 'src//*.ts' }, ROOT) as any;
+    assert.equal(out.query, '/src/*.ts');
+    assert.equal(out.pattern, 'src/*.ts');
+  });
+
+  it("glob '/\/src//*.ts' com raiz Windows resolve como relativo ao projeto", () => {
+    assert.equal(sanitizePathValue('/src//*.ts', ROOT), 'C:\\Users\\Lucas\\projeto\\src\\*.ts');
+  });
+
+  it('UNC ("//server/share") preserva o prefixo duplo; "C://Users" colapsa', () => {
+    assert.equal(sanitizePathValue('//server/share/file.ts', ROOT), '\\\\server\\share\\file.ts');
+    assert.equal(sanitizePathValue('C://Users/Lucas/x.ts', ROOT), 'C:\\Users\\Lucas\\x.ts');
+  });
+
+  it('POSIX (sys-root) intacto com raiz Windows; barra única acidental é relativa', () => {
+    assert.equal(sanitizePathValue('/home/dev/app/x.ts', ROOT), '/home/dev/app/x.ts');
+  });
+});
+
+describe('relay-path: escudo defensivo — leitura por nome simples (basename)', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it("extractKnownRelativePaths varre textos e tool_calls para 'anti-lazy.ts'", () => {
+    const body: any = {
+      messages: [
+        { role: 'user', content: 'Veja src/middlewares/anti-lazy.ts e o src/routes/chat.ts' },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [
+            {
+              function: {
+                arguments: JSON.stringify({ file_path: './src/utils/robust-json.ts' }),
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const known = extractKnownRelativePaths(body.messages);
+    assert.ok(known.includes('src/middlewares/anti-lazy.ts'), known.join(', '));
+    assert.ok(known.includes('src/routes/chat.ts'), known.join(', '));
+    assert.ok(known.includes('src/utils/robust-json.ts'), known.join(', '));
+  });
+
+  it("Read 'anti-lazy.ts' resolve no subdiretório conhecido (não na raiz)", () => {
+    const knownPaths = ['src/middlewares/anti-lazy.ts'];
+    const out = sanitizeToolCallArguments('Read', { file_path: 'anti-lazy.ts' }, ROOT, undefined, knownPaths) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas\\projeto\\src\\middlewares\\anti-lazy.ts');
+  });
+
+  it('Read de basename SEM pista conhecida mantém a raiz (comportamento padrão)', () => {
+    const out = sanitizeToolCallArguments('Read', { path: 'anti-lazy.ts' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\anti-lazy.ts');
+  });
+
+  it('Escrita (não Read-like) de basename NÃO usa resolução inteligente', () => {
+    const knownPaths = ['src/middlewares/anti-lazy.ts'];
+    const out = sanitizeToolCallArguments('Write', { path: 'anti-lazy.ts' }, ROOT, undefined, knownPaths) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\anti-lazy.ts');
+  });
+});
+
+describe('relay-path: escudo defensivo — terminal com espaços/acentos/parenteses', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it("RunCommand 'cd C:/Users/Lucas sá/Documents/Programação/Projeto' cita o caminho", () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'cd C:/Users/Lucas sá/Documents/Programação/Projeto' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'cd "C:/Users/Lucas sá/Documents/Programação/Projeto"');
+  });
+
+  it('openCode (parênteses no nome) é citado', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'cd C:/Users/Lucas sá/Documents/Programacao/openCode(1)/app' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'cd "C:/Users/Lucas sá/Documents/Programacao/openCode(1)/app"');
+  });
+
+  it('tokens comuns e flags continuam SEM aspas (semântica preservada)', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'node run.js src/tests_stress --flag valor' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'node run.js src/tests_stress --flag valor');
+  });
+
+  it('tokens JÁ entre aspas são preservados intactos', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'node run.js "src/a b.ts" --out "dist/x.js"' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'node run.js "src/a b.ts" --out "dist/x.js"');
+  });
+
+  it('cwd com espaços recebe aspas envolventes', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'echo oi', cwd: 'C:/Users/Lucas sá/projeto' }, ROOT) as any;
+    assert.equal(out.cwd, '"C:/Users/Lucas sá/projeto"');
+  });
+});
+
+describe('relay-path: escudo defensivo — integridade byte-a-byte do conteúdo', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it('SearchReplace (string JSON crua): file_path limpo, old/new byte-a-byte intactos', () => {
+    const json = '{"file_path": ".\\\\src\\\\logic.ts", "old_string": "cdn\\\\src\\\\app.js", "new_string": "lib   \\"x\\" \\\\ \\n tab\\t"}';
+    const out = sanitizeToolCallArguments('SearchReplace', json, ROOT) as string;
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.file_path, 'C:\\Users\\Lucas\\projeto\\src\\logic.ts');
+    assert.equal(parsed.old_string, 'cdn\\src\\app.js');
+    assert.equal(parsed.new_string, 'lib   "x" \\ \n tab\t');
+  });
+
+  it('Edit: content/code com escapes e crases NÃO é tocado pela sanitização', () => {
+    const content = 'const x = `C:\\Users\\x`;  // comentário "aspas"\nlinha2';
+    const out = sanitizeToolCallArguments('Edit', { target_file: './src/main.ts', content }, ROOT) as any;
+    assert.equal(out.target_file, 'C:\\Users\\Lucas\\projeto\\src\\main.ts');
+    assert.equal(out.content, content);
+  });
+
+  it('tag acidental no VALOR do path é removida; crase/aspas do content intactas', () => {
+    const out = sanitizeToolCallArguments('Write', { path: './src/x<br>.ts', content: '`backtick` "aspas"' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\src\\x.ts');
+    assert.equal(out.content, '`backtick` "aspas"');
+  });
+});
+
+describe('relay-path: escudo defensivo — drive letter e caracteres de controle', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it("'C:' sola preserva a letra do drive (raiz do drive, nunca '/Users/...')", () => {
+    assert.equal(sanitizePathValue('C:', ROOT), 'C:\\');
+    assert.equal(sanitizePathValue('c:', ROOT), 'c:\\');
+    const out = sanitizeToolCallArguments('Read', { path: 'C:' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\');
+  });
+
+  it('drive com caminho continua absoluto (nunca concatena o root)', () => {
+    assert.equal(sanitizePathValue('C:', ROOT), 'C:\\');
+    assert.equal(sanitizePathValue('c:/Users/Lucas/x.ts', ROOT), 'c:\\Users\\Lucas\\x.ts');
+  });
+
+  it('NUL bytes e control chars não quebram o path (viram separador/removidos)', () => {
+    const out = sanitizeToolCallArguments('Read', { path: 'src\x00\u0001/x.ts' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\src\\x.ts');
+    assert.ok(!out.path.includes('\u0000'));
+    assert.ok(!out.path.includes('\u0001'));
+  });
+
+  it('stripControlChars preserva \\t \\n \\r e remove o resto', () => {
+    assert.equal(stripControlChars('a\x00b\x0Ac\x09d\x0De\u007F'), 'ab\nc\td\re');
+  });
+
+  it('robustParseJSON descarta NUL sem quebrar', () => {
+    const parsed = robustParseJSON('{"name":"Read","arguments":{"path":"src/x.ts\u0000y"}}') as any;
+    assert.equal(parsed.name, 'Read');
+    assert.equal(parsed.arguments.path, 'src/x.tsy');
+  });
+});
+
+describe('relay-path: sanitizeToolOutput — limpeza estrita de tags de erro da IDE', () => {
+  it('remove bloco fechado <toolcall_error_message> e expõe "Error: ..."', () => {
+    const raw = '<toolcall_error_message>File not found: src/x.ts</toolcall_error_message>';
+    assert.equal(sanitizeToolOutput(raw), 'Error: File not found: src/x.ts');
+  });
+
+  it('remove tag de fechamento solta </toolcall_error_message> e self-closed', () => {
+    assert.equal(sanitizeToolOutput('texto</toolcall_error_message>'), 'texto');
+    assert.equal(sanitizeToolOutput('<toolcall_error_message/>texto'), 'texto');
+  });
+
+  it('bloco SEM fechamento: abertura vira "Error: " e o texto não é perdido', () => {
+    assert.equal(sanitizeToolOutput('<toolcall_error_message>acesso negado'), 'Error: acesso negado');
+  });
+
+  it('tags de result/status viram só o texto interno (sem markup)', () => {
+    const raw = '<toolcall_result>{"type":"text","output":"ok"}</toolcall_result> <toolcall_status>done</toolcall_status>';
+    assert.equal(sanitizeToolOutput(raw), '{"type":"text","output":"ok"} done');
+  });
+
+  it('idempotente: rodar 2x não degrada o texto', () => {
+    const raw = '<toolcall_error_message>boom</toolcall_error_message>';
+    const once = sanitizeToolOutput(raw) as string;
+    assert.equal(sanitizeToolOutput(once), once);
+  });
+
+  it('suporta content em array de partes OpenAI (texto limpo, resto intacto)', () => {
+    const parts: any[] = [
+      { type: 'text', text: '<toolcall_error_message>erro</toolcall_error_message>' },
+      { type: 'image_url', image_url: { url: 'https://x/y.png' } },
+    ];
+    const out = sanitizeToolOutput(parts) as any[];
+    assert.equal(out[0].text, 'Error: erro');
+    assert.strictEqual(out[1], parts[1]);
+  });
+
+  it('applyToolOutputSanitization limpa TODAS as mensagens do corpo', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'user', content: 'ok antes' },
+        { role: 'tool', content: '<toolcall_error_message>acesso negado</toolcall_error_message>' },
+        { role: 'assistant', content: [{ type: 'text', text: '<toolcall_status>done</toolcall_status> fim' }] },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    assert.equal(out.messages[0].content, 'ok antes');
+    assert.equal(out.messages[1].content, 'Error: acesso negado');
+    assert.equal((out.messages[2].content as any[])[0].text, 'done fim');
+  });
+
+  it('sem tags: corpo intacto (mesma referência)', () => {
+    const body: any = { model: 'x', messages: [{ role: 'tool', content: 'resultado simples' }] };
+    assert.strictEqual(applyToolOutputSanitization(body), body);
+  });
+
+  it('normaliza erro cru de parâmetro de terminal para mensagem amigável', () => {
+    const out = sanitizeToolOutput('invalid params: deserialize params error: missing field command') as string;
+    assert.ok(out.startsWith('Error:'), out);
+    assert.ok(out.includes('comando de terminal'), out);
+    assert.ok(!out.includes('deserialize'), 'não pode vazar o erro cru: ' + out);
+  });
+
+  it('normaliza InvalidEndOfLine / invalid end of line', () => {
+    const a = sanitizeToolOutput('InvalidEndOfLine when parsing this param') as string;
+    const b = sanitizeToolOutput('invalid end of line at char 5') as string;
+    assert.ok(a.startsWith('Error:'), a);
+    assert.ok(b.startsWith('Error:'), b);
+    assert.ok(!a.includes('InvalidEndOfLine'), 'não pode vazar o erro cru: ' + a);
+  });
+
+  it('erro de terminal amigável é idempotente', () => {
+    const raw = 'invalid params: deserialize params error: missing field command';
+    const once = sanitizeToolOutput(raw) as string;
+    assert.equal(sanitizeToolOutput(once), once);
+  });
+
+  it('mensagem de tool com erro de terminal em array de partes também é normalizada', () => {
+    const parts: any[] = [
+      { type: 'text', text: 'invalid params: deserialize params error: missing field command' },
+    ];
+    const out = sanitizeToolOutput(parts) as any[];
+    assert.ok((out[0].text as string).startsWith('Error:'), out[0].text);
+    assert.ok(!out[0].text.includes('deserialize'));
+  });
+});
+
+describe('relay-path: leitura de arquivos de RAÍZ (package.json etc.) resolve no workspaceRoot', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it("Read com 'package.json' resolve direto no workspaceRoot (sem retries)", () => {
+    const out = sanitizeToolCallArguments('Read', { file_path: 'package.json' }, ROOT) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas\\projeto\\package.json');
+  });
+
+  it("'package.json' ganha da resolução inteligente de subdiretórios conhecidos", () => {
+    const knownPaths = ['src/config/package.json', 'src/middlewares/anti-lazy.ts'];
+    const out = sanitizeToolCallArguments('Read', { path: 'package.json' }, ROOT, undefined, knownPaths) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\package.json');
+  });
+
+  it("outros arquivos de raiz também resolvem no workspaceRoot ('.env', 'tsconfig.json')", () => {
+    assert.equal(
+      (sanitizeToolCallArguments('Read', { path: '.env' }, ROOT) as any).path,
+      'C:\\Users\\Lucas\\projeto\\.env'
+    );
+    assert.equal(
+      (sanitizeToolCallArguments('Read', { path: 'tsconfig.json' }, ROOT) as any).path,
+      'C:\\Users\\Lucas\\projeto\\tsconfig.json'
+    );
+  });
+
+  it("basename comum (fora da lista de raiz) continua usando subdiretórios conhecidos", () => {
+    const knownPaths = ['src/middlewares/anti-lazy.ts'];
+    const out = sanitizeToolCallArguments('Read', { file_path: 'anti-lazy.ts' }, ROOT, undefined, knownPaths) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas\\projeto\\src\\middlewares\\anti-lazy.ts');
+  });
+});
+
+describe('relay-path: RunCommand com caracteres especiais do shell NÃO é duplamente quotado', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it('pipe "|" e operadores permanecem SEM aspas; só o caminho com espaço é quotado', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'Get-Content C:/Users/Lucas sá/log.txt | Select-Object -First 5' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'Get-Content "C:/Users/Lucas sá/log.txt" | Select-Object -First 5');
+  });
+
+  it('"&&", ">", ";" não recebem aspas (sintaxe de shell preservada)', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'npm run build && node server.js' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'npm run build && node server.js');
+    const redir = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'echo oi > out.txt ; echo fim' },
+      ROOT
+    ) as any;
+    assert.equal(redir.command, 'echo oi > out.txt ; echo fim');
+  });
+
+  it('snippet JÁ entre aspas com pipe interno é preservado (sem escape duplo)', () => {
+    const out = sanitizeToolCallArguments(
+      'RunCommand',
+      { command: 'powershell -Command "Get-ChildItem | Select-Object Name"' },
+      ROOT
+    ) as any;
+    assert.equal(out.command, 'powershell -Command "Get-ChildItem | Select-Object Name"');
   });
 });

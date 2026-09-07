@@ -33,7 +33,8 @@ import {
 const DEFAULT_CONFIG: AutoRouterConfig = {
   costPolicy: 'balanced',
   showDecision: true,
-  minCapabilityThreshold: 3,
+  minCapabilityThreshold: 5,
+  complexityGate: 0.6,
 };
 
 let currentConfig: AutoRouterConfig = { ...DEFAULT_CONFIG };

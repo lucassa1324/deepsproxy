@@ -38,7 +38,7 @@
 
 import { posix as pathPosix, win32 as pathWin32 } from 'path';
 import type { Context } from 'hono';
-import type { OpenAIRequest } from '../utils/types.ts';
+import type { OpenAIRequest, MessageContent } from '../utils/types.ts';
 import { protectPathEscapesInJson } from '../utils/robust-json.ts';
 
 /** Chaves de argumento de Tool Call que representam um arquivo único (podem
@@ -47,6 +47,173 @@ const FILE_PATH_KEYS = new Set(['path', 'file_path', 'filePath', 'target_file', 
 
 /** Auxiliares (LINUX/Windows) presente no set de path keys com semântica de lista. */
 const PATH_ARG_KEYS = new Set([...FILE_PATH_KEYS, 'directory']);
+
+/** Ferramentas de LEITURA — única exceção à resolução por nome simples: quando o
+ *  modelo passa só o basename ('anti-lazy.ts') sem pasta, o relay procura entre
+ *  os caminhos JÁ CONHECIDOS do contexto (messages/tool_calls prévios) e resolve
+ *  no subdiretório correto, evitando o múltiplo "Failed to read" da IDE. */
+const READ_LIKE_TOOLS = new Set([
+  'read',
+  'readfile',
+  'read_file',
+  'read_text_file',
+  'get_file_content',
+  'read_relevant',
+]);
+
+/** Chaves de ferramentas de Terminal que carregam um COMANDO (recebem aspas
+ *  duplas defensivas para nomes com espaços/acentos/parenteses no CMD/PowerShell)
+ *  e chaves que são apenas um caminho (aspas envolventes quando necessário). */
+const TERMINAL_COMMAND_KEYS = new Set(['command', 'command_line', 'cmd', 'script', 'line']);
+const TERMINAL_PATH_KEYS = new Set(['cwd', 'working_directory', 'directory', 'path', 'file_path']);
+
+/** Chaves de ferramentas de BUSCA (Glob/Grep/Search): recebem apenas o colapso
+ *  de barras múltiplas ('/src//*.ts' → '/src/*.ts') — NENHUMA outra transformação
+ *  (não são resolvidas contra o root, pois podem ser globs/regex). */
+const PATTERN_PATH_KEYS = new Set(['pattern', 'glob', 'paths', 'query', 'search']);
+
+/** Extrai SÓ o valor string de chaves de caminho num texto JSON CRU, preservando
+ *  byte a byte todo o resto do payload ('old_string'/'new_string'/'content'/
+ *  'code' NUNCA são re-escritos — apenas caminhos são substituídos no lugar). */
+const REWRITE_PATH_KEY_RE = /"(path|file_path|filePath|target_file|absolute_path|directory)"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+
+/** Primeiro segmento plausível de caminhos RELATIVOS conhecidos do projeto —
+ *  usados para filtrar ruído (URLs, drives) na varredura de conhecidos. */
+const KNOWN_FILESYSTEM_ROOTS = new Set([
+  'src', 'test', 'tests', 'lib', 'app', 'client', 'server', 'node', 'config',
+  'scripts', 'public', 'dist', 'build', 'docs', 'assets', 'utils', 'helpers',
+  'services', 'components', 'middlewares', 'routes', 'pages', 'api', 'core',
+]);
+
+/**
+ * Varre as mensagens do corpo da requisição e coleciona caminhos RELATIVOS
+ * multi-segmento já citados (texto dos usuários + arguments de tool_calls
+ * prévios). Alimenta a resolução por NOME SIMPLES (Read-like): dado
+ * 'anti-lazy.ts', o relay descobre 'src/middlewares/anti-lazy.ts'.
+ */
+export function extractKnownRelativePaths(messages: any): string[] {
+  const out = new Set<string>();
+  const pushRelative = (v: unknown) => {
+    if (typeof v !== 'string' || v.trim() === '') return;
+    const p = v.trim().replace(/^["'`]|["'`]$/g, '');
+    if (!p) return;
+    if (/^[A-Za-z]:/.test(p) || p.startsWith('//') || p.startsWith('/')) return;
+    const clean = p.replace(/^\.\/|^\.\\/, '');
+    if (clean.startsWith('..')) return;
+    const first = clean.split(/[\\/]/)[0];
+    if (!KNOWN_FILESYSTEM_ROOTS.has(first)) return;
+    if (!clean.split('.').pop()) return;
+    out.add(clean.replace(/\\/g, '/'));
+  };
+
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    const content = msg?.content;
+    if (typeof content === 'string') {
+      for (const m of content.matchAll(KNOWN_TEXT_PATH_RE)) {
+        const p = m[0].trim().replace(/^["'`]|["'`]$/g, '');
+        if (!p || p.includes('://')) continue;
+        const first = p.split('/')[0];
+        if (KNOWN_FILESYSTEM_ROOTS.has(first)) out.add(p.replace(/\\/g, '/'));
+      }
+    }
+    for (const tc of Array.isArray(msg?.tool_calls) ? msg.tool_calls : []) {
+      const declaredArgs = tc?.function?.arguments;
+      if (typeof declaredArgs === 'string' && declaredArgs.trim()) {
+        try {
+          const parsed = JSON.parse(declaredArgs);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            for (const key of PATH_ARG_KEYS) pushRelative((parsed as Record<string, unknown>)[key]);
+          }
+        } catch { /* arguments malformados são ignorados */ }
+      } else if (declaredArgs && typeof declaredArgs === 'object') {
+        for (const key of PATH_ARG_KEYS) pushRelative((declaredArgs as Record<string, unknown>)[key]);
+      }
+    }
+  }
+  return [...out];
+}
+
+/** Prefixos de raiz POSIX reconhecíveis (sys roots) — usados para NÃO tratar
+ *  '/home/...' como caminho relativo acidental quando a raiz do workspace é
+ *  Windows. */
+const POSIX_SYSTEM_ROOT_RE = /^\/(?:users|home|root|var|opt|tmp|mnt|usr|etc|bin|dev|srv|workspace|project|data)\//i;
+
+/** Padrão textual de caminho relativo tipo 'src/middlewares/anti-lazy.ts' usado
+ *  para indexar os "subdiretórios conhecidos" varridos na conversa. Segmentos
+ *  SEM espaços (evita casar a frase inteira '.../anti-lazy.ts e o src/...ts'). */
+const KNOWN_TEXT_PATH_RE = /[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*\/[A-Za-z0-9_.-]+\.[A-Za-z0-9]{1,8}/g;
+
+/**
+ * Remove NUL bytes (\0) e caracteres de controle NÃO-imprimíveis que quebrariam
+ *  o JSON.parse ou seriam injetados no processador. Preserva \t\n\r (\u0009,
+ *  \u000A, \u000D — controle legítimo dentro de texto/comandos).
+ */
+export function stripControlChars(value: string): string {
+  return (value || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
+/**
+ * Colapsa duplicações de barra ('/src//*.ts' → '/src/*.ts', 'C://Users' →
+ *  'C:/Users') preservando o prefixo duplo '//' de caminho UNC ('\\server\share').
+ */
+function collapseDuplicateSlashes(p: string): string {
+  const isUnc = p.startsWith('//');
+  const collapsed = p.replace(/\/{2,}/g, '/');
+  if (isUnc && !collapsed.startsWith('//')) return '/' + collapsed;
+  return collapsed;
+}
+
+/**
+ * Decodifica o fragmento CRU de um valor string JSON (sem as aspas externas):
+ *  lida com \" \\ \/ \b \f \n \r \t e \uXXXX; escapes INVALIDOS (barra solta de
+ *  modelo, já duplicada pelo protectPathEscapesInJson) viram a letra junto da
+ *  barra — o pipeline seguinte converte essa barra em separador de caminho.
+ */
+function decodeJsonStringFragment(fragment: string): string {
+  let out = '';
+  let i = 0;
+  while (i < fragment.length) {
+    const ch = fragment[i];
+    if (ch !== '\\') {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const next = fragment[i + 1];
+    switch (next) {
+      case '"': out += '"'; i += 2; break;
+      case '\\': out += '\\'; i += 2; break;
+      case '/': out += '/'; i += 2; break;
+      case 'b': out += '\b'; i += 2; break;
+      case 'f': out += '\f'; i += 2; break;
+      case 'n': out += '\n'; i += 2; break;
+      case 'r': out += '\r'; i += 2; break;
+      case 't': out += '\t'; i += 2; break;
+      case 'u': {
+        const hex = fragment.slice(i + 2, i + 6);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 6;
+        } else {
+          out += next ?? '';
+          i += 2;
+        }
+        break;
+      }
+      default:
+        out += next ?? '';
+        i += 2;
+        break;
+    }
+  }
+  return out;
+}
+
+/** Re-escapa um valor como fragmento string JSON (sem as aspas externas). */
+function encodeJsonStringFragment(value: string): string {
+  const encoded = JSON.stringify(value);
+  return encoded.slice(1, -1);
+}
 
 /**
  * Ferramentas de TERMINAL: TODAS as barras invertidas dos argumentos viram '/',
@@ -115,26 +282,248 @@ function protectTerminalJsonEscapes(text: string): string {
   return out;
 }
 
+/** True quando o token de comando é um caminho (separador/drive). */
+function isPathyToken(t: string): boolean {
+  if (/^\/[A-Za-z0-9]?$/.test(t)) return false; // switch do CMD: '/s', '/q', '/c'
+  if (t.startsWith('-') || t.includes('=')) return false; // flag / --flag=value
+  return t.includes('\\') || /^[A-Za-z]:/.test(t) || t.includes('/');
+}
+
+/** True quando o token tem caracteres especiais que exigem aspas: não-ASCII
+ *  (acentos), parenteses, vírgula ou ponto-e-vírgula. */
+function hasPathSpecials(t: string): boolean {
+  return /[^\x00-\x7F]/.test(t) || /[(),;]/.test(t);
+}
+
+/** Builtins de filesystem do CMD (lote Windows) que o relay traduz para um
+ *  ÚNICO `node -e "..."` — imune a concurrency, a 'mkdir -p' inexistente no
+ *  CMD e a sintaxe PowerShell multilinha que quebra o parse da IDE. */
+const BATCH_FS_BUILTINS: Record<string, 'mkdir' | 'move' | 'rmdir' | 'del'> = {
+  mkdir: 'mkdir',
+  md: 'mkdir',
+  move: 'move',
+  rmdir: 'rmdir',
+  rd: 'rmdir',
+  del: 'del',
+  erase: 'del',
+};
+
+/** Divide um statement em tokens respeitando aspas duplas/simples. */
+function splitQuotedTokens(s: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let q: string | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (q) {
+      if (ch === q) q = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { q = ch; continue; }
+    if (/\s/.test(ch)) { if (cur) { out.push(cur); cur = ''; } continue; }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+/** Caminho como literal JS com aspas SIMPLES (o argumento externo do `node -e`
+ *  usa aspas duplas no CMD/PowerShell e nunca pode embutir um `"`). */
+function jsPathLiteral(p: string): string {
+  return `'${String(p).replace(/\\/g, '/').replace(/'/g, "\\'")}'`;
+}
+
+/**
+ * Tenta traduzir um script composto SÓ de builtins de filesystem do CMD
+ * (mkdir/md, move, rmdir/rd, del/erase) encadeados por '&&'/'&'/';'/quebra de
+ * linha num ÚNICO `node -e "..."` (fs.mkdirSync/renameSync/rmSync). Torna o
+ * lote seguro para concorrência e elimina o 'InvalidEndOfLine'/'missing field
+ * command' da IDE. Retorna null quando NÃO é um lote puro (repassa intacto).
+ */
+function translateBatchToNodeE(cmd: string): string | null {
+  const statements = cmd
+    .split(/\s*&&\s*|\s*;\s*|\r?\n\s*/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (statements.length === 0) return null;
+
+  const js: string[] = [];
+  for (const st of statements) {
+    const tokens = splitQuotedTokens(st);
+    if (tokens.length === 0) continue;
+    const verb = BATCH_FS_BUILTINS[String(tokens[0]).toLowerCase()];
+    if (!verb) return null;
+
+    let recursive = false;
+    const paths: string[] = [];
+    for (const tok of tokens.slice(1)) {
+      const low = String(tok).toLowerCase();
+      if (low === '-p' || low === '/p' || low === '-s' || low === '/s' || low === '-r' || low === '/r') { recursive = true; continue; }
+      if (low === '/q' || low === '-q' || low === '/f' || low === '-f') continue; // force/quiet
+      if (low.startsWith('/') || (low.startsWith('-') && low.length > 1)) return null; // flag desconhecida
+      paths.push(String(tok).replace(/^["']|["']$/g, ''));
+    }
+    if (paths.length === 0) return null;
+
+    if (verb === 'mkdir') {
+      for (const p of paths) js.push(`fs.mkdirSync(${jsPathLiteral(p)},${recursive ? '{recursive:true}' : '{recursive:false}'})`);
+    } else if (verb === 'move') {
+      if (paths.length < 2 || paths.length % 2 !== 0) return null;
+      for (let i = 0; i + 1 < paths.length; i += 2) {
+        js.push(`fs.renameSync(${jsPathLiteral(paths[i])},${jsPathLiteral(paths[i + 1])})`);
+      }
+    } else if (verb === 'rmdir') {
+      for (const p of paths) {
+        js.push(recursive ? `fs.rmSync(${jsPathLiteral(p)},{recursive:true,force:true})` : `fs.rmdirSync(${jsPathLiteral(p)})`);
+      }
+    } else {
+      for (const p of paths) js.push(`fs.rmSync(${jsPathLiteral(p)},{force:true})`);
+    }
+  }
+
+  if (js.length === 0) return null;
+  return `node -e "const fs=require('fs');${js.join(';')}"`;
+}
+
+/**
+ * Pré-processa o comando de terminal ANTES da cotação defensiva:
+ *   1. lote Windows puro (mkdir/move/rmdir/del) → `node -e "..."` (UMA execução,
+ *      sem corrida entre processos nem bloco PowerShell multilinha);
+ *   2. remove/neutraliza sintaxes que QUEBRAM o parse do CMD/PowerShell da IDE:
+ *      '|| true' (no-op Unix), '2>nul' e 'mkdir -p <dir>' (flag inexistente).
+ * Preserva o restante byte a byte.
+ */
+function preprocessTerminalCommand(cmd: string): string {
+  if (typeof cmd !== 'string' || cmd.trim() === '') return cmd;
+  const translated = translateBatchToNodeE(cmd);
+  if (translated !== null) return translated;
+  let out = cmd;
+  out = out.replace(/\s*\|\|\s*true\b/gi, ' ');
+  out = out.replace(/\s*2>nul\b/gi, ' ');
+  out = out.replace(/(^|[\s;&])mkdir\s+(-p|-parents)(?=\s|$)/gi, '$1mkdir');
+  return out.replace(/[ \t][ \t]+/g, ' ').trim();
+}
+
+/**
+ * ASPAS DUPLAS DEFENSIVAS em comandos de terminal: agrupa tokens de caminho
+ * adjacentes (partes de UM caminho com espaços) e envolve o grupo em aspas
+ * duplas quando contém espaços/acentos/parenteses (ex.: 'cd C:/Users/Lucas sá/Projeto'
+ * → 'cd "C:/Users/Lucas sá/Projeto"'). Flags ('--','-x'), operadores (&&, |, ;)
+ * e tokens JÁ entre aspas são preservados; tokens sem especiais ficam intactos
+ * (semântica de argumentos preservada — 'src/x dest/y' nunca vira um argumento só).
+ * O comando passa primeiro por `preprocessTerminalCommand` (lote → node -e;
+ * Unix-isms removidos).
+ */
+function quoteCommandPathTokens(s: string): string {
+  if (typeof s !== 'string' || s === '') return s;
+  const pre = preprocessTerminalCommand(s);
+  const tokens: string[] = [];
+  let cur = '';
+  for (let j = 0; j < pre.length; j++) {
+    const ch = pre[j];
+    if (ch === '"') {
+      if (cur) { tokens.push(cur); cur = ''; }
+      let q = '';
+      j += 1;
+      while (j < pre.length && pre[j] !== '"') { q += pre[j]; j += 1; }
+      tokens.push('"' + q + '"');
+      continue;
+    }
+    if (/[\s\u00A0]/.test(ch)) {
+      if (cur) { tokens.push(cur); cur = ''; }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) tokens.push(cur);
+
+  const out: string[] = [];
+  let pending: string[] | null = null;
+  const flushGroup = () => {
+    if (pending && pending.length > 0) {
+      if (pending.some(hasPathSpecials)) {
+        out.push('"' + pending.join(' ').replace(/"/g, '\\"') + '"');
+      } else {
+        for (const p of pending) out.push(p);
+      }
+      pending = null;
+    }
+  };
+  const emitToken = (t: string) => {
+    if (/^(?:&&|\|\||>>|>|<|\||;|&)$/.test(t)) { flushGroup(); out.push(t); return; }
+    if (t.startsWith('-') || t.includes('=')) { flushGroup(); out.push(t); return; }
+    if (pending === null) {
+      if (isPathyToken(t) || hasPathSpecials(t)) pending = [t];
+      else out.push(t);
+      return;
+    }
+    if (isPathyToken(t) || hasPathSpecials(t)) { pending.push(t); return; }
+    flushGroup();
+    out.push(t);
+  };
+
+  for (const t of tokens) {
+    if (/^".*"$/.test(t)) { flushGroup(); out.push(t); continue; }
+    emitToken(t);
+  }
+  flushGroup();
+  return out.join(' ');
+}
+
+/** Envolve um caminho INTEIRO (cwd/working_directory) em aspas quando contém
+ *  espaços, acentos ou parenteses — já quotado, repassa intacto. */
+function quoteWholePath(value: unknown): unknown {
+  if (typeof value !== 'string' || value.trim() === '') return value;
+  const t = value.trim();
+  if (/^".*"$/.test(t)) return value;
+  if (/[\s\u00A0]|[^\x00-\x7F]|[(),;]/.test(t)) return '"' + t.replace(/"/g, '\\"') + '"';
+  return value;
+}
+
+/**
+ * Troca de barras invertidas + ASPAS DEFENSIVAS por chave: command→
+ * quoteCommandPathTokens; cwd/directory→quoteWholePath; demais strings só
+ * '\'→'/'. Estrutura (objetos/arrays) é preservada.
+ */
+function forwardSlashAndQuoteLeaves(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(/\\/g, '/');
+  if (Array.isArray(value)) return value.map(forwardSlashAndQuoteLeaves);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (TERMINAL_COMMAND_KEYS.has(k)) out[k] = quoteCommandPathTokens(String(forwardSlashLeaves(v) ?? ''));
+      else if (TERMINAL_PATH_KEYS.has(k)) out[k] = quoteWholePath(forwardSlashLeaves(v));
+      else out[k] = forwardSlashLeaves(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 /**
  * Sanitizador de TERMINAL: converte TODAS as '\' em '/' nos valores dos
- * argumentos. Strings JSON são protegidas ANTES do parse (nunca Tabulação),
- * transformadas e re-serializadas; textos crus não-JSON ganham '/' direto.
+ * argumentos, remove NUL/control antes do parse, e aplica aspas duplas
+ * defensivas em nomes com espaços/acentos/parenteses (CMD/PowerShell). Strings
+ * JSON são protegidas ANTES do parse (nunca Tabulação), transformadas e
+ * re-serializadas; textos crus não-JSON ganham '/' direto + aspas.
  */
 function sanitizeTerminalArgs(args: unknown): unknown {
   if (typeof args === 'string') {
+    const safe = stripControlChars(args);
     try {
-      const parsed = JSON.parse(protectTerminalJsonEscapes(args));
-      if (typeof parsed === 'string') return parsed.replace(/\\/g, '/');
+      const parsed = JSON.parse(protectTerminalJsonEscapes(safe));
+      if (typeof parsed === 'string') return quoteCommandPathTokens(parsed.replace(/\\/g, '/'));
       if (parsed && typeof parsed === 'object') {
-        return JSON.stringify(forwardSlashLeaves(parsed));
+        return JSON.stringify(forwardSlashAndQuoteLeaves(parsed));
       }
-      return args.replace(/\\/g, '/');
+      return quoteCommandPathTokens(safe.replace(/\\/g, '/'));
     } catch {
-      // Não é JSON estruturado: comando cru — barras invertidas direto para '/'.
-      return args.replace(/\\/g, '/');
+      // Não é JSON estruturado: comando cru — barras invertidas para '/' + aspas.
+      return quoteCommandPathTokens(safe.replace(/\\/g, '/'));
     }
   }
-  return forwardSlashLeaves(args);
+  return forwardSlashAndQuoteLeaves(args);
 }
 
 /* ---------------------------------------------------------------------------
@@ -281,6 +670,115 @@ export function applyMcpNativeFilesystemFallback(body: OpenAIRequest): OpenAIReq
   return { ...body, messages: next };
 }
 
+/**
+ * Limpeza de ERROS/STATUS DE TOOL devolvidos pela IDE (role `tool`/`user`):
+ * converte/remove rigorosamente marcação interna tipo '<toolcall_error_message>',
+ * '</toolcall_error_message>', '<toolcall_status>' e variantes malformadas
+ * (sem fechamento, somente fechamento, barra de escape) para TEXTO LIMPO antes
+ * de o conteúdo voltar ao contexto do modelo.
+ *
+ * Regras (idempotentes — rodar 2x não degrada):
+ *   - bloco FECHADO <toolcall_error_message>...</toolcall_error_message> →
+ *     'Error: <texto>' (o erro NÃO é perdido, só desembrulhado);
+ *   - bloco fechado <toolcall_result> / <toolcall_status> → só o texto interno;
+ *   - tags SOLTAS (abertura sem fechamento, só '</...>', '<toolcall_status/>')
+ *     viram '' (abertura de error → 'Error: ' para não perder a mensagem);
+ *   - NUNCA altera o conteúdo fora do escopo dessas tags (byte a byte).
+ */
+export function sanitizeToolOutput(content: unknown): unknown {
+  if (typeof content === 'string') {
+    const clean = cleanToolcallTags(content);
+    return clean === content ? content : clean;
+  }
+  if (Array.isArray(content)) {
+    let changed = false;
+    const parts = content.map((p: any) => {
+      if (p && typeof p === 'object' && typeof p.text === 'string') {
+        const clean = cleanToolcallTags(p.text);
+        if (clean !== p.text) {
+          changed = true;
+          return { ...p, text: clean };
+        }
+      }
+      return p;
+    });
+    return changed ? parts : content;
+  }
+  return content;
+}
+
+/**
+ * Aplica `sanitizeToolOutput` a TODAS as mensagens do corpo (string ou partes
+ * OpenAI). Idempotente e NUNCA toca em fields estruturais (role/name/tool_call_id).
+ * Chamado no GATEWAY antes do roteamento — nem o Gemini nem o Qwen recebem
+ * tags de erro malformadas no prompt da próxima volta do chat.
+ */
+export function applyToolOutputSanitization(body: OpenAIRequest): OpenAIRequest {
+  const messages = body?.messages;
+  if (!Array.isArray(messages)) return body;
+  let changed = false;
+  const next = messages.map((msg) => {
+    if (!msg) return msg;
+    const clean = sanitizeToolOutput(msg.content);
+    if (clean !== msg.content) {
+      changed = true;
+      return { ...msg, content: clean as MessageContent };
+    }
+    return msg;
+  });
+  if (!changed) return body;
+  return { ...body, messages: next };
+}
+
+/** Tags de resultado/erro/status de tool: TAG_OPEN '<' [barra] '\\' nome '>'. */
+const TOOLCALL_BLOCK_RE = /<\\?toolcall_(error_message|result|status)[^>]*>([\s\S]*?)<\/toolcall_(?:error_message|result|status)[^>]*>/gi;
+
+/** Tags SOLTAS restantes (abertura sem fechamento, só fechamento, self-closed). */
+const TOOLCALL_LEFT_OVER_RE = /<\/?\\?toolcall_(?:error_message|result|status)[^>]*>/gi;
+
+/** Erros CRUS de PARÂMETROS/SINTAXE de terminal devolvidos pela IDE (o JSON de
+ *  argumentos chega quebrado — 'command' ausente ou linha inválida). São
+ *  normalizados para mensagem amigável ANTES de voltar ao contexto do modelo:
+ *  sem isso o Gemini/Qwen repete a mesma tool malformada no próximo turno. */
+const TERMINAL_RAW_ERROR_PATTERNS = [
+  /invalid\s+params?:?\s+deserialize\s+params?\s+error:\s+missing\s+field\s+command/gi,
+  /invalid\s+params?:?\s+deserialize\s+params?\s+error/gi,
+  /deserialize\s+params?\s+error[^\r\n]*(?:missing\s+field\s+\w+)?/gi,
+  /invalid\s+end\s+of\s+line/gi,
+  /invalidendofline/gi,
+];
+
+const TERMINAL_ERROR_FRIENDLY =
+  'Error: Parâmetros do comando de terminal inválidos — a IDE rejeitou o comando (campo "command" ausente ou sintaxe de linha inválida). Use um único comando de terminal simples.';
+
+/** Substitui padrões de erro cru de terminal por uma mensagem amigável. */
+function cleanTerminalParamError(text: string): string {
+  let out = text;
+  for (const re of TERMINAL_RAW_ERROR_PATTERNS) {
+    out = out.replace(re, TERMINAL_ERROR_FRIENDLY);
+  }
+  return out;
+}
+
+function cleanToolcallTags(text: string): string {
+  let out = text.replace(TOOLCALL_BLOCK_RE, (_whole, kind: string, inner: string) => {
+    const t = String(inner ?? '').trim();
+    if (!t) return '';
+    return String(kind).toLowerCase() === 'error_message' ? `Error: ${t}` : t;
+  });
+  // Restos: abertura solta de error_message → 'Error: ' (não perder o texto de
+  // bloco SEM fechamento); fechamento/self-closed → ''; result/status → ''.
+  out = out.replace(TOOLCALL_LEFT_OVER_RE, (tag) => {
+    const closing = tag.startsWith('</') || tag.endsWith('/>');
+    const isError = /error_message/i.test(tag);
+    return !closing && isError ? 'Error: ' : '';
+  });
+  // Erros crus de parâmetros de terminal → mensagem amigável (idempotente).
+  out = cleanTerminalParamError(out);
+  out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  return out;
+}
+
 /** Headers HTTP candidatos a carregar a raiz do workspace. */
 const WORKSPACE_ROOT_HEADERS = ['x-workspace-root', 'x-project-root', 'x-code-workspace-root'];
 
@@ -305,16 +803,25 @@ const POSIX_ABS_PATH_RE = /\/(?:Users|home|root|var|opt|workspace|project|data|t
 let cachedWorkspaceRoot: string | null = null;
 
 /**
- * PURGA DE PREFIXOS RELATIVOS — SEMPRE a PRIMEIRA ação de sanitização, quando o
- * valor ainda carrega as barras CRUAS (antes de qualquer regex/resolução).
- *   - remove '.\', './' e repetições ('././', '.\Src\...');
+ * PURGA RE-ENTRANTE DE PREFIXOS RELATIVOS — SEMPRE a PRIMEIRA ação de
+ * sanitização, quando o valor ainda carrega as barras CRUAS (antes de qualquer
+ * regex/resolução). Roda em LOOP até purificar (escudo defensivo):
+ *   - remove './', '.\', '../', '..\' e repetições ('././', '.\.\', '././../',
+ *     '.\..\src\...') recursivamente até não sobrar prefixo relativo;
  *   - remove um '\' RAIZ único e acidental ('\src\file' → 'src\file') — o
  *     modelo às vezes prefixa o caminho com barra; '\\server\share' (UNC)
  *     e 'C:\...' permanecem intocados;
  *   - NUNCA remove o '/' inicial de caminho POSIX absoluto ('/Users/...').
+ * Nota de segurança: prefixos '../' (path traversal fora do workspaceRoot) são
+ * PURGADOS, não preservados — um caminho relativo nunca sobe acima da raiz.
  */
 function stripRelativePrefix(p: string): string {
-  let out = p.replace(/^(?:\.(?:[\\/]))+/, '');
+  let out = p;
+  for (let i = 0; i < 8; i++) {
+    const next = out.replace(/^(?:\.{1,2}[\\/])+/, '');
+    if (next === out) break;
+    out = next;
+  }
   if (/^\\(?!\\)/.test(out) && !/^\\[A-Za-z]:/.test(out)) {
     // '\src\file' → 'src\file' (barra raiz única; '\\server' não entra aqui).
     out = out.slice(1);
@@ -344,13 +851,14 @@ function trimTrailingPathNoise(p: string): string {
  *   - remove aspas envelopantes e colapsa dobras de barra.
  */
 function normalizePathValue(p: string): string {
-  return p
-    .trim()
-    .replace(/^["'`]|["'`]$/g, '')
-    .replace(/\\/g, '/')
-    .replace(/<[^>\r\n]*>/g, '')
-    .replace(/[\u0000-\u001F\u007F]/g, '/')
-    .replace(/\/{3,}/g, '//');
+  return collapseDuplicateSlashes(
+    p
+      .trim()
+      .replace(/^["'`]|["'`]$/g, '')
+      .replace(/\\/g, '/')
+      .replace(/<[^>\r\n]*>/g, '')
+      .replace(/[\u0000-\u001F\u007F]/g, '/')
+  );
 }
 
 /** True para caminho já absoluto (POSIX, drive Windows ou UNC) — já com '/'. */
@@ -378,6 +886,13 @@ function resolveAgainstRoot(p: string, root: string | null): string {
       // drive/UNC; caminho POSIX absoluto dentro de workspace Windows é
       // repassado como está.
       if (/^[A-Za-z]:/.test(p) || p.startsWith('//')) return pathWin32.normalize(p);
+      // '/src/x.ts' (ou glob '/src//*.ts' já colapsado) com raiz Windows: uma
+      // barra inicial NÃO é sys-root POSIX — é acidente do modelo. Trata como
+      // relativo à raiz do projeto (senão 'src' viraria raiz da unidade 'C:' e
+      // a busca quebraria). /home|/Users|... continuam absolutos acima.
+      if (!POSIX_SYSTEM_ROOT_RE.test(p)) {
+        return pathWin32.resolve(root, p.replace(/^\/+/, ''));
+      }
       return p;
     }
     return pathPosix.normalize(p);
@@ -423,25 +938,94 @@ function isWindowsRoot(root: string): boolean {
   return /^[A-Za-z]:\//.test(root) || root.startsWith('//');
 }
 
+/** True para ferramentas de LEITURA (resolução por nome simples habilitada). */
+function isReadLikeTool(name: string | undefined): boolean {
+  return !!name && READ_LIKE_TOOLS.has(String(name).trim().toLowerCase());
+}
+
+/** Arquivos de CONFIGURAÇÃO/RAIZ do workspace: quando o modelo pede só o nome
+ *  (ex.: 'package.json'), resolvem SEMPRE direto na raiz do workspace — mesmo
+ *  que haja um caminho conhecido mais profundo na conversa. Elimina retries e
+ *  'Failed to read' repetidos (gateway PURO: resolução de string, sem I/O). */
+const ROOT_CONFIG_FILES = new Set([
+  'package.json', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb',
+  'bun.lock', 'tsconfig.json', 'jsconfig.json', 'tsconfig.tsbuildinfo', 'diag-output.log',
+  '.env', '.env.local', '.env.example', '.gitignore', '.npmrc', '.babelrc', '.editorconfig',
+  '.prettierrc', '.prettierrc.json', 'eslint.config.js', 'eslint.config.mjs', 'eslint.config.ts',
+  'prettier.config.js', 'prettier.config.cjs', 'vitest.config.ts', 'vitest.config.js',
+  'jest.config.ts', 'jest.config.js', 'vite.config.ts', 'vite.config.js', 'next.config.js',
+  'next.config.mjs', 'README.md', 'readme.md', 'LICENSE', 'Dockerfile', 'Makefile',
+]);
+
+/**
+ * Resolução por NOME SIMPLES (apenas Read-like): se 'anti-lazy.ts' (basename
+ * puro, sem pasta) foi referenciado como 'src/middlewares/anti-lazy.ts' em algum
+ * caminho CONHECIDO da conversa (messages/tool_calls prévios), resolve no diretório
+ * conhecido em vez de assumir a raiz direta do workspace — evita o "Failed to
+ * read" repetido da IDE. Retorna null quando não há pista (mantém o
+ * comportamento padrão root/basename).
+ */
+function resolveSimpleKnownPath(name: string, root: string | null, knownPaths?: string[]): string | null {
+  if (!root || !Array.isArray(knownPaths) || knownPaths.length === 0) return null;
+  if (name.includes('/') || name.includes('\\') || name.startsWith('.') || name.startsWith('/')) return null;
+  if (/^[A-Za-z]:/.test(name)) return null;
+  // Arquivos de CONFIGURAÇÃO/RAIZ SEMPRE resolvem na raiz do workspace
+  // (package.json, tsconfig.json, .env...), independente de subdiretórios
+  // conhecidos — evita 'package.json' apontando para 'src/package.json'.
+  if (ROOT_CONFIG_FILES.has(String(name).toLowerCase())) {
+    return resolveAgainstRoot(name, root);
+  }
+  const target = '/' + name.toLowerCase();
+  let best: string | null = null;
+  for (const rel of knownPaths) {
+    const norm = String(rel).trim().replace(/\\/g, '/').replace(/\/+$/, '');
+    if (!norm || norm.split('/').length < 2) continue;
+    if (norm.toLowerCase().endsWith(target)) {
+      const dir = norm.slice(0, norm.length - name.length); // '<dir>/'
+      if (best === null || dir.length > best.length) best = dir;
+    }
+  }
+  if (best === null) return null;
+  return resolveAgainstRoot(best + name, root);
+}
+
 /**
  * Pipeline RÍGIDO de sanitização de UM caminho — usado tanto por
  * `sanitizePathValue` (chave única 'directory'/'path') quanto por itens de
  * listas multi-arquivo (Read/DeleteFile/Write/SearchReplace):
- *   1. PURGA do prefixo relativo ('./', '.\', repetidos, '\' raiz) ANTES de
- *      qualquer regex/resolução — barras ainda cruas;
+ *   1. PURGA re-entrante do prefixo relativo ('./', '.\', '../', repetidos,
+ *      '\' raiz) ANTES de qualquer regex/resolução — barras ainda cruas;
  *   2. NORMALIZAÇÃO TOTAL de barras: TODAS as '\' → '/' (nunca Tabulação que
  *      comeria a letra de '\tests_stress'), remoção de tags XML/HTML
- *      acidentais e restauração de control-chars residuais como '/';
- *   3. re-purga relativa (barra de segurança — cobre '.\' surgido no passo 2);
- *   4. resolução contra o workspaceRoot — caminho JÁ absoluto (C:\..., c:\...,
- *      \\server\...) nunca recebe o root de novo, só win32.normalize.
+ *      acidentais, restauração de control-chars residuais como '/' e COLAPSO
+ *      de barras duplicadas ('/src//*.ts' → '/src/*.ts');
+ *   3. re-purga relativa (barra de segurança — cobre '.\' surgido no passo 2)
+ *      e remoção de NUL bytes/control residual;
+ *   4. Preservação do drive letter: 'C:'/'c:' sola vira raiz do drive 'C:\';
+ *   5. resolução contra o workspaceRoot — caminho JÁ absoluto (C:\..., c:\...,
+ *      \\server\...) nunca recebe o root de novo, só win32.normalize. Para
+ *      Read-like com basename puro, resolução inteligente via subdiretórios
+ *      conhecidos da conversa.
  */
-function sanitizeSinglePath(raw: string, root: string | null): string {
+function sanitizeSinglePath(
+  raw: string,
+  root: string | null,
+  knownPaths?: string[],
+  readLike = false
+): string {
   if (typeof raw !== 'string' || raw.trim() === '') return raw;
   const purged = stripRelativePrefix(raw);
   const normalized = normalizePathValue(purged);
   if (!normalized) return raw;
-  return resolveAgainstRoot(stripRelativePrefix(normalized), root);
+  const candidate = stripRelativePrefix(stripControlChars(normalized));
+  if (!candidate) return raw;
+  const driveOnly = /^([A-Za-z]):$/.exec(candidate);
+  if (driveOnly) return pathWin32.normalize(driveOnly[1] + ':\\');
+  if (readLike) {
+    const hinted = resolveSimpleKnownPath(candidate, root, knownPaths);
+    if (hinted !== null) return hinted;
+  }
+  return resolveAgainstRoot(candidate, root);
 }
 
 /**
@@ -464,15 +1048,20 @@ export function sanitizePathValue(value: unknown, root: string | null): unknown 
  * resolve nunca contém './'. Caminhos absolutos Windows não contêm vírgula,
  * então a estrutura reconstruída permanece inequívoca.
  */
-function sanitizeMultiFilePath(value: unknown, root: string | null): unknown {
+function sanitizeMultiFilePath(
+  value: unknown,
+  root: string | null,
+  readLike = false,
+  knownPaths?: string[]
+): unknown {
   if (typeof value !== 'string' || value.trim() === '') return value;
   const parts = value
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  if (parts.length <= 1) return sanitizeSinglePath(value, root);
+  if (parts.length <= 1) return sanitizeSinglePath(value, root, knownPaths, readLike);
   return parts
-    .map((part) => sanitizeSinglePath(part, root))
+    .map((part) => sanitizeSinglePath(part, root, knownPaths, readLike))
     .join(',');
 }
 
@@ -499,6 +1088,51 @@ function stableSerialize(value: unknown): string {
 }
 
 /**
+ * Reescreve, no texto JSON CRU, SOMENTE os valores das chaves de caminho,
+ * preservando BYTE A BYTE todos os demais campos do payload. `old_string`,
+ * `new_string`, `content` e `code` jamais são re-escapados ou alterados — a
+ * integridade do conteúdo pedido pelo modelo é garantida mesmo em JSON
+ * malformado (barra solta, aspas não escapadas desses campos não quebram nada
+ * aqui). Retorna null quando não há chave de caminho em string no payload.
+ */
+function rewritePathValuesInJsonRaw(
+  raw: string,
+  name: string | undefined,
+  root: string | null,
+  knownPaths?: string[]
+): string | null {
+  const readLike = isReadLikeTool(name);
+  // Protege barras de caminho ANTES de extrair o fragmento, igual ao pipeline
+  // de parse: '.\src\tests_stress' não pode decodificar '\t' para Tabulação
+  // (o fragmento reescrito mantém a letra 't' real).
+  const protectedRaw = protectPathEscapesInJson(raw);
+  let out = '';
+  let lastIndex = 0;
+  let found = false;
+  REWRITE_PATH_KEY_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = REWRITE_PATH_KEY_RE.exec(protectedRaw)) !== null) {
+    const key = match[1];
+    const decoded = stripControlChars(decodeJsonStringFragment(match[2]));
+    let replaced: string;
+    if (PATTERN_PATH_KEYS.has(key)) {
+      replaced = collapseDuplicateSlashes(decoded);
+    } else {
+      // Multi-arquivo ('x.ts, y.ts') divide cada item E re-resolve — string
+      // JSON de Read/DeleteFile com listas continua funcionando.
+      replaced = String(sanitizeMultiFilePath(decoded, root, readLike, knownPaths));
+    }
+    out += protectedRaw.slice(lastIndex, match.index);
+    out += '"' + key + '":"' + encodeJsonStringFragment(replaced) + '"';
+    lastIndex = match.index + match[0].length;
+    found = true;
+  }
+  if (!found) return null;
+  out += protectedRaw.slice(lastIndex);
+  return out;
+}
+
+/**
  * Sanitiza os argumentos de uma Tool Call (objeto OU string JSON), reescrevendo
  * apenas as chaves de caminho. Nenhum outro argumento (content, query, etc.) é
  * tocado.
@@ -506,28 +1140,45 @@ function stableSerialize(value: unknown): string {
  * ISOLAMENTO/TRATAMENTO: ferramentas de terminal (RunCommand, CheckCommandStatus
  * e afins) têm TODAS as barras invertidas convertidas em '/' nos valores
  * ('src\tests_stress' → 'src/tests_stress'; '\t' nunca vira Tabulação) —
- * o CMD/PowerShell aceita '/' em caminhos. Chamadas `run_mcp` (MCP) recebem
+ * o CMD/PowerShell aceita '/' em caminhos, e comandos com espaços/acentos/
+ * parenteses ganham aspas duplas defensivas. Chamadas `run_mcp` (MCP) recebem
  * apenas a injeção de `server_name` quando ausente (`mcpServers` = nomes
  * anunciados no schema das tools da requisição). Read/Write/Edit/
- * SearchReplace/DeleteFile passam pelo pipeline rígido de sanitização.
+ * SearchReplace/DeleteFile passam pelo pipeline rígido de sanitização; Read-like
+ * recebe resolução por nome simples contra caminhos conhecidos (`knownPaths`
+ * = extractKnownRelativePaths das messages) e keys de busca (pattern/glob)
+ * recebem só o colapso de '/'.
  */
 export function sanitizeToolCallArguments(
   name: string | undefined,
   args: unknown,
   root: string | null,
-  mcpServers?: string[]
+  mcpServers?: string[],
+  knownPaths?: string[]
 ): unknown {
   if (args === null || args === undefined) return args;
   if (isMcpToolCall(name)) return sanitizeMcpToolArguments(args, mcpServers);
   if (isTerminalTool(name)) return sanitizeTerminalArgs(args);
 
   if (typeof args === 'string') {
+    const raw = stripControlChars(args);
+    if (!raw.trim()) return args;
+    try {
+      const rewritten = rewritePathValuesInJsonRaw(raw, name, root, knownPaths);
+      if (rewritten !== null) {
+        // Payload de caminho reescrito no lugar; campos não-path (old_string,
+        // content, etc.) ficam byte a byte INTACTOS — mesmo que o JSON global
+        // seja preguiçoso (o caminho sanitizado é entregue à IDE de qualquer
+        // forma; o restante não é pior do que o original).
+        return rewritten;
+      }
+    } catch { /* segue para o fallback */ }
     try {
       // Protege barras de caminho no JSON cru ANTES do parse: '\tests_stress'
       // não pode ser decodificado como Tab (o JSON.parse 'engoliria' o 't').
-      const parsed = JSON.parse(protectPathEscapesInJson(args));
+      const parsed = JSON.parse(protectPathEscapesInJson(raw));
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return JSON.stringify(sanitizeToolCallArguments(name, parsed, root));
+        return JSON.stringify(sanitizeToolCallArguments(name, parsed, root, mcpServers, knownPaths));
       }
     } catch {
       // Não é JSON estruturado: repassa intacto.
@@ -536,11 +1187,14 @@ export function sanitizeToolCallArguments(
   }
 
   if (typeof args === 'object' && !Array.isArray(args)) {
+    const readLike = isReadLikeTool(name);
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(args as Record<string, unknown>)) {
-      if (FILE_PATH_KEYS.has(key)) out[key] = sanitizeMultiFilePath(val, root);
+      if (FILE_PATH_KEYS.has(key)) out[key] = sanitizeMultiFilePath(val, root, readLike, knownPaths);
       else if (key === 'directory') out[key] = sanitizePathValue(val, root);
-      else out[key] = val;
+      else if (PATTERN_PATH_KEYS.has(key) && typeof val === 'string') {
+        out[key] = collapseDuplicateSlashes(val);
+      } else out[key] = val;
     }
     return out;
   }

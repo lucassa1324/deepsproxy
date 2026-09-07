@@ -212,7 +212,7 @@ function doublePathEscapeBackslashes(value: string): string {
 }
 
 export function robustParseJSON(str: string): any {
-  let sanitized = str.trim();
+  let sanitized = (str || '').replace(/\u0000/g, '').trim();
 
   // Remove markdown code blocks if present
   sanitized = sanitized.replace(/^```json\s*/, '').replace(/```$/, '').trim();

@@ -22,6 +22,8 @@ import {
   sanitizeToolCallArguments,
   extractMcpServerNamesFromTools,
   applyMcpNativeFilesystemFallback,
+  applyToolOutputSanitization,
+  extractKnownRelativePaths,
 } from '../services/relay-path.ts';
 import {
   resolveRegistry,
@@ -248,8 +250,9 @@ async function handleDeepSeekNonStreaming(
   // via x-workspace-root; '\' -> '/') antes de entregá-los à IDE. Sem I/O local.
   const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
   const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+  const knownPaths = extractKnownRelativePaths((body as any).messages);
   const normalizedToolCalls = toolCalls.map((tc) => {
-    const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
+    const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
     return {
       ...tc,
       arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
@@ -778,6 +781,12 @@ export async function chatCompletions(c: Context) {
     // Idempotente; aplicado a TODOS os provedores (deepseek inline + qwen/gemini delegados).
     body = applyMcpNativeFilesystemFallback(body);
 
+    // Limpeza estrita de tags de erro/status devolvidas pela IDE nas respostas
+    // de tool ('<toolcall_error_message>...' e variantes malformadas): convertidas
+    // para 'Error: ...' / texto limpo ANTES de voltar ao contexto do modelo —
+    // nem o Gemini nem o Qwen recebem XML malformatado no prompt da próxima volta.
+    body = applyToolOutputSanitization(body);
+
     // ── Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE ──
     // pelo catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
     //  - porta 3006 (gateway): o model enviado pelo cliente é ignorado; vale o
@@ -1115,6 +1124,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
     const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+    const knownPaths = extractKnownRelativePaths((body as any).messages);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -1327,7 +1337,8 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
                           toolCallObj.name,
                           toolCallObj.arguments,
                           relayWorkspaceRoot,
-                          mcpServers
+                          mcpServers,
+                          knownPaths
                         );
                         const normalizedArgs = safeArgs;
 

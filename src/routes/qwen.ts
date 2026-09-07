@@ -21,6 +21,7 @@ import {
   getWorkspaceRootFromContext,
   sanitizeToolCallArguments,
   extractMcpServerNamesFromTools,
+  extractKnownRelativePaths,
 } from '../services/relay-path.ts';
 
 function getIncrementalDelta(oldStr: string, newStr: string): string {
@@ -179,8 +180,9 @@ async function handleQwenNonStreaming(
     // x-workspace-root; '\' -> '/') antes de entregar a Tool Call à IDE.
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
     const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+    const knownPaths = extractKnownRelativePaths((body as any).messages);
     message.tool_calls = toolCalls.map((tc) => {
-      const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
+      const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
       return {
         id: tc.id,
         type: 'function',
@@ -269,6 +271,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
     // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
     const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
+    const knownPaths = extractKnownRelativePaths((body as any).messages);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -306,7 +309,19 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
       let promptTokens = Math.ceil(finalPrompt.length / 3.5);
 
       while (true) {
-        const { done, value } = await reader.read();
+        let done = false;
+        let value: Uint8Array | undefined;
+        try {
+          const read = await reader.read();
+          done = read.done;
+          value = read.value;
+        } catch (e) {
+          // Stream abortada/timeout no meio de um tool_call: descarta o buffer
+          // parcial (escudo defensivo — não contamina a próxima execução) e
+          // propaga o erro para o handler do turno.
+          toolParser.reset();
+          throw e;
+        }
         if (done) break;
 
         buffer += decoder.decode(value, { stream: true });
@@ -394,7 +409,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
                 }
 
                 for (const tc of toolCalls) {
-                  const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
+                  const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
                   await writeEvent({
                     id: completionId,
                     object: 'chat.completion.chunk',
@@ -433,7 +448,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
         });
       }
       for (const tc of remainingToolCalls) {
-        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',

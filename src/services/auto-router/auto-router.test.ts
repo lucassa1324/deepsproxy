@@ -8,7 +8,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { classifyTask } from './task-classifier.ts';
 import { selectBestModel } from './model-selector.ts';
-import { routeRequest, clearDecisionCache, updateAutoRouterConfig, getAutoRouterStatus, getPreviousAutoModel, rememberAutoModel, clearConversationMemory, buildAutoFailoverChain } from './router.ts';
+import { routeRequest, clearDecisionCache, updateAutoRouterConfig, getAutoRouterStatus, getAutoRouterConfig, getPreviousAutoModel, rememberAutoModel, clearConversationMemory, buildAutoFailoverChain } from './router.ts';
 import { registerModel, setModelAvailability, isModelDown, recordModelFailure, recordModelSuccess, resetModelHealth, getModelHealthState, inferCapabilities, getModelMetadata, recordModelRequest, recordModelLatency, recordModelOutcome, getModelMetrics, getModelMetricsFor, resetModelMetrics } from './model-metadata.ts';
 import type { ModelMetadata, AutoRouterConfig } from './types.ts';
 
@@ -164,6 +164,17 @@ describe('Task Classifier', () => {
     const result = classifyTask([], 'Escreva uma função em Python que gere um relatório com gráficos');
     assert.ok(result.categories.coding && result.categories.coding > 0, 'deve ter coding');
     assert.ok(result.categories.writing && result.categories.writing > 0, 'deve ter writing');
+  });
+
+  it('config padrão é mais estrita: threshold ≥ 5 e gate de complexidade 0.6', () => {
+    const cfg = getAutoRouterConfig();
+    assert.ok(cfg.minCapabilityThreshold >= 5, `threshold padrão deve ser ≥ 5, veio: ${cfg.minCapabilityThreshold}`);
+    assert.equal(cfg.complexityGate, 0.6);
+  });
+
+  it('refatoração/limpeza em lote eleva a complexidade (aciona o gate de qualidade)', () => {
+    const result = classifyTask([], 'Refatore o módulo de autenticação e remova os arquivos antigos em lote');
+    assert.ok(result.complexity >= 0.6, `complexidade deve ser alta, veio: ${result.complexity}`);
   });
 });
 
@@ -731,5 +742,62 @@ describe('Failover Chain', () => {
     assert.equal(status.metrics.totalRequests, 2);
     assert.equal(status.metrics.totalSuccesses, 1);
     assert.equal(status.metrics.totalFailures, 1);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Complexity Gate — refatoração em lote escolhe PRO em vez do rápido
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Complexity Gate (flash vs pro)', () => {
+  const TASK =
+    'Refatore completamente a arquitetura do módulo de autenticação, analise a lógica de permissões e corrija os bugs de concorrência';
+  const PAIR = () => [
+    { id: 'gemini-flash-test', providerId: 'p' },
+    { id: 'gemini-pro-test', providerId: 'p' },
+  ];
+
+  beforeEach(() => {
+    resetModelHealth();
+    resetModelMetrics();
+    clearDecisionCache();
+  });
+
+  function setupGeminiPair(): void {
+    registerModel('gemini-flash-test', {
+      providerId: 'p',
+      capabilities: { reasoning: 7, coding: 7, math: 7, writing: 7, vision: 8, general: 8 },
+      cost: { input: 0.15, output: 0.60 },
+      speed: 9,
+      isFree: false,
+    });
+    registerModel('gemini-pro-test', {
+      providerId: 'p',
+      capabilities: { reasoning: 9, coding: 9, math: 9, writing: 8, vision: 9, general: 9 },
+      cost: { input: 1.25, output: 10.0 },
+      speed: 6,
+      isFree: false,
+    });
+  }
+
+  it('com o gate ligado (0.6), refatoração complexa vai para o PRO', () => {
+    setupGeminiPair();
+    updateAutoRouterConfig(makeConfig({ costPolicy: 'balanced', complexityGate: 0.6 }));
+    const result = routeRequest([], TASK, PAIR());
+    assert.equal(result.selectedModelId, 'gemini-pro-test', `deveria escolher o pro: ${result.selectedModelId}`);
+  });
+
+  it('sem gate (gate alto), balanced mantém o flash (rápido/barato)', () => {
+    setupGeminiPair();
+    updateAutoRouterConfig(makeConfig({ costPolicy: 'balanced', complexityGate: 1.1 }));
+    const result = routeRequest([], TASK, PAIR());
+    assert.equal(result.selectedModelId, 'gemini-flash-test', `deveria escolher o flash: ${result.selectedModelId}`);
+  });
+
+  it('tarefa trivial não dispara o gate mesmo ligado', () => {
+    setupGeminiPair();
+    updateAutoRouterConfig(makeConfig({ costPolicy: 'balanced', complexityGate: 0.6 }));
+    const result = routeRequest([], 'Obrigado!', PAIR());
+    assert.equal(result.selectedModelId, 'gemini-flash-test', 'trivial → flash é suficiente');
   });
 });

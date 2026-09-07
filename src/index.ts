@@ -9,7 +9,8 @@
  */
 
 import { serve } from '@hono/node-server';
-import { Hono } from 'hono';
+import { Hono, type Context, type Next } from 'hono';
+import { HonoRequest } from 'hono/request';
 import { cors } from 'hono/cors';
 import { chatCompletions } from './routes/chat.ts';
 import * as dotenv from 'dotenv';
@@ -55,6 +56,61 @@ export const app = new Hono();
 // recebe é controlado pelo painel (aba Apps), não pela ferramenta cliente.
 export const gatewayApp = new Hono();
 
+/** True quando o valor de um header de destino aponta para o PRÓPRIO proxy
+ *  (localhost / loopback / porta local). Nesses casos o cliente HTTP de rede da
+ *  IDE (mesh) rejeita a requisição com HTTP 400 antes de qualquer processamento. */
+export function isLocalDestinationHeaderValue(value: string | null | undefined): boolean {
+  const v = String(value ?? '').trim();
+  if (!v) return false;
+  // Porta local nua (ex.: '3005') — header de destino sem host.
+  if (/^\d{1,5}$/.test(v)) return true;
+  // localhost / loopback IPv4 / IPv6 (::1), com porta opcional ':3005'.
+  return /^(?:localhost|127(?:\.\d{1,3}){3}|0\.0\.0\.0|::1)(?::\d{1,5})?$/i.test(v)
+    || /^\[::1\](?::\d{1,5})?$/i.test(v);
+}
+
+/** Remove 'destination-addr'/'destination-domain' de uma coleção de headers
+ *  QUANDO um deles aponta para o destino local. Função pura (testável): os dois
+ *  cabeçalhos de destino são removidos juntos para a requisição não carregar
+ *  informação inconsistente; qualquer outro header permanece byte a byte. */
+export function sanitizeDestinationHeadersFrom(headersInit: HeadersInit): Headers {
+  const headers = new Headers(headersInit);
+  const addr = headers.get('destination-addr');
+  const domain = headers.get('destination-domain');
+  if (isLocalDestinationHeaderValue(addr) || isLocalDestinationHeaderValue(domain)) {
+    headers.delete('destination-addr');
+    headers.delete('destination-domain');
+  }
+  return headers;
+}
+
+/** Intercepta as requisições recebidas (ambos os apps) e remove os cabeçalhos
+ *  de destino locais ('destination-addr'/'destination-domain' apontando para
+ *  localhost/127.0.0.1/porta local), evitando a rejeição HTTP 400 do cliente
+ *  HTTP de rede da IDE. O `req` do Context do Hono v4 é getter omnileitura;
+ *  a substituição usa defineProperty para não alterar o restante do pipeline. */
+async function sanitizeLocalDestinationHeaders(c: Context, next: Next) {
+  const raw = c.req.raw;
+  const addr = raw.headers.get('destination-addr');
+  const domain = raw.headers.get('destination-domain');
+  if (isLocalDestinationHeaderValue(addr) || isLocalDestinationHeaderValue(domain)) {
+    const sanitized = new Request(raw.url, {
+      method: raw.method,
+      headers: sanitizeDestinationHeadersFrom(raw.headers),
+      body: raw.body,
+      signal: raw.signal,
+    });
+    Object.defineProperty(c, 'req', {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return new HonoRequest(sanitized);
+      },
+    } as unknown as PropertyDescriptor);
+  }
+  await next();
+}
+
 // Registra a tool nativa de busca na web (agentes que usam o registry).
 registerWebSearchTool();
 
@@ -79,6 +135,7 @@ const PUBLIC_PATHS = new Set([
 // Rotas do gateway (OpenAI-compatível): autenticáveis por chave virtual de app.
 const GATEWAY_PATHS = new Set(['/v1/chat/completions', '/v1/models', '/v1/embeddings', '/v1/web/search', '/v1/tools']);
 
+app.use('*', sanitizeLocalDestinationHeaders);
 app.use('*', cors());
 
 app.use('*', async (c, next) => {
@@ -123,6 +180,7 @@ registerOpenAIRoutes(app);
 // modelo fica no painel (aba Apps), a IDE só aponta para a URL e envia a chave.
 // As rotas do dashboard seguem a mesma proteção do modo direto (API_KEY do
 // .env, quando configurada).
+gatewayApp.use('*', sanitizeLocalDestinationHeaders);
 gatewayApp.use('*', cors());
 gatewayApp.use('*', async (c, next) => {
   const p = c.req.path;

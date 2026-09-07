@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { app } from './index.ts';
+import { app, gatewayApp, isLocalDestinationHeaderValue, sanitizeDestinationHeadersFrom } from './index.ts';
 import { initPlaywright, closePlaywright } from './services/playwright.ts';
 
 test('Health check endpoint returns status ok', async () => {
@@ -11,6 +11,54 @@ test('Health check endpoint returns status ok', async () => {
   
   const body = await res.json();
   assert.deepStrictEqual(body, { status: 'ok' });
+});
+
+test('destination headers locais são removidos na entrada (localhost/loopback/porta)', async () => {
+  const cases = ['localhost', 'LOCALHOST', 'localhost:3005', '127.0.0.1', '127.0.0.1:3005', '3005', '::1'];
+  for (const bad of cases) {
+    assert.equal(
+      isLocalDestinationHeaderValue(bad),
+      true,
+      `"${bad}" deve ser tratado como destino local`
+    );
+
+    const clean = sanitizeDestinationHeadersFrom({
+      'destination-addr': bad,
+      'destination-domain': `${bad}.sandbox`,
+      'x-custom': 'mantido',
+    });
+    assert.equal(clean.has('destination-addr'), false, `${bad} deve ter destination-addr removido`);
+    assert.equal(clean.has('destination-domain'), false, `${bad} deve ter destination-domain removido`);
+    assert.equal(clean.get('x-custom'), 'mantido');
+  }
+});
+
+test('destination headers REMOTOS não são removidos', () => {
+  assert.equal(isLocalDestinationHeaderValue('api.deepseek.com'), false);
+  assert.equal(isLocalDestinationHeaderValue('https://example.com:443'), false);
+
+  const clean = sanitizeDestinationHeadersFrom({
+    'destination-addr': '142.250.74.110:443',
+    'destination-domain': 'api.deepseek.com',
+  });
+  assert.equal(clean.get('destination-addr'), '142.250.74.110:443');
+  assert.equal(clean.get('destination-domain'), 'api.deepseek.com');
+});
+
+test('sem destination headers: coleção intacta e middleware não quebra rota', async () => {
+  const clean = sanitizeDestinationHeadersFrom({ 'x-custom': 'ok', authorization: 'Bearer abc' });
+  assert.equal(clean.get('x-custom'), 'ok');
+  assert.equal(clean.get('authorization'), 'Bearer abc');
+
+  const res = await app.fetch(new Request('http://localhost/health', {
+    headers: { 'destination-addr': '127.0.0.1:3005' },
+  }));
+  assert.strictEqual(res.status, 200);
+
+  const gwRes = await gatewayApp.fetch(new Request('http://localhost/health', {
+    headers: { 'destination-domain': 'localhost' },
+  }));
+  assert.strictEqual(gwRes.status, 200);
 });
 
 test('Models endpoint returns deepseek-thinking and deepseek-no-thinking', async () => {

@@ -20,6 +20,7 @@ import {
   sanitizeToolCallArguments,
   sanitizeToolOutput,
   applyToolOutputSanitization,
+  WRITE_CONFIRMATION,
   extractWorkspaceRootFromMessages,
   clearWorkspaceRootCache,
   toolCallSignature,
@@ -1353,6 +1354,56 @@ describe('relay-path: sanitizeToolOutput — limpeza estrita de tags de erro da 
   it('sem tags: corpo intacto (mesma referência)', () => {
     const body: any = { model: 'x', messages: [{ role: 'tool', content: 'resultado simples' }] };
     assert.strictEqual(applyToolOutputSanitization(body), body);
+  });
+
+  it('Write com resultado VAZIO recebe confirmação limpa (evita loop de re-escrita)', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'Write', arguments: '{"path":"src/a.ts","content":"x"}' } }] },
+        { role: 'tool', tool_call_id: 'call_1', content: '' },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    assert.strictEqual(out.messages[1].content, WRITE_CONFIRMATION);
+  });
+
+  it('Write com resultado em array de partes em branco também recebe confirmação', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'assistant', tool_calls: [{ id: 'call_2', function: { name: 'WriteFile', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_2', content: [{ type: 'text', text: '   \n  ' }] },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    assert.strictEqual(out.messages[1].content, WRITE_CONFIRMATION);
+  });
+
+  it('Write com resultado NÃO-vazio permanece intacto (sem injeção)', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'assistant', tool_calls: [{ id: 'call_3', function: { name: 'Write', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_3', content: 'Arquivo criado com sucesso' },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    assert.strictEqual(out.messages[1].content, 'Arquivo criado com sucesso');
+    assert.strictEqual(out.messages[0], body.messages[0]);
+  });
+
+  it('Read/outras tools com resultado vazio NÃO recebem confirmação de escrita', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'assistant', tool_calls: [{ id: 'call_4', function: { name: 'Read', arguments: '{}' } }] },
+        { role: 'tool', tool_call_id: 'call_4', content: '' },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    assert.strictEqual(out, body);
+    assert.strictEqual(out.messages[1].content, '');
   });
 
   it('normaliza erro cru de parâmetro de terminal para mensagem amigável', () => {

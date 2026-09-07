@@ -718,18 +718,60 @@ export function sanitizeToolOutput(content: unknown): unknown {
   return content;
 }
 
+/** Confirmação limpa para resultados VAZIOS de ferramentas de escrita ('Write'):
+ *  uma IDE que devolve vazio faz o modelo suspeitar que o arquivo não foi
+ *  gravado e re-escrever o MESMO arquivo em loop. O gateway injeta esta
+ *  confirmação nesse caso — a chamada de Write está concluída, encerra o ciclo. */
+export const WRITE_CONFIRMATION = 'The file was written successfully.';
+
+/** True quando o content de uma mensagem é VAZIO (string em branco, array de
+ *  partes sem texto, null ou array vazio) — alvo da injeção acima. */
+function messageContentEmpty(content: unknown): boolean {
+  if (content === undefined || content === null) return true;
+  if (typeof content === 'string') return content.trim() === '';
+  if (Array.isArray(content)) {
+    if (content.length === 0) return true;
+    return content.every((p: any) => {
+      if (typeof p === 'string') return p.trim() === '';
+      return !(p && typeof p === 'object' && typeof p.text === 'string' && p.text.trim() !== '');
+    });
+  }
+  return true;
+}
+
 /**
  * Aplica `sanitizeToolOutput` a TODAS as mensagens do corpo (string ou partes
  * OpenAI). Idempotente e NUNCA toca em fields estruturais (role/name/tool_call_id).
  * Chamado no GATEWAY antes do roteamento — nem o Gemini nem o Qwen recebem
  * tags de erro malformadas no prompt da próxima volta do chat.
+ *
+ * Além da limpeza de tags, garante ESTABILIDADE do resultado das ferramentas de
+ * escrita: resultado VAZIO de um 'Write' (correlacionado pelo tool_call_id com o
+ * assistant que o emitiu) recebe a confirmação `WRITE_CONFIRMATION`, impedindo o
+ * loop de re-escrita do mesmo arquivo.
  */
 export function applyToolOutputSanitization(body: OpenAIRequest): OpenAIRequest {
   const messages = body?.messages;
   if (!Array.isArray(messages)) return body;
+  const toolNames = new Map<string, string>();
   let changed = false;
   const next = messages.map((msg) => {
     if (!msg) return msg;
+    // Correlação tool_call_id → nome da ferramenta (o assistant com tool_calls
+    // precede cronologicamente o result da tool na matriz de mensagens OpenAI).
+    if (msg.role === 'assistant' && Array.isArray((msg as any).tool_calls)) {
+      for (const tc of (msg as any).tool_calls as any[]) {
+        if (tc && tc.id) toolNames.set(String(tc.id), String(tc?.function?.name ?? ''));
+      }
+    }
+    // Confirmação de escrita: 'Write' com resultado VAZIO → confirmação limpa.
+    if (msg.role === 'tool' && typeof msg.tool_call_id === 'string') {
+      const name = toolNames.get(msg.tool_call_id);
+      if (isWriteLikeTool(name) && messageContentEmpty(msg.content)) {
+        changed = true;
+        return { ...msg, content: WRITE_CONFIRMATION };
+      }
+    }
     const clean = sanitizeToolOutput(msg.content);
     if (clean !== msg.content) {
       changed = true;

@@ -559,10 +559,13 @@
               </div>
             </label>
             <label class="field">
-              <span id="pvApiKeyLabel">API Key (opcional)</span>
-              <div class="row">
-                <input id="pvApiKey" type="password" autocomplete="off" placeholder="Deixe vazio se não for necessária" style="flex:1;" />
-                <button class="btn ghost" id="btnCopyPvApiKey" type="button" title="Copia a API Key digitada acima" disabled>⧉ Copiar</button>
+              <span id="pvApiKeyLabel">Gerenciamento de Chaves / Contas</span>
+              <div id="pvKeysList" style="margin-bottom:10px;"></div>
+              <div class="row" style="flex-wrap:wrap; gap:6px;">
+                <input id="pvKeyLabel" type="text" placeholder="Identificador (ex: Conta Google 1)" style="flex:1;min-width:150px;" />
+                <input id="pvKeyValue" type="password" autocomplete="off" placeholder="API Key" style="flex:2;min-width:200px;" />
+                <button class="btn ghost" id="btnAddKey" type="button">+ Adicionar Chave</button>
+                <button class="btn ghost" id="btnClearKeyForm" type="button" title="Limpar os campos acima e sair da edição">Limpar</button>
               </div>
             </label>
             <div id="pvTypeHint" class="note" style="margin:0 0 10px;"></div>
@@ -2045,6 +2048,99 @@
   let providers = [];
   let activeProviderId = null;
   let editingId = null;
+  /** Chaves sendo editadas no formulário (AccountKey[]). */
+  let editingKeys = [];
+  /** Id da chave em edição no formulário (null = modo "adicionar nova"). */
+  let editingKeyId = null;
+
+  /** Gera um id simples para uma chave/conta. */
+  function _newKeyClientId() {
+    return 'ak_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  }
+
+  /** Versão mascarada de uma chave para exibição (ex.: "AIzaSy...X9a"). */
+  function _maskKey(k) {
+    if (!k) return '••••';
+    return k.length <= 8 ? '••••' : k.slice(0, 6) + '…' + k.slice(-3);
+  }
+
+  /** Limpa os inputs e sai do modo de edição (volta ao modo "adicionar nova"). */
+  function resetKeyForm() {
+    editingKeyId = null;
+    $("#pvKeyLabel").value = "";
+    $("#pvKeyValue").value = "";
+    $("#btnAddKey").textContent = "+ Adicionar Chave";
+  }
+
+  /** Carrega uma chave existente nos inputs e habilita o modo "Salvar alteração". */
+  function enterEditKey(keyId) {
+    const k = editingKeys.find((x) => x.id === keyId);
+    if (!k) return;
+    editingKeyId = keyId;
+    $("#pvKeyLabel").value = k.label || "";
+    $("#pvKeyValue").value = k.key || "";
+    $("#btnAddKey").textContent = "Salvar alteração";
+    renderEditingKeys();
+    $("#pvKeyLabel").focus();
+  }
+
+  /** Valida os inputs e consolida no array (novo cadastro ou alteração). */
+  function saveDraftKey() {
+    const labelEl = $("#pvKeyLabel");
+    const valueEl = $("#pvKeyValue");
+    const fb = $("#pvFeedback");
+    const label = labelEl.value.trim() || ("Conta " + (editingKeys.length + 1));
+    const key = valueEl.value.trim();
+    if (!key) {
+      fb.textContent = "Informe a API Key antes de salvar.";
+      return;
+    }
+    if (editingKeyId) {
+      const k = editingKeys.find((x) => x.id === editingKeyId);
+      if (k) {
+        k.label = label;
+        k.key = key;
+      }
+      fb.textContent = "Alteração da chave salva.";
+    } else {
+      editingKeys.push({ id: _newKeyClientId(), label, key, status: 'active', resetAt: null });
+      fb.textContent = "Chave adicionada.";
+    }
+    resetKeyForm();
+    renderEditingKeys();
+  }
+
+  /** Renderiza a lista de chaves no formulário de edição. */
+  function renderEditingKeys() {
+    const list = document.getElementById('pvKeysList');
+    if (!list) return;
+    list.innerHTML = '';
+    if (!editingKeys.length) {
+      list.innerHTML = '<div class="sub" style="font-size:12px;color:var(--muted);margin-bottom:8px;">Nenhuma chave cadastrada. Adicione acima.</div>';
+      return;
+    }
+    editingKeys.forEach((k) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const isEditing = k.id === editingKeyId;
+      row.style.cssText =
+        'align-items:center;gap:6px;margin-bottom:5px;' +
+        (isEditing ? 'outline:1px solid var(--green);border-radius:8px;padding:2px 4px;' : '');
+      const statusCls = k.status === 'rate_limited' ? 'warn' : k.status === 'disabled' ? 'err' : 'ok';
+      const statusTxt = k.status === 'rate_limited' ? 'Cota Esgotada' : k.status === 'disabled' ? 'Desativada' : 'Ativa';
+      row.innerHTML =
+        '<span style="font-size:12px;font-weight:600;min-width:90px;white-space:nowrap;user-select:text;" title="' + (k.label || 'Conta') + '">' +
+          escapeHtml(k.label || 'Conta') +
+        '</span>' +
+        '<code style="font-size:11px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text;" title="' + (k.key || '') + '">' +
+          escapeHtml(_maskKey(k.key || '')) +
+        '</code>' +
+        '<span class="pill ' + statusCls + '" style="font-size:10px;padding:2px 6px;">' + statusTxt + '</span>' +
+        '<button type="button" class="btn ghost" data-action="edit" data-keyid="' + k.id + '" style="font-size:11px;padding:2px 6px;" title="Editar esta chave">✎</button>' +
+        '<button type="button" class="btn ghost danger" data-action="remove" data-keyid="' + k.id + '" style="font-size:11px;padding:2px 6px;" title="Remover esta chave">✕</button>';
+      list.appendChild(row);
+    });
+  }
 
   const TYPE_META = {
     "openai-compatible": {
@@ -2052,7 +2148,7 @@
       sub: (p) => (p.baseUrl + (p.model ? " · " + p.model : "")),
       baseUrlPh: "http://localhost:1234/v1",
       baseUrlLabel: "Base URL (obrigatória)",
-      apiKeyLabel: "API Key (opcional)",
+      apiKeyLabel: "Chaves / Contas (opcional — suporta múltiplas chaves com rotação)",
       hint: "Qualquer endpoint que fale o padrão OpenAI: Ollama, LM Studio, OpenAI, Groq, OpenRouter, Together, vLLM...",
     },
     gemini: {
@@ -2060,7 +2156,7 @@
       sub: (p) => "generativelanguage (Google)" + (p.model ? " · " + p.model : ""),
       baseUrlPh: "https://generativelanguage.googleapis.com/v1beta",
       baseUrlLabel: "Base URL (opcional — padrão da Google)",
-      apiKeyLabel: "API Key (obrigatória)",
+      apiKeyLabel: "Chaves / Contas (obrigatório — suporta múltiplas chaves com rotação)",
       hint: "Modelos: gemini-2.0-flash, gemini-1.5-flash, etc. O proxy traduz para a REST nativa do Google e respeita ~15 RPM.",
     },
     anthropic: {
@@ -2068,7 +2164,7 @@
       sub: (p) => "api.anthropic.com (Claude)" + (p.model ? " · " + p.model : ""),
       baseUrlPh: "https://api.anthropic.com/v1",
       baseUrlLabel: "Base URL (opcional — padrão da Anthropic)",
-      apiKeyLabel: "API Key (obrigatória)",
+      apiKeyLabel: "Chaves / Contas (obrigatório — suporta múltiplas chaves com rotação)",
       hint: "Modelos: claude-sonnet-4-5, claude-opus-4-1, etc. O proxy traduz para a Messages API (x-api-key).",
     },
     ollama: {
@@ -2076,12 +2172,12 @@
       sub: (p) => (p.baseUrl || "http://localhost:11434") + (p.model ? " · " + p.model : ""),
       baseUrlPh: "http://localhost:11434",
       baseUrlLabel: "Base URL (opcional — padrão local)",
-      apiKeyLabel: "API Key (não é necessária no Ollama)",
+      apiKeyLabel: "Chaves / Contas (não é necessária no Ollama)",
       hint: "Modelos: llama3.2, qwen2.5, gemma2... sem API key. Tools usam o fallback agentic (<tool_call>).",
     },
-    deepseek: { label: "DeepSeek", sub: () => "chat.deepseek.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
-    qwen: { label: "Qwen", sub: () => "chat.qwen.ai via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "" },
-    "gemini-web": { label: "Gemini (Web)", sub: () => "gemini.google.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "API Key (opcional)", hint: "Modelos: gemini-2.5-flash, gemini-3-flash, etc. O chat usa a sessão do navegador (gemini.google.com) — sem API key." },
+    deepseek: { label: "DeepSeek", sub: () => "chat.deepseek.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "Chaves / Contas (opcional)", hint: "" },
+    qwen: { label: "Qwen", sub: () => "chat.qwen.ai via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "Chaves / Contas (opcional)", hint: "" },
+    "gemini-web": { label: "Gemini (Web)", sub: () => "gemini.google.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "Chaves / Contas (opcional)", hint: "Modelos: gemini-2.5-flash, gemini-3-flash, etc. O chat usa a sessão do navegador (gemini.google.com) — sem API key." },
   };
 
   function renderProviderList() {
@@ -2124,16 +2220,32 @@
 
   function openEditor(id) {
     editingId = id || null;
+    resetKeyForm();
     const p = editingId ? providers.find((x) => x.id === editingId) : null;
     $("#editorTitle").textContent = p ? "Editar provedor" : "Novo provedor";
     $("#pvName").value = p ? p.name : "";
     $("#pvType").value = p ? p.type : "openai-compatible";
     $("#pvBaseUrl").value = p ? p.baseUrl : "";
-    $("#pvApiKey").value = p ? p.apiKey : "";
     $("#pvModel").value = p ? p.model : "";
     $("#pvFeedback").textContent = "";
+    // Preencher as chaves do provedor (migrado do campo legado apiKey se necessário)
+    const rawKeys = p && Array.isArray(p.apiKeys) ? p.apiKeys : [];
+    if (rawKeys.length) {
+      editingKeys = rawKeys.map((k) => ({
+        id: k.id || _newKeyClientId(),
+        label: k.label || 'Conta',
+        key: k.key || '',
+        status: k.status || 'active',
+        resetAt: k.resetAt || null,
+      }));
+    } else if (p && p.apiKey) {
+      // Migração frontend: campo legado
+      editingKeys = [{ id: _newKeyClientId(), label: 'Conta Principal', key: p.apiKey, status: 'active', resetAt: null }];
+    } else {
+      editingKeys = [];
+    }
+    renderEditingKeys();
     toggleEditorType();
-    syncCopyPvApiKeyBtn();
     $("#providerEditor").classList.remove("hidden");
     $("#providerEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
@@ -2150,7 +2262,8 @@
     $("#pvOpenAiFields").classList.toggle("hidden", isBrowser);
     $("#pvBaseUrl").placeholder = meta.baseUrlPh || "";
     $("#pvBaseUrlLabel").textContent = meta.baseUrlLabel || "Base URL";
-    $("#pvApiKeyLabel").textContent = meta.apiKeyLabel || "API Key (opcional)";
+    const apiKeyLabelEl = $("#pvApiKeyLabel");
+    if (apiKeyLabelEl) apiKeyLabelEl.textContent = meta.apiKeyLabel || "Gerenciamento de Chaves / Contas";
     const hint = $("#pvTypeHint");
     hint.textContent = meta.hint || "";
     hint.style.display = meta.hint ? "block" : "none";
@@ -2174,18 +2287,34 @@
   $("#btnCancelProvider").addEventListener("click", closeEditor);
   $("#pvType").addEventListener("change", toggleEditorType);
 
-  // Copiar a API Key digitada no editor de provedor (campo #pvApiKey).
-  const pvApiKeyInput = $("#pvApiKey");
-  const btnCopyPvApiKey = $("#btnCopyPvApiKey");
-  function syncCopyPvApiKeyBtn() {
-    if (btnCopyPvApiKey) btnCopyPvApiKey.disabled = !(pvApiKeyInput && pvApiKeyInput.value.trim());
-  }
-  if (pvApiKeyInput) pvApiKeyInput.addEventListener("input", syncCopyPvApiKeyBtn);
-  if (btnCopyPvApiKey) {
-    btnCopyPvApiKey.addEventListener("click", () => {
-      copyText((pvApiKeyInput && pvApiKeyInput.value) || "", btnCopyPvApiKey, "Chave copiada!");
-    });
-  }
+  // Adicionar nova chave / salvar alteração + limpar o formulário de chaves.
+  $("#btnAddKey").addEventListener("click", saveDraftKey);
+  $("#btnClearKeyForm").addEventListener("click", () => {
+    resetKeyForm();
+    $("#pvFeedback").textContent = "";
+  });
+
+  // Ações nas linhas da lista: Editar (✎) e Remover (✕). Os cliques nos
+  // textos/campos da linha (selecionar/copiar a chave) NÃO removem nada —
+  // apenas o clique exato no botão correspondente age sobre aquele id.
+  $("#pvKeysList").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-action][data-keyid]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const keyId = btn.dataset.keyid;
+    const action = btn.dataset.action;
+    const idx = editingKeys.findIndex((k) => k.id === keyId);
+    if (idx === -1) return;
+    if (action === "remove") {
+      editingKeys.splice(idx, 1);
+      if (editingKeyId === keyId) resetKeyForm();
+      $("#pvFeedback").textContent = "";
+      renderEditingKeys();
+    } else if (action === "edit") {
+      enterEditKey(keyId);
+    }
+  });
 
   $("#providerList").addEventListener("click", async (e) => {
     const btn = e.target.closest("button[data-act]");
@@ -2247,8 +2376,8 @@
       fb.textContent = "Informe a Base URL.";
       return;
     }
-    if ((type === "gemini" || type === "anthropic") && !$("#pvApiKey").value.trim()) {
-      fb.textContent = "Informe a API Key (obrigatória para " + defaultName + ").";
+    if ((type === "gemini" || type === "anthropic") && !editingKeys.length) {
+      fb.textContent = "Informe ao menos uma API Key para " + defaultName + " (obrigatório).";
       return;
     }
     const existing = providers.find((p) => p.id === editingId);
@@ -2257,7 +2386,7 @@
       name,
       type,
       baseUrl: isBrowser ? "" : $("#pvBaseUrl").value.trim(),
-      apiKey: isBrowser ? "" : $("#pvApiKey").value.trim(),
+      apiKeys: editingKeys.map((k) => ({ id: k.id, label: k.label, key: k.key, status: k.status, resetAt: k.resetAt })),
       model: $("#pvModel").value.trim(),
       enabled: existing ? existing.enabled : true,
     };
@@ -2285,14 +2414,14 @@
     const fb = $("#pvFeedback");
     const type = $("#pvType").value;
     const baseUrl = $("#pvBaseUrl").value.trim();
-    const apiKey = $("#pvApiKey").value.trim();
+    const firstKey = editingKeys.length ? editingKeys[0].key : '';
     const isAdapter = type === "gemini" || type === "anthropic" || type === "ollama";
     if (!baseUrl && !isAdapter) {
       fb.textContent = "Informe a Base URL para testar.";
       return;
     }
-    if (isAdapter && (type === "gemini" || type === "anthropic") && !apiKey) {
-      fb.textContent = "Informe a API Key para testar.";
+    if (isAdapter && (type === "gemini" || type === "anthropic") && !firstKey) {
+      fb.textContent = "Informe ao menos uma API Key para testar.";
       return;
     }
     fb.textContent = "Testando conexão...";
@@ -2300,7 +2429,7 @@
       const res = await fetch("/api/provider/test", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseUrl, apiKey, type }),
+        body: JSON.stringify({ baseUrl, apiKey: firstKey, type }),
       });
       const data = await res.json();
       if (data.ok) {
@@ -2332,12 +2461,13 @@
       fb.textContent = "Informe a Base URL para carregar modelos.";
       return;
     }
+    const firstKey = editingKeys.length ? editingKeys[0].key : '';
     fb.textContent = "Carregando modelos...";
     try {
       const qs =
         "type=" + encodeURIComponent(type) +
         "&baseUrl=" + encodeURIComponent(baseUrl) +
-        "&apiKey=" + encodeURIComponent($("#pvApiKey").value.trim());
+        "&apiKey=" + encodeURIComponent(firstKey);
       const res = await fetch("/api/models?" + qs);
       const data = await res.json();
       if (res.ok && Array.isArray(data.data)) {

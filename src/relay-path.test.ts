@@ -207,6 +207,38 @@ describe('relay-path: sanitizeToolCallArguments', () => {
     }
   });
 
+  it('SearchReplace: MESMO sanitizeSinglePath do Write/Read (purga "\\." + barras)', () => {
+    const args = { file_path: '.\\src\\tests_stress\\logic.ts', old_string: 'a', new_string: 'b' };
+    const out = sanitizeToolCallArguments('SearchReplace', args, ROOT) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas\\projeto\\src\\tests_stress\\logic.ts');
+    assert.ok(!out.file_path.includes('\t'), 'não pode conter Tab');
+    assert.ok(out.file_path.includes('tests_stress'), 'letra t preservada');
+    assert.equal(out.old_string, 'a', 'old_string não é tocado');
+    assert.equal(out.new_string, 'b', 'new_string não é tocado');
+  });
+
+  it('Edit: purga ".\\" e normaliza target_file; conteúdo de busca/replace intacto', () => {
+    const out = sanitizeToolCallArguments(
+      'Edit',
+      { target_file: '.\\src\\main.ts', old_string: 'foo \\ bar', new_string: 'baz\\qux' },
+      ROOT
+    ) as any;
+    assert.equal(out.target_file, 'C:\\Users\\Lucas\\projeto\\src\\main.ts');
+    assert.ok(!out.target_file.includes('//'), out.target_file);
+    assert.equal(out.old_string, 'foo \\ bar', 'old_string preserva texto literal');
+    assert.equal(out.new_string, 'baz\\qux', 'new_string preserva texto literal');
+  });
+
+  it('SearchReplace em string JSON: file_path limpo, old/new intactos', () => {
+    const json = JSON.stringify({ file_path: '.\\src\\tests_stress\\a.ts', old_string: 'x', new_string: 'y' });
+    const out = sanitizeToolCallArguments('SearchReplace', json, ROOT) as string;
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.file_path, 'C:\\Users\\Lucas\\projeto\\src\\tests_stress\\a.ts');
+    assert.ok(!parsed.file_path.includes('\t'));
+    assert.equal(parsed.old_string, 'x');
+    assert.equal(parsed.new_string, 'y');
+  });
+
   it('trata argumentos em string JSON', () => {
     const json = JSON.stringify({ path: 'novo_logic.lua', content: 'x' });
     const out = sanitizeToolCallArguments('Edit', json, ROOT) as string;
@@ -596,35 +628,80 @@ describe('relay-path: sanitizeToolCallArguments com múltiplos arquivos', () => 
   });
 });
 
-describe('relay-path: isolamento de ferramentas de terminal (RunCommand/CheckCommandStatus)', () => {
+describe('relay-path: ferramentas de terminal (RunCommand) — barras sempre para "/"', () => {
   const ROOT = 'C:/Users/Lucas/projeto';
 
-  it('RunCommand: payload 100% intacto (barras, cmd, cwd com "./")', () => {
-    const command =
-      'cd src\\tests_stress && node "C:\\test folder\\run.js" --flag "um arquivo com espaço"';
-    const args = { command, cwd: './app' };
+  it('RunCommand: TODAS as "\\" viram "/" no comando (\\t → /t, sem Tabulação)', () => {
+    const args = {
+      command: 'cd src\\tests_stress && node "C:\\test folder\\run.js" --flag "um arquivo com espaço"',
+      cwd: './app',
+    };
     const out = sanitizeToolCallArguments('RunCommand', args, ROOT) as any;
-    assert.strictEqual(out.command, command);
-    assert.strictEqual(out.cwd, './app');
-    assert.deepStrictEqual(out, args);
+    assert.equal(
+      out.command,
+      'cd src/tests_stress && node "C:/test folder/run.js" --flag "um arquivo com espaço"'
+    );
+    assert.ok(!out.command.includes('\\'), 'nenhuma barra invertida no comando');
+    assert.ok(!out.command.includes('\t'), 'nenhum Tab — "tests_stress" intacto');
+    assert.ok(out.command.includes('tests_stress'), 'letra t preservada');
+    assert.equal(out.cwd, './app');
   });
 
-  it('CheckCommandStatus: não aplica sanitização', () => {
+  it('rmdir/mkdir com src\\tests_stress NUNCA chega corrompido ("ests_stress")', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'rmdir /s /q "src\\tests_stress"' }, ROOT) as any;
+    assert.equal(out.command, 'rmdir /s /q "src/tests_stress"');
+    assert.ok(!out.command.includes('\t'));
+    assert.ok(out.command.includes('tests_stress'), 'deve manter "tests_stress": ' + out.command);
+    assert.ok(!out.command.includes('ests_stress,'), `não pode ter comido a letra t`);
+  });
+
+  it('CheckCommandStatus: sem barras, payload intacto (timeout preservado)', () => {
     const args = { command: 'npm test -- --runInBand', timeout: 30000 };
     const out = sanitizeToolCallArguments('CheckCommandStatus', args, ROOT) as any;
     assert.deepStrictEqual(out, args);
   });
 
-  it('RunCommand em string JSON permanece idêntico (não re-stringify)', () => {
+  it('RunCommand em string JSON: valores re-serializados com "/"', () => {
     const json = JSON.stringify({ command: 'dir src\\tests_stress', cwd: '.\\app' });
-    const out = sanitizeToolCallArguments('RunCommand', json, ROOT);
-    assert.strictEqual(out, json);
-    assert.ok(!String(json).includes('/'), 'barras invertidas preservadas no payload');
+    const out = sanitizeToolCallArguments('RunCommand', json, ROOT) as string;
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.command, 'dir src/tests_stress');
+    assert.equal(parsed.cwd, './app');
+    assert.ok(!parsed.command.includes('\t'));
+    assert.ok(parsed.command.includes('tests_stress'));
+  });
+
+  it('RunCommand com string crua não-JSON: barras para "/"', () => {
+    const out = sanitizeToolCallArguments('RunCommand', 'node run.js src\\tests_stress', ROOT) as string;
+    assert.equal(out, 'node run.js src/tests_stress');
+  });
+
+  it('barra invertida REAL não virou Tabulação (nenhum U+0009 no resultado)', () => {
+    const out = sanitizeToolCallArguments('RunCommand', { command: 'mkdir "sub\\tests_stress"' }, ROOT) as any;
+    assert.ok(!out.command.includes('\t'), JSON.stringify(out.command));
+    assert.ok(out.command.includes('/tests_stress'), out.command);
   });
 });
 
 describe('relay-path: DeleteFile multi com prefixos relativos', () => {
   const ROOT = 'C:/Users/Lucas sá/Documents/Projeto';
+
+  it('DeleteFile: prefixo ".\\" é purgado ANTES do payload (objeto E string JSON)', () => {
+    const obj = sanitizeToolCallArguments('DeleteFile', { file_path: '.\\src\\tests_stress\\tmp.ts' }, ROOT) as any;
+    assert.equal(obj.file_path, 'C:\\Users\\Lucas sá\\Documents\\Projeto\\src\\tests_stress\\tmp.ts');
+    assert.ok(!obj.file_path.includes('./') && !obj.file_path.includes('.\\'), 'nenhum prefixo relativo');
+    assert.ok(!obj.file_path.includes('\t'));
+
+    const jsonOut = sanitizeToolCallArguments(
+      'DeleteFile',
+      JSON.stringify({ path: '.\\src\\tests_stress\\tmp.ts' }),
+      ROOT
+    ) as string;
+    const parsed = JSON.parse(jsonOut);
+    assert.equal(parsed.path, 'C:\\Users\\Lucas sá\\Documents\\Projeto\\src\\tests_stress\\tmp.ts');
+    assert.ok(!parsed.path.includes('./') && !parsed.path.includes('.\\'));
+    assert.ok(!parsed.path.includes('\t'));
+  });
 
   it('limpa "./" antes do resolve (exemplo do requisito)', () => {
     const out = sanitizeToolCallArguments('DeleteFile', { path: './src/tests_stress/math.ts' }, ROOT) as any;

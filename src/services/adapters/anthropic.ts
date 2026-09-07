@@ -9,6 +9,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { OpenAIRequest, Message } from '../../utils/types.ts';
 import type { Provider } from '../config.ts';
+import { getActiveApiKey } from '../config.ts';
 import {
   ProviderAdapter,
   jsonResponse,
@@ -207,11 +208,11 @@ export function fromAnthropicResponse(data: any, model: string): any {
 /* ------------------------- Adapter ------------------------- */
 
 export class AnthropicAdapter implements ProviderAdapter {
-  async chatCompletion(payload: OpenAIRequest, provider: Provider): Promise<Response> {
+  async chatCompletion(payload: OpenAIRequest, provider: Provider, apiKey?: string): Promise<Response> {
     const isStream = payload.stream ?? false;
     const model = payload.model;
-    const apiKey = provider.apiKey;
-    if (!apiKey) {
+    const resolvedKey = apiKey ?? getActiveApiKey(provider);
+    if (!resolvedKey) {
       return openaiError(400, 'Anthropic: API Key não configurada para este provedor.');
     }
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
@@ -252,7 +253,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-api-key': apiKey,
+            'x-api-key': resolvedKey,
             'anthropic-version': ANTHROPIC_VERSION,
           },
           body: JSON.stringify(body),
@@ -262,7 +263,7 @@ export class AnthropicAdapter implements ProviderAdapter {
           throw new HttpError(res.status, `Anthropic ${res.status}: ${errText.slice(0, 300)}`, errText);
         }
         return res;
-      }, { retries: 3 });
+      }, { retries: 3, retryOn: (s) => s >= 500 });
 
     if (!isStream) {
       let res: Response;

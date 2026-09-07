@@ -31,6 +31,7 @@ import {
   isQwenProvider,
   isGeminiWebProvider,
   normalizeModelId,
+  primaryApiKey,
 } from '../services/config.ts';
 import type { Provider, ProviderRegistry } from '../services/config.ts';
 import { resolveModelEntry, providerFromCatalogEntry, getModelCatalog } from '../services/modelCatalog.ts';
@@ -327,7 +328,7 @@ async function summarizeDropped(dropped: any[], target: Provider): Promise<strin
         const c = j?.choices?.[0]?.message?.content;
         if (c) return c;
       }
-    } else if (target.type === 'openai-compatible' && target.baseUrl && target.apiKey) {
+    } else if (target.type === 'openai-compatible' && target.baseUrl && primaryApiKey(target)) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 10_000);
       try {
@@ -335,7 +336,7 @@ async function summarizeDropped(dropped: any[], target: Provider): Promise<strin
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + target.apiKey,
+            Authorization: 'Bearer ' + primaryApiKey(target),
           },
           body: JSON.stringify({
             model: target.model || 'default',

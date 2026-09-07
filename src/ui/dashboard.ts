@@ -62,6 +62,9 @@ import {
   isQwenProvider,
   isGeminiWebProvider,
   PROVIDERS_COOKIE,
+  primaryApiKey,
+  getActiveApiKey,
+  normalizeAccountKeys,
 } from '../services/config.ts';
 import {
   listApps,
@@ -164,7 +167,7 @@ dashboard.get('/api/status', async (c) => {
           }
         }
       } else {
-        const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
+        const models = isAdapterProvider(p) ? await fetchProviderModels(p, getActiveApiKey(p)) : await fetchModels(p);
         if (models) {
           for (const m of models
             .filter((m: any) => !(hasGeminiWeb && isGeminiWebModel(m.id)))
@@ -217,7 +220,7 @@ dashboard.get('/api/status', async (c) => {
         type: primary.type,
         baseUrl: primary.baseUrl,
         model: primary.model,
-        hasApiKey: !!primary.apiKey,
+        hasApiKey: !!primaryApiKey(primary),
       },
       enabledCount: enabled.length,
       models: modelsList,
@@ -228,7 +231,7 @@ dashboard.get('/api/status', async (c) => {
         type: p.type,
         baseUrl: p.baseUrl,
         model: p.model,
-        hasApiKey: !!p.apiKey,
+        hasApiKey: !!primaryApiKey(p),
         enabled: p.enabled,
       })),
       playwright: {
@@ -402,7 +405,7 @@ dashboard.post('/api/models/refresh', async (c) => {
       data.push(...models.map((m: any) => enrichModel(m)));
     } else {
       try {
-        const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p, true); // force refresh
+        const models = isAdapterProvider(p) ? await fetchProviderModels(p, getActiveApiKey(p)) : await fetchModels(p, true); // force refresh
         const filtered = models ? models.filter((m: any) => !(hasGeminiWeb && isGeminiWebModel(m.id))) : [];
         info.models = filtered.map((m: any) => m.id);
         if (filtered.length) data.push(...filtered.map((m: any) => enrichModel(m)));
@@ -456,7 +459,7 @@ dashboard.get('/api/models', async (c) => {
       ...primary,
       type: queryType ? sanitizeType(queryType) : primary.type,
       baseUrl: queryBaseUrl,
-      apiKey: queryApiKey ?? primary.apiKey,
+      apiKey: queryApiKey ?? (primaryApiKey(primary) || ''),
     };
     const models = isAdapterProvider(probe) ? await fetchProviderModels(probe) : await fetchModels(probe);
     if (models) {
@@ -489,7 +492,7 @@ dashboard.get('/api/models', async (c) => {
     } else if (isGeminiWebProvider(p)) {
       data.push(...geminiWebModels().map((m: any) => enrichModel(m)));
     } else {
-      const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
+      const models = isAdapterProvider(p) ? await fetchProviderModels(p, getActiveApiKey(p)) : await fetchModels(p);
       if (models) data.push(...models.filter((m: any) => !(hasGeminiWeb && isGeminiWebModel(m.id))).map((m: any) => enrichModel(m)));
       // Inclui o modelo de override do provedor, se configurado e nǜo duplicado.
       if (p.model && !seen.has(p.model)) {
@@ -920,14 +923,15 @@ RETORNE APENAS JSON VÁLIDO:
         };
 
         let resp: Response | null = null;
+        const resolvedKey = primaryApiKey(primary);
         if (primary.type === 'gemini' || primary.type === 'anthropic' || primary.type === 'ollama') {
           const { dispatchAdapterChat } = await import('../services/adapters/index.ts');
           resp = await dispatchAdapterChat(payload, primary);
-        } else if (primary.type === 'openai-compatible' && primary.baseUrl && primary.apiKey) {
+        } else if (primary.type === 'openai-compatible' && primary.baseUrl && resolvedKey) {
           const { optimizedFetch } = await import('../services/optimizations.ts');
           resp = await optimizedFetch(`${primary.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${primary.apiKey}` },
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolvedKey}` },
             body: JSON.stringify(payload)
           });
         }

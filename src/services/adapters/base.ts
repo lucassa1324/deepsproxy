@@ -14,11 +14,13 @@ export interface ProviderAdapter {
    * Traduz o payload OpenAI para o formato nativo do provedor, executa a
    * chamada HTTP e devolve a resposta traduzida de volta para OpenAI.
    * `payload.stream` decide entre SSE e JSON único.
+   * `apiKey` é a chave específica usada nesta chamada (rotação de chaves);
+   * quando omitida, o adapter resolve a chave do provider.
    */
-  chatCompletion(payload: OpenAIRequest, provider: Provider): Promise<Response>;
+  chatCompletion(payload: OpenAIRequest, provider: Provider, apiKey?: string): Promise<Response>;
 
   /** Lista de modelos do provedor (usado no roteamento e dashboard). */
-  fetchModels?(provider: Provider): Promise<any[] | null>;
+  fetchModels?(provider: Provider, apiKey?: string): Promise<any[] | null>;
 }
 
 /* ------------------------- Helpers de resposta OpenAI ------------------------- */

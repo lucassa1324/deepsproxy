@@ -49,9 +49,12 @@ const FILE_PATH_KEYS = new Set(['path', 'file_path', 'filePath', 'target_file', 
 const PATH_ARG_KEYS = new Set([...FILE_PATH_KEYS, 'directory']);
 
 /**
- * Ferramentas de TERMINAL: o payload NUNCA é sanitizado — o CMD/PowerShell
- * precisa receber EXATAMENTE o texto emitido pelo modelo (uma barra invertida
- * real como 'src\tests_stress' não pode virar tabulação 'src<TAB>ests_stress').
+ * Ferramentas de TERMINAL: TODAS as barras invertidas dos argumentos viram '/',
+ * principalmente 'src\tests_stress' → 'src/tests_stress' dentro de comandos
+ * rmdir/mkdir/del enviados ao CMD/PowerShell. Um '\' literal no payload NÃO
+ * pode ser reinterpretado depois como Tabulação ('\t' comeria a letra 't'); o
+ * CMD/PowerShell aceita '/' normalmente em caminhos, então a conversão é segura
+ * e impede permanentemente o caminho corrompido 'ests_stress'.
  */
 const TERMINAL_TOOL_NAMES = new Set([
   'runcommand',
@@ -65,6 +68,73 @@ const TERMINAL_TOOL_NAMES = new Set([
 
 function isTerminalTool(name: string | undefined): boolean {
   return !!name && TERMINAL_TOOL_NAMES.has(String(name).trim().toLowerCase());
+}
+
+/**
+ * Converte recursivamente TODAS as barras invertidas de valores STRING em '/',
+ * preservando a estrutura (objetos/arrays passam intactos na forma).
+ */
+function forwardSlashLeaves(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(/\\/g, '/');
+  if (Array.isArray(value)) return value.map(forwardSlashLeaves);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = forwardSlashLeaves(v);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Prepara um texto JSON de TERMINAL para o parse: dobra a barra final de runs
+ * ÍMPARES de '\' ('\t'→'\\t', '\s'→'\\s') exceto antes de '"' ou '\' (escapes
+ * JSON válidos e intencionais). Assim o JSON.parse devolve barras LITERAIS em
+ * vez de Tabulação ('src\tests_stress' NUNCA 'src<TAB>ests_stress') e nunca
+ * quebra com "Bad escaped character".
+ */
+function protectTerminalJsonEscapes(text: string): string {
+  let out = '';
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (ch !== '\\') {
+      out += ch;
+      i++;
+      continue;
+    }
+    let run = 1;
+    while (i + run < text.length && text[i + run] === '\\') run++;
+    const next = text[i + run] ?? '';
+    if (run % 2 === 1 && next !== '' && !/["\\]/.test(next)) {
+      out += '\\'.repeat(run + 1);
+    } else {
+      out += '\\'.repeat(run);
+    }
+    i += run;
+  }
+  return out;
+}
+
+/**
+ * Sanitizador de TERMINAL: converte TODAS as '\' em '/' nos valores dos
+ * argumentos. Strings JSON são protegidas ANTES do parse (nunca Tabulação),
+ * transformadas e re-serializadas; textos crus não-JSON ganham '/' direto.
+ */
+function sanitizeTerminalArgs(args: unknown): unknown {
+  if (typeof args === 'string') {
+    try {
+      const parsed = JSON.parse(protectTerminalJsonEscapes(args));
+      if (typeof parsed === 'string') return parsed.replace(/\\/g, '/');
+      if (parsed && typeof parsed === 'object') {
+        return JSON.stringify(forwardSlashLeaves(parsed));
+      }
+      return args.replace(/\\/g, '/');
+    } catch {
+      // Não é JSON estruturado: comando cru — barras invertidas direto para '/'.
+      return args.replace(/\\/g, '/');
+    }
+  }
+  return forwardSlashLeaves(args);
 }
 
 /* ---------------------------------------------------------------------------
@@ -433,11 +503,13 @@ function stableSerialize(value: unknown): string {
  * apenas as chaves de caminho. Nenhum outro argumento (content, query, etc.) é
  * tocado.
  *
- * ISOLAMENTO: ferramentas de terminal (RunCommand, CheckCommandStatus e afins)
- * são devolvidas 100% intactas — nem o parse JSON nem a troca de barras ocorrem,
- * para que o CMD/PowerShell receba exatamente o que o modelo emitiu. Chamadas
- * `run_mcp` (MCP) recebem apenas a injeção de `server_name` quando ausente
- * (`mcpServers` = nomes anunciados no schema das tools da requisição).
+ * ISOLAMENTO/TRATAMENTO: ferramentas de terminal (RunCommand, CheckCommandStatus
+ * e afins) têm TODAS as barras invertidas convertidas em '/' nos valores
+ * ('src\tests_stress' → 'src/tests_stress'; '\t' nunca vira Tabulação) —
+ * o CMD/PowerShell aceita '/' em caminhos. Chamadas `run_mcp` (MCP) recebem
+ * apenas a injeção de `server_name` quando ausente (`mcpServers` = nomes
+ * anunciados no schema das tools da requisição). Read/Write/Edit/
+ * SearchReplace/DeleteFile passam pelo pipeline rígido de sanitização.
  */
 export function sanitizeToolCallArguments(
   name: string | undefined,
@@ -447,7 +519,7 @@ export function sanitizeToolCallArguments(
 ): unknown {
   if (args === null || args === undefined) return args;
   if (isMcpToolCall(name)) return sanitizeMcpToolArguments(args, mcpServers);
-  if (isTerminalTool(name)) return args;
+  if (isTerminalTool(name)) return sanitizeTerminalArgs(args);
 
   if (typeof args === 'string') {
     try {

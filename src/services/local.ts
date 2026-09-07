@@ -14,9 +14,18 @@
 import { Context } from 'hono';
 import { stream as honoStream } from 'hono/streaming';
 import { v4 as uuidv4 } from 'uuid';
-import type { Provider, ProviderType } from './config.ts';
-import { defaultBaseUrl, isAdapterType, normalizeModelId } from './config.ts';
+import type { Provider, ProviderType, AccountKey } from './config.ts';
+import {
+  defaultBaseUrl,
+  isAdapterType,
+  normalizeModelId,
+  primaryApiKey,
+  activeAccountKeys,
+  firstActiveAccountKey,
+  getActiveApiKey,
+} from './config.ts';
 import { isAdapterProvider, fetchProviderModels, dispatchAdapterChat } from './adapters/index.ts';
+import { driveRotation, quotaExhaustedResponse, hasProviderKeys } from './rotation.ts';
 import { shouldFallback as localShouldFallback, getLocalInstance, getFallbackConfig } from './local-discovery.ts';
 import { buildAgentPrompt, buildToolsInstructions, contentPartToText } from '../utils/prompt.ts';
 import { injectHighPrecisionProtocol, injectProtocolIntoMessages } from '../utils/system-prompt.ts';
@@ -47,10 +56,10 @@ function checkFallback(provider: Provider): Provider | null {
   return registry.providers.find(p => p.id === config.fallbackProviderId) || null;
 }
 
-function buildHeaders(provider: Provider): Record<string, string> {
+function buildHeaders(apiKey?: string): Record<string, string> {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (provider.apiKey) {
-    headers['authorization'] = `Bearer ${provider.apiKey}`;
+  if (apiKey) {
+    headers['authorization'] = `Bearer ${apiKey}`;
   }
   return headers;
 }
@@ -120,7 +129,7 @@ export async function findProviderForModel(
   // 3. Match pela lista real de modelos do provedor (openai-compatible e adapters).
   for (const p of providers) {
     if (p.type === 'deepseek' || p.type === 'qwen' || p.type === 'gemini-web') continue;
-    const models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
+    const models = isAdapterProvider(p) ? await fetchProviderModels(p, getActiveApiKey(p)) : await fetchModels(p);
     if (models && models.some((m: any) => m.id === model)) return p;
   }
 
@@ -135,10 +144,35 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
       console.log(`[local] fallback de ${provider.id} para ${fallback.id}`);
       const resp = await dispatchAdapterChat(body, fallback);
       if (resp) return resp;
-    } else {
-      const resp = await dispatchAdapterChat(body, provider);
-      if (resp) return resp;
     }
+    // Adapters: rotação de chaves (Gemini/Anthropic). Provedor sem chaves
+    // (Ollama local) segue sem autenticação.
+    const keys = activeAccountKeys(provider);
+    if (keys.length > 0) {
+      const outcome = await driveRotation<Response | null>({
+        provider,
+        call: async (key) => {
+          const resp = await dispatchAdapterChat(body, provider, key.key);
+          if (!resp) throw new Error(`Adapter não disponível para "${provider.type}".`);
+          return resp;
+        },
+        handle: (res) => res,
+      });
+      if (outcome.allQuotaExhausted) {
+        return quotaExhaustedResponse(provider.name, !!body.stream);
+      }
+      if (outcome.lastError) {
+        console.error(`[local] adapter error ${provider.name}: ${outcome.lastError?.message || String(outcome.lastError)}`);
+        const status = outcome.lastError?.status >= 400 ? outcome.lastError.status : 502;
+        return c.json(
+          { error: { message: `Upstream ${provider.name} respondeu ${status}: ${outcome.lastError?.message || String(outcome.lastError)}` } },
+          status
+        );
+      }
+      return outcome.value as Response;
+    }
+    const resp = await dispatchAdapterChat(body, provider);
+    if (resp) return resp;
   }
   if (!provider.baseUrl) {
     return c.json(
@@ -159,17 +193,16 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
 
 /* ------------------------- Sem ferramentas (proxy direto) ------------------------- */
 
-async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Provider) {
+/** Busca a resposta do upstream (sem transformar) com uma chave específica. */
+async function passthroughFetch(
+  body: OpenAIRequest,
+  provider: Provider,
+  apiKey?: string
+): Promise<{ url: string; payload: any; response: Response }> {
   const isStream = body.stream ?? false;
-
-  // Injeta HIGH-PRECISION AGENT PROTOCOL nas mensagens (mesmo sem tools)
-  // DESATIVADO: roteador puro sem injeção de protocol
-  // const messages = injectProtocolIntoMessages(body.messages || []);
   const messages = body.messages || [];
-
   const payload: any = { ...body, messages, stream: isStream };
   delete payload._eco;
-  // DESATIVADO: não encaminha tools para o upstream (roteador puro)
   delete payload.tools;
   delete payload.tool_choice;
   const model = effectiveModel(provider, body);
@@ -178,18 +211,31 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
   } else {
     delete payload.model;
   }
-
   const providerBaseUrl = provider.baseUrl.endsWith('/')
     ? provider.baseUrl.slice(0, -1)
     : provider.baseUrl;
+  const url = `${providerBaseUrl}/chat/completions`;
+  return {
+    url,
+    payload,
+    response: await optimizedFetch(url, {
+      method: 'POST',
+      headers: buildHeaders(apiKey),
+      body: JSON.stringify(payload),
+    }),
+  };
+}
 
-  console.log(`[local] forward passthrough → ${provider.name} (${provider.type}) model=${model || body.model} stream=${isStream}`);
-
-  const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
-    method: 'POST',
-    headers: buildHeaders(provider),
-    body: JSON.stringify(payload),
-  });
+/** Transforma a resposta do upstream na resposta final ao cliente (stream/JSON). */
+async function passthroughRespond(
+  c: Context,
+  body: OpenAIRequest,
+  provider: Provider,
+  upstream: { url: string; payload: any; response: Response }
+): Promise<Response> {
+  const isStream = body.stream ?? false;
+  const model = effectiveModel(provider, body);
+  const { response } = upstream;
 
   if (!response.ok) {
     const errText = await response.text().catch(() => '');
@@ -228,6 +274,42 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
       reader.releaseLock();
     }
   });
+}
+
+async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Provider): Promise<Response> {
+  const keys = activeAccountKeys(provider);
+
+  // Provedor local (Ollama/LM Studio) sem chaves: segue sem autenticação.
+  if (keys.length === 0) {
+    const upstream = await passthroughFetch(body, provider, undefined);
+    return passthroughRespond(c, body, provider, upstream);
+  }
+
+  const outcome = await driveRotation<Response>({
+    provider,
+    call: async (key: AccountKey) => {
+      const { response } = await passthroughFetch(body, provider, key.key);
+      return response;
+    },
+    handle: async (res, key, attempt) => {
+      console.log(
+        `[local] forward passthrough → ${provider.name} (${provider.type}) model=${effectiveModel(provider, body) || body.model} stream=${body.stream ? 'yes' : 'no'} chave="${key.label || key.id}" tentativa=${attempt + 1}`
+      );
+      return passthroughRespond(c, body, provider, { url: '', payload: body, response: res });
+    },
+  });
+
+  if (outcome.allQuotaExhausted) {
+    return quotaExhaustedResponse(provider.name, !!body.stream);
+  }
+  if (outcome.lastError) {
+    const status = outcome.lastError?.status >= 400 ? outcome.lastError.status : 502;
+    return c.json(
+      { error: { message: `Falha ao conectar com ${provider.name}: ${outcome.lastError?.message || String(outcome.lastError)}` } },
+      status
+    );
+  }
+  return outcome.value as Response;
 }
 
 /* ------------------------- Agentic (ferramentas via prompt) ------------------------- */
@@ -308,7 +390,7 @@ async function forwardAgentic(c: Context, body: OpenAIRequest, provider: Provide
 
   const response = await optimizedFetch(`${providerBaseUrl}/chat/completions`, {
     method: 'POST',
-    headers: buildHeaders(provider),
+    headers: buildHeaders(primaryApiKey(provider)),
     body: JSON.stringify(payload),
   });
 
@@ -538,7 +620,8 @@ export async function fetchModels(provider: Provider, force = false): Promise<an
     return cached.models;
   }
   try {
-    const models = await fetchModelsFrom(provider.baseUrl, provider.apiKey, 3000);
+    const key = firstActiveAccountKey(provider)?.key || primaryApiKey(provider);
+    const models = await fetchModelsFrom(provider.baseUrl, key || '', 3000);
     modelsCache.set(provider.id, { models, ts: Date.now() });
     return models;
   } catch {

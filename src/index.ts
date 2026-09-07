@@ -34,6 +34,8 @@ import {
   isGeminiWebProvider,
   resolveActiveProvider,
   normalizeModelId,
+  primaryApiKey,
+  getActiveApiKey,
 } from './services/config.ts';
 import type { Provider } from './services/config.ts';
 import {
@@ -240,7 +242,7 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
         }))
       );
     } else {
-      const models = isAdapterProvider(provider) ? await fetchProviderModels(provider) : await fetchModels(provider);
+      const models = isAdapterProvider(provider) ? await fetchProviderModels(provider, getActiveApiKey(provider)) : await fetchModels(provider);
       if (models) data.push(...models.filter((m: any) => !(hasGeminiWeb && geminiWebIds.has(normalizeModelId(m.id)))));
     }
     // Inclui o modelo de override do provedor, se configurado.
@@ -364,7 +366,8 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
   }
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-  if (target.apiKey) headers['authorization'] = `Bearer ${target.apiKey}`;
+  const resolvedKey = primaryApiKey(target);
+  if (resolvedKey) headers['authorization'] = `Bearer ${resolvedKey}`;
 
   let url: string;
   let payload: any = { model, input };
@@ -374,7 +377,7 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
     const texts = (Array.isArray(input) ? input : [input]).map((t: any) => String(t));
     payload = { content: { parts: texts.map((t) => ({ text: t })) } };
     delete headers['authorization'];
-    if (target.apiKey) url += `?key=${encodeURIComponent(target.apiKey)}`;
+    if (resolvedKey) url += `?key=${encodeURIComponent(resolvedKey)}`;
   } else if (target.type === 'ollama') {
     // Ollama expõe a API OpenAI-compatível sob /v1.
     url = `${target.baseUrl}/v1/embeddings`;

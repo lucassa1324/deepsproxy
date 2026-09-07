@@ -9,7 +9,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type { OpenAIRequest, Message } from '../../utils/types.ts';
 import type { Provider } from '../config.ts';
-import { normalizeModelId } from '../config.ts';
+import { getActiveApiKey, normalizeModelId } from '../config.ts';
 import {
   ProviderAdapter,
   jsonResponse,
@@ -379,19 +379,19 @@ export class GeminiAdapter implements ProviderAdapter {
     return this.limiter.waiting;
   }
 
-  async chatCompletion(payload: OpenAIRequest, provider: Provider): Promise<Response> {
+  async chatCompletion(payload: OpenAIRequest, provider: Provider, apiKey?: string): Promise<Response> {
     const isStream = payload.stream ?? false;
     // Cliente pode mandar "models/gemini-2.5-flash" (prefixo da REST do
     // Google); sem normalizar a URL viraria /models/models/... (404).
     const model = normalizeModelId(payload.model);
-    const apiKey = provider.apiKey;
-    if (!apiKey) {
+    const resolvedKey = apiKey ?? getActiveApiKey(provider);
+    if (!resolvedKey) {
       return openaiError(400, 'Gemini: API Key não configurada para este provedor.');
     }
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     const body = buildGeminiBody(payload);
     const endpoint = isStream ? 'streamGenerateContent' : 'generateContent';
-    const url = `${baseUrl}/models/${encodeURIComponent(model)}:${endpoint}?key=${encodeURIComponent(apiKey)}${isStream ? '&alt=sse' : ''}`;
+    const url = `${baseUrl}/models/${encodeURIComponent(model)}:${endpoint}?key=${encodeURIComponent(resolvedKey)}${isStream ? '&alt=sse' : ''}`;
 
     const doFetch = () =>
       withRetry(async () => {
@@ -405,7 +405,7 @@ export class GeminiAdapter implements ProviderAdapter {
           throw new HttpError(res.status, `Gemini ${res.status}: ${errText.slice(0, 300)}`, errText);
         }
         return res;
-      }, { retries: 3 });
+      }, { retries: 3, retryOn: (s) => s >= 500 });
 
     if (!isStream) {
       return this.limiter.run(async () => {
@@ -469,14 +469,14 @@ export class GeminiAdapter implements ProviderAdapter {
     });
   }
 
-  async fetchModels(provider: Provider): Promise<any[] | null> {
-    const apiKey = provider.apiKey;
-    if (!apiKey) return null;
+  async fetchModels(provider: Provider, apiKey?: string): Promise<any[] | null> {
+    const resolvedKey = apiKey ?? getActiveApiKey(provider);
+    if (!resolvedKey) return null;
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 3000);
-      const res = await optimizedFetch(`${baseUrl}/models?key=${encodeURIComponent(apiKey)}`, {
+      const res = await optimizedFetch(`${baseUrl}/models?key=${encodeURIComponent(resolvedKey)}`, {
         signal: controller.signal,
       });
       clearTimeout(timeout);

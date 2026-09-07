@@ -23,7 +23,9 @@ import { registry } from '../tools/registry.ts';
 import type { ParsedToolCall, FunctionToolDefinition, JsonSchema } from '../tools/types.ts';
 import type { OpenAIRequest } from '../utils/types.ts';
 import type { Provider } from './config.ts';
+import { primaryApiKey, activeAccountKeys } from './config.ts';
 import { dispatchAdapterChat, isAdapterProvider } from './adapters/index.ts';
+import { driveRotation, quotaExhaustedResponse } from './rotation.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { isModelBoosted } from './booster.ts';
 
@@ -148,7 +150,8 @@ async function sendTurn(
   const timer = setTimeout(() => controller.abort(), LLM_CALL_TIMEOUT_MS);
   try {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
-    if (provider.apiKey) headers['authorization'] = `Bearer ${provider.apiKey}`;
+    const resolvedKey = primaryApiKey(provider);
+    if (resolvedKey) headers['authorization'] = `Bearer ${resolvedKey}`;
     const resp = await fetch(`${provider.baseUrl}/chat/completions`, {
       method: 'POST',
       headers,

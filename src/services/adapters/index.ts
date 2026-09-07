@@ -43,14 +43,16 @@ export function isAdapterProvider(p: Provider): boolean {
 /**
  * Dispatch final: executa o adapter do provedor e devolve a resposta OpenAI.
  * Retorna null quando o tipo não tem adapter (deepseek/qwen/openai-compatible).
+ * `apiKey` opcional força uma chave específica (rotação de chaves).
  */
 export async function dispatchAdapterChat(
   payload: OpenAIRequest,
-  provider: Provider
+  provider: Provider,
+  apiKey?: string
 ): Promise<Response | null> {
   const adapter = getAdapter(provider.type);
   if (!adapter) return null;
-  return adapter.chatCompletion(payload, provider);
+  return adapter.chatCompletion(payload, provider, apiKey);
 }
 
 /**
@@ -58,10 +60,10 @@ export async function dispatchAdapterChat(
  * roteamento por modelo e pelo dashboard). Retorna null quando o provedor não
  * expõe listagem (Anthropic) ou quando o tipo não tem adapter.
  */
-export async function fetchProviderModels(provider: Provider): Promise<any[] | null> {
+export async function fetchProviderModels(provider: Provider, apiKey?: string): Promise<any[] | null> {
   const adapter = getAdapter(provider.type);
   if (!adapter?.fetchModels) return null;
-  return adapter.fetchModels(provider);
+  return adapter.fetchModels(provider, apiKey);
 }
 
 /** Estado das filas de throttle dos adapters (para o dashboard). */

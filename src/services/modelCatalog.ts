@@ -19,6 +19,8 @@ import {
   normalizeModelId,
   resolveRegistry,
   defaultBaseUrl,
+  primaryApiKey,
+  getActiveApiKey,
 } from './config.ts';
 import { fetchModels } from './local.ts';
 import { fetchProviderModels } from './adapters/index.ts';
@@ -60,7 +62,8 @@ function apiKeyEnvVarFor(p: Provider): string {
 }
 
 function resolvedApiKey(p: Provider): string {
-  if (p.apiKey) return p.apiKey;
+  const explicit = primaryApiKey(p);
+  if (explicit) return explicit;
   const envVar = apiKeyEnvVarFor(p);
   return envVar ? process.env[envVar] || '' : '';
 }
@@ -68,7 +71,7 @@ function resolvedApiKey(p: Provider): string {
 /** Assinatura do registro: mudou provedores/config -> rebuild do catálogo. */
 function registryKey(registry: ProviderRegistry): string {
   return registry.providers
-    .map((p) => `${p.id}|${p.type}|${p.baseUrl}|${p.model}|${p.enabled}|${p.apiKey ? 'k' : ''}`)
+    .map((p) => `${p.id}|${p.type}|${p.baseUrl}|${p.model}|${p.enabled}|${resolvedApiKey(p) ? 'k' : ''}`)
     .join(';');
 }
 
@@ -173,7 +176,7 @@ async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogMod
 
       let models: any[] | null = null;
       try {
-        models = isAdapterProvider(p) ? await fetchProviderModels(p) : await fetchModels(p);
+        models = isAdapterProvider(p) ? await fetchProviderModels(p, getActiveApiKey(p)) : await fetchModels(p);
       } catch {
         models = null;
       }

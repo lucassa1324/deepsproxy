@@ -13,12 +13,19 @@ process.env.TEST_MOCK_PLAYWRIGHT = 'true';
 
 import { app } from './index.ts';
 import { FakeGeminiPage, setMockGeminiPage } from './services/gemini-web.ts';
+import { robustParseJSON, protectPathEscapesInJson } from './utils/robust-json.ts';
 import {
   getWorkspaceRootFromContext,
   sanitizePathValue,
   sanitizeToolCallArguments,
   extractWorkspaceRootFromMessages,
   clearWorkspaceRootCache,
+  toolCallSignature,
+  DEFAULT_MCP_SERVER_NAME,
+  extractMcpServerNamesFromTools,
+  applyMcpNativeFilesystemFallback,
+  MCP_ACCESS_DENIED_RE,
+  MCP_NATIVE_FS_FALLBACK_DIRECTIVE,
 } from './services/relay-path.ts';
 
 function makeContextWithHeader(name: string, value: string | undefined) {
@@ -369,8 +376,10 @@ describe('relay-path: caminhos com espaços e escapes (\t, \n)', () => {
   });
 
   it('escape misfired \\t (Tab) não vira espaço nem corta o caminho', () => {
-    // Modelo emitiu '\src\tests_stress'; um parseador decodificou '\t'→Tab,
-    // "engolindo" o 't': valor recebido é 'src<TAB>ests_stress'.
+    // Para um Tab JÁ decodificado (a letra 't' foi engolida no JSON.parse), o
+    // máximo que dá para fazer é restaurar o separador sem deixar Tab no valor.
+    // A PREVENÇÃO do 'tests_stress'→'ests_stress' acontece ANTES, no boundary
+    // de parse (robustParseJSON / string-args do relay) — ver testes abaixo.
     const damaged = 'src' + '\t' + 'ests_stress';
     const out = String(sanitizePathValue(damaged, null));
     assert.ok(!out.includes('\t'), `não deve conter Tab: ${JSON.stringify(out)}`);
@@ -390,6 +399,154 @@ describe('relay-path: caminhos com espaços e escapes (\t, \n)', () => {
     const out = sanitizeToolCallArguments('Write', { path: 'um arquivo.txt', content: 'a\nb' }, 'C:/Users/Lucas/projeto') as any;
     assert.equal(out.path, 'C:\\Users\\Lucas\\projeto\\um arquivo.txt');
     assert.equal(out.content, 'a\nb');
+  });
+});
+
+describe('relay-path: pipeline rígido — \\tests_stress NUNCA vira ests_stress', () => {
+  const ROOT = 'C:/Users/Lucas sá/Documents/Programação/Projeto';
+
+  it('Read: .\\src\\tests_stress resolve limpo SEM Tabulação e mantém "tests_stress"', () => {
+    const out = sanitizeToolCallArguments('Read', { file_path: '.\\src\\tests_stress' }, ROOT) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas sá\\Documents\\Programação\\Projeto\\src\\tests_stress');
+    assert.ok(!out.file_path.includes('\t'), 'não pode conter Tab');
+    assert.ok(out.file_path.includes('tests_stress'), `deve manter 'tests_stress': ${out.file_path}`);
+    assert.ok(!out.file_path.includes('ests_stress,'), 'não pode ter comido a letra t');
+  });
+
+  it('DeleteFile: mesmo pipeline para .\\src\\tests_stress', () => {
+    const out = sanitizeToolCallArguments('DeleteFile', { path: '.\\src\\tests_stress' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\Documents\\Programação\\Projeto\\src\\tests_stress');
+    assert.ok(!out.path.includes('\t'));
+    assert.ok(out.path.includes('tests_stress'));
+  });
+
+  it('purga "\" raiz único antes da resolução ("\\src\\file" → root\\src\\file)', () => {
+    const out = sanitizeToolCallArguments('Read', { path: '\\src\\tests_stress' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\Documents\\Programação\\Projeto\\src\\tests_stress');
+  });
+
+  it('.\src\tests_stress sem raiz: limpo e "tests_stress" intacto', () => {
+    const out = String(sanitizePathValue('.\\tests_stress', null));
+    assert.equal(out, 'tests_stress');
+    assert.ok(!out.includes('\t'));
+  });
+
+  it('mantém UNC \\\\server\\share intacto (não purga a barra dupla)', () => {
+    const out = sanitizeToolCallArguments('Read', { path: '\\\\server\\share\\file.ts' }, ROOT) as any;
+    assert.equal(out.path, '\\\\server\\share\\file.ts');
+  });
+});
+
+describe('relay-path: caminhos absolutos nunca duplicam o workspaceRoot', () => {
+  const ROOT = 'C:/Users/Lucas sá/projeto';
+
+  it('C:\\... absoluto já com o root: só normaliza, sem concatenação', () => {
+    const out = sanitizeToolCallArguments(
+      'DeleteFile',
+      { path: 'C:\\Users\\Lucas sá\\projeto\\src\\tests_stress' },
+      ROOT
+    ) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\projeto\\src\\tests_stress');
+    assert.ok(!out.path.includes('projeto\\projeto'), 'root duplicado: ' + out.path);
+  });
+
+  it('C:/... com barras normais vira nativo \\\\ via win32.normalize (sem duplicar)', () => {
+    const out = sanitizeToolCallArguments('Read', { path: 'C:/Users/Lucas sá/projeto/src/x.ts' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\projeto\\src\\x.ts');
+  });
+
+  it('drive minúsculo c:\\ também não duplica root', () => {
+    const out = sanitizeToolCallArguments('Read', { path: 'c:\\Users\\Lucas sá\\projeto\\src\\x.ts' }, ROOT) as any;
+    assert.equal(out.path, 'c:\\Users\\Lucas sá\\projeto\\src\\x.ts');
+  });
+
+  it('absolute + "./" misturado limpa e mantém absoluto único', () => {
+    const out = sanitizeToolCallArguments('Read', { file_path: 'C:\\Users\\Lucas sá\\projeto\\.\\src\\a.ts' }, ROOT) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas sá\\projeto\\src\\a.ts');
+  });
+
+  it('lista multi-arquivo com absoluto não duplica (e continua absoluto)', () => {
+    const out = sanitizeToolCallArguments(
+      'Read',
+      { file_path: '.\\.\\src\\m1.ts, C:\\Users\\Lucas sá\\projeto\\src\\m2.ts' },
+      ROOT
+    ) as any;
+    assert.equal(
+      out.file_path,
+      'C:\\Users\\Lucas sá\\projeto\\src\\m1.ts,C:\\Users\\Lucas sá\\projeto\\src\\m2.ts'
+    );
+  });
+});
+
+describe('relay-path: tags XML/HTML acidentais são removidas do caminho', () => {
+  const ROOT = 'C:/Users/Lucas sá/projeto';
+
+  it('prefixo <\\toolcall_error_message> é limpo antes do resolve', () => {
+    const out = sanitizeToolCallArguments(
+      'Read',
+      { path: '<\\toolcall_error_message>C:\\Users\\Lucas sá\\projeto\\src\\a.ts' },
+      ROOT
+    ) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\projeto\\src\\a.ts');
+    assert.ok(!out.path.includes('<'), 'tag deve sumir: ' + out.path);
+  });
+
+  it('tag <error> embutida é removida', () => {
+    const out = sanitizeToolCallArguments('Read', { path: '.\\src\\<x>novo.txt' }, ROOT) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\projeto\\src\\novo.txt');
+  });
+});
+
+describe('relay-path: Read/DeleteFile com espaços no caminho ("Lucas sá")', () => {
+  const ROOT = 'C:/Users/Lucas sá/Documents/Programação/Projeto';
+
+  it('Read em arquivo com espaços dentro do workspace', () => {
+    const out = sanitizeToolCallArguments(
+      'Read',
+      { file_path: '.\\config\\config Lucas sá.ts' },
+      ROOT
+    ) as any;
+    assert.equal(out.file_path, 'C:\\Users\\Lucas sá\\Documents\\Programação\\Projeto\\config\\config Lucas sá.ts');
+  });
+
+  it('DeleteFile com espaços e acentos no nome', () => {
+    const out = sanitizeToolCallArguments(
+      'DeleteFile',
+      { path: '.\\docs\\arquivo de teste é ç.txt' },
+      ROOT
+    ) as any;
+    assert.equal(out.path, 'C:\\Users\\Lucas sá\\Documents\\Programação\\Projeto\\docs\\arquivo de teste é ç.txt');
+  });
+});
+
+describe('relay-path: "\tests_stress" preservado na string JSON crua (parse boundary)', () => {
+  const ROOT = 'C:/Users/Lucas sá/projeto';
+
+  it('protectPathEscapesInJson dobra "\\t" de path sem tocar content', () => {
+    const raw = '{"path": ".\\tests_stress", "content": "a\\nb"}';
+    const protectedRaw = protectPathEscapesInJson(raw);
+    assert.ok(protectedRaw.includes('.\\\\tests_stress'), protectedRaw);
+    assert.ok(protectedRaw.includes('a\\nb'), 'content deve ficar intocado: ' + protectedRaw);
+  });
+
+  it('sanitizeToolCallArguments com string JSON crua mantém "tests_stress"', () => {
+    const out = sanitizeToolCallArguments('Read', '{"path": ".\\src\\tests_stress"}', ROOT) as string;
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.path, 'C:\\Users\\Lucas sá\\projeto\\src\\tests_stress');
+    assert.ok(!parsed.path.includes('\t'));
+  });
+
+  it('robustParseJSON end-to-end: .\\tests_stress não vira Tabulação', () => {
+    const parsed = robustParseJSON('{"name":"Read","arguments":{"path": ".\\tests_stress"}}');
+    assert.equal(parsed.arguments.path, '.\\tests_stress');
+    assert.ok(!parsed.arguments.path.includes('\t'), 'não pode decodificar para Tab');
+    assert.ok(parsed.arguments.path.includes('tests_stress'), 'letra t preservada');
+  });
+
+  it('robustParseJSON: content com "\\n" intencional continua newline real', () => {
+    const parsed = robustParseJSON('{"name":"Write","arguments":{"path":"x.txt","content":"linha1\\nlinha2"}}');
+    assert.ok(parsed.arguments.content.includes('\n'), 'content deve ter newline real');
+    assert.ok(!parsed.arguments.content.includes('\\n'), 'não deve ficar literal');
   });
 });
 
@@ -436,6 +593,90 @@ describe('relay-path: sanitizeToolCallArguments com múltiplos arquivos', () => 
     const out = sanitizeToolCallArguments('DeleteFile', JSON.stringify({ path: 'x.ts, y.ts' }), ROOT) as string;
     const parsed = JSON.parse(out);
     assert.equal(parsed.path, 'C:\\Users\\Lucas\\projeto\\x.ts,C:\\Users\\Lucas\\projeto\\y.ts');
+  });
+});
+
+describe('relay-path: isolamento de ferramentas de terminal (RunCommand/CheckCommandStatus)', () => {
+  const ROOT = 'C:/Users/Lucas/projeto';
+
+  it('RunCommand: payload 100% intacto (barras, cmd, cwd com "./")', () => {
+    const command =
+      'cd src\\tests_stress && node "C:\\test folder\\run.js" --flag "um arquivo com espaço"';
+    const args = { command, cwd: './app' };
+    const out = sanitizeToolCallArguments('RunCommand', args, ROOT) as any;
+    assert.strictEqual(out.command, command);
+    assert.strictEqual(out.cwd, './app');
+    assert.deepStrictEqual(out, args);
+  });
+
+  it('CheckCommandStatus: não aplica sanitização', () => {
+    const args = { command: 'npm test -- --runInBand', timeout: 30000 };
+    const out = sanitizeToolCallArguments('CheckCommandStatus', args, ROOT) as any;
+    assert.deepStrictEqual(out, args);
+  });
+
+  it('RunCommand em string JSON permanece idêntico (não re-stringify)', () => {
+    const json = JSON.stringify({ command: 'dir src\\tests_stress', cwd: '.\\app' });
+    const out = sanitizeToolCallArguments('RunCommand', json, ROOT);
+    assert.strictEqual(out, json);
+    assert.ok(!String(json).includes('/'), 'barras invertidas preservadas no payload');
+  });
+});
+
+describe('relay-path: DeleteFile multi com prefixos relativos', () => {
+  const ROOT = 'C:/Users/Lucas sá/Documents/Projeto';
+
+  it('limpa "./" antes do resolve (exemplo do requisito)', () => {
+    const out = sanitizeToolCallArguments('DeleteFile', { path: './src/tests_stress/math.ts' }, ROOT) as any;
+    assert.strictEqual(
+      out.path,
+      'C:\\Users\\Lucas sá\\Documents\\Projeto\\src\\tests_stress\\math.ts'
+    );
+    assert.ok(!out.path.includes('./'), 'não pode sobrar "./" no item resolvido');
+  });
+
+  it('múltiplos arquivos com prefixos relativos mistos ("./", ".\\", ok)', () => {
+    const out = sanitizeToolCallArguments(
+      'DeleteFile',
+      { path: '././src/a.ts,.\\tests\\b.ts,plain.ts,' },
+      ROOT
+    ) as any;
+    assert.strictEqual(
+      out.path,
+      'C:\\Users\\Lucas sá\\Documents\\Projeto\\src\\a.ts,' +
+        'C:\\Users\\Lucas sá\\Documents\\Projeto\\tests\\b.ts,' +
+        'C:\\Users\\Lucas sá\\Documents\\Projeto\\plain.ts'
+    );
+    assert.ok(!out.path.includes('./'), 'nenhum item pode manter "./"');
+  });
+
+  it('cada item recebe win32.resolve com string limpa (sem "./")', () => {
+    const out = String(
+      sanitizeToolCallArguments('DeleteFile', { path: './src/tests_stress/math.ts' }, ROOT)
+    );
+    assert.ok(!out.includes('./'), 'relativo pré-resolvido nunca aparece no output JSON');
+  });
+});
+
+describe('relay-path: toolCallSignature (circuit breaker)', () => {
+  it('iguala objetos com ordem de chaves diferente', () => {
+    const a = toolCallSignature('DeleteFile', { path: 'a.ts', content: 'x' });
+    const b = toolCallSignature('DeleteFile', { content: 'x', path: 'a.ts' });
+    assert.strictEqual(a, b);
+  });
+
+  it('distingue argumentos diferentes (uma tool, caminhos diferentes)', () => {
+    assert.notStrictEqual(
+      toolCallSignature('DeleteFile', { path: 'a.ts' }),
+      toolCallSignature('DeleteFile', { path: 'b.ts' })
+    );
+  });
+
+  it('ignora caixa e espaços no nome da ferramenta', () => {
+    assert.strictEqual(
+      toolCallSignature('DeleteFile', { path: 'x' }),
+      toolCallSignature(' deletefile ', { path: 'x' })
+    );
   });
 });
 
@@ -568,5 +809,163 @@ describe('relay-path: integração via app (chat completions)', () => {
       setMockGeminiPage(null);
       clearWorkspaceRootCache();
     }
+  });
+});
+
+describe('relay-path: run_mcp (injeção de server_name)', () => {
+  it('injeta server_name padrão quando ausente (objeto)', () => {
+    const out = sanitizeToolCallArguments(
+      'run_mcp',
+      { tool_name: 'read_text_file', arguments: { path: 'README.md' } },
+      null
+    ) as any;
+    assert.strictEqual(out.server_name, DEFAULT_MCP_SERVER_NAME);
+    assert.strictEqual(out.tool_name, 'read_text_file');
+    assert.deepStrictEqual(out.arguments, { path: 'README.md' });
+  });
+
+  it('injeta server_name também quando os args vêm como string JSON', () => {
+    const raw = JSON.stringify({ tool_name: 'write_text_file', arguments: { path: 'a.txt', content: 'hi' } });
+    const out = sanitizeToolCallArguments('run_mcp', raw, null) as string;
+    const parsed = JSON.parse(out);
+    assert.strictEqual(parsed.server_name, DEFAULT_MCP_SERVER_NAME);
+    assert.strictEqual(parsed.tool_name, 'write_text_file');
+  });
+
+  it('preserva server_name já informado pelo modelo', () => {
+    const out = sanitizeToolCallArguments(
+      'run_mcp',
+      { server_name: 'github', tool_name: 'x', arguments: {} },
+      null
+    ) as any;
+    assert.strictEqual(out.server_name, 'github');
+  });
+
+  it('não toca mais nada além do server_name (pass-through)', () => {
+    const out = sanitizeToolCallArguments(
+      'run_mcp',
+      { tool_name: 'list', arguments: { pattern: '**/*' }, extra: ['a', { b: 1 }] },
+      null
+    ) as any;
+    assert.deepStrictEqual(out, {
+      server_name: DEFAULT_MCP_SERVER_NAME,
+      tool_name: 'list',
+      arguments: { pattern: '**/*' },
+      extra: ['a', { b: 1 }],
+    });
+  });
+
+  it('server_name em branco é substituído', () => {
+    const out = sanitizeToolCallArguments('run_mcp', { server_name: '  ', tool_name: 'x' }, null) as any;
+    assert.strictEqual(out.server_name, DEFAULT_MCP_SERVER_NAME);
+  });
+
+  it('prefere o padrão quando anunciado no schema', () => {
+    const servers = extractMcpServerNamesFromTools([
+      {
+        type: 'function',
+        function: {
+          name: 'run_mcp',
+          parameters: {
+            type: 'object',
+            properties: {
+              server_name: { type: 'string', enum: ['filesystem', 'database'] },
+              tool_name: { type: 'string' },
+            },
+          },
+        },
+      },
+    ]);
+    assert.deepStrictEqual(servers, ['filesystem', 'database']);
+    const out = sanitizeToolCallArguments('run_mcp', { tool_name: 'x', arguments: {} }, null, servers) as any;
+    assert.strictEqual(out.server_name, DEFAULT_MCP_SERVER_NAME);
+  });
+
+  it('usa o 1º servidor do schema quando o padrão não está anunciado', () => {
+    const out = sanitizeToolCallArguments('run_mcp', { tool_name: 'x' }, null, ['github']) as any;
+    assert.strictEqual(out.server_name, 'github');
+  });
+
+  it('extractMcpServerNamesFromTools suporta const/default e ignora outras tools', () => {
+    const servers = extractMcpServerNamesFromTools([
+      {
+        name: 'run_mcp',
+        parameters: { properties: { server_name: { const: 'myfs' }, tool_name: { type: 'string' } } },
+      },
+      { name: 'read_file' },
+      JSON.parse(
+        JSON.stringify({
+          function: { name: 'run_mcp', parameters: { properties: { serverName: { default: 'alt' } } } },
+        })
+      ),
+    ]);
+    assert.deepStrictEqual(servers, ['myfs', 'alt']);
+    assert.deepStrictEqual(extractMcpServerNamesFromTools([{ name: 'read_file' }]), []);
+    assert.deepStrictEqual(extractMcpServerNamesFromTools(null), []);
+    assert.deepStrictEqual(extractMcpServerNamesFromTools(undefined), []);
+  });
+});
+
+describe('relay-path: fallback nativo quando MCP bloqueado (Access denied)', () => {
+  const denied = 'Error: Access denied - path outside allowed directories. Rejeitado.';
+  const directive = MCP_NATIVE_FS_FALLBACK_DIRECTIVE.trim();
+
+  it('reconhece o bloqueio via regex', () => {
+    assert.ok(MCP_ACCESS_DENIED_RE.test(denied));
+    assert.ok(MCP_ACCESS_DENIED_RE.test('access denied - path outside allowed directories'));
+    assert.ok(!MCP_ACCESS_DENIED_RE.test('ok: arquivo lido com sucesso'));
+  });
+
+  it('anexa a diretiva à tool message com string e preserva o erro original', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'user', content: 'leia o arquivo' },
+        { role: 'tool', tool_call_id: 'c1', content: denied },
+      ],
+    };
+    const out = applyMcpNativeFilesystemFallback(body);
+    const toolMsg = out.messages[1];
+    assert.ok((toolMsg.content as string).startsWith(denied), 'erro original preservado no início');
+    assert.ok((toolMsg.content as string).includes(directive), 'diretiva de fallback anexada');
+    assert.ok((toolMsg.content as string).includes('Write'));
+  });
+
+  it('idempotente: não anexa 2x (marcador)', () => {
+    const body: any = { model: 'x', messages: [{ role: 'tool', content: denied }] };
+    const once = applyMcpNativeFilesystemFallback(body);
+    const twice = applyMcpNativeFilesystemFallback(once);
+    assert.strictEqual(twice.messages[0].content, once.messages[0].content);
+  });
+
+  it('suporta content em array de partes (OpenAI multimodal)', () => {
+    const body: any = { model: 'x', messages: [{ role: 'tool', content: [{ type: 'text', text: denied }] }] };
+    const out = applyMcpNativeFilesystemFallback(body);
+    const parts = out.messages[0].content as any[];
+    assert.strictEqual(parts.length, 2);
+    assert.strictEqual(parts[0].text, denied);
+    assert.ok(parts[1].text.includes('Write'));
+  });
+
+  it('role function também recebe o fallback', () => {
+    const body: any = { model: 'x', messages: [{ role: 'function', name: 'run_mcp', content: denied }] };
+    const out = applyMcpNativeFilesystemFallback(body);
+    assert.ok((out.messages[0].content as string).includes(directive));
+  });
+
+  it('sem bloqueio: corpo retornado intacto (mesma referência)', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        { role: 'user', content: 'oi' },
+        { role: 'tool', content: 'ok: pronto' },
+      ],
+    };
+    assert.strictEqual(applyMcpNativeFilesystemFallback(body), body);
+  });
+
+  it('corpo sem messages: intacto', () => {
+    const body: any = { model: 'x' };
+    assert.strictEqual(applyMcpNativeFilesystemFallback(body), body);
   });
 });

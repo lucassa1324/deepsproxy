@@ -19,11 +19,12 @@
  *      O candidato automático que NÃO representa um diretório completo de
  *      projeto (ex.: somente "C:\Users\Lucas") é REJEITADO em favor do próximo
  *      fallback válido.
- *   2. limpa prefixos relativos repetidos ('././arquivo.txt' → 'arquivo.txt')
- *      — NUNCA gera saída com prefixo relativo residual;
- *   3. manipula internamente com '/' e só emite '\' no final via path.win32 —
- *      escapes misfired como '\t' (Tab) ou '\n' (quebra de linha) NÃO viram
- *      espaços: são restaurados como separador '/' sem quebrar o caminho;
+ *   2. purga prefixos relativos SEMPRE ANTES de qualquer regex/resolução — o
+ *      valor bruto ainda carrega as barras cruas ('./', '.\', '.\Src', '/','\');
+ *      em seguida converte TODAS as '\' em '/' e remove tags XML/HTML acidentais
+ *      ('<\toolcall_error_message>') — '\tests_stress' NUNCA vira 'ests_stress';
+ *   3. caminho JÁ absoluto (C:\..., c:\..., \\server\...) NÃO é re-concatenado
+ *      com o workspaceRoot: só é limpo (tags/ruído) e normalizado via win32;
  *   4. se a raiz for Windows (letra de unidade ou UNC), converte TODOS os
  *      caminhos relativos em absolutos completos via path.win32.resolve()
  *      (ex.: 'teste_final.txt' → 'C:\Users\Lucas\projeto\teste_final.txt');
@@ -37,6 +38,8 @@
 
 import { posix as pathPosix, win32 as pathWin32 } from 'path';
 import type { Context } from 'hono';
+import type { OpenAIRequest } from '../utils/types.ts';
+import { protectPathEscapesInJson } from '../utils/robust-json.ts';
 
 /** Chaves de argumento de Tool Call que representam um arquivo único (podem
  *  vir também como lista separada por vírgulas). 'directory' é só diretório. */
@@ -44,6 +47,169 @@ const FILE_PATH_KEYS = new Set(['path', 'file_path', 'filePath', 'target_file', 
 
 /** Auxiliares (LINUX/Windows) presente no set de path keys com semântica de lista. */
 const PATH_ARG_KEYS = new Set([...FILE_PATH_KEYS, 'directory']);
+
+/**
+ * Ferramentas de TERMINAL: o payload NUNCA é sanitizado — o CMD/PowerShell
+ * precisa receber EXATAMENTE o texto emitido pelo modelo (uma barra invertida
+ * real como 'src\tests_stress' não pode virar tabulação 'src<TAB>ests_stress').
+ */
+const TERMINAL_TOOL_NAMES = new Set([
+  'runcommand',
+  'checkcommandstatus',
+  'run_terminal_command',
+  'runcommandstatus',
+  'terminal_command',
+  'exec_command',
+  'shell_command',
+]);
+
+function isTerminalTool(name: string | undefined): boolean {
+  return !!name && TERMINAL_TOOL_NAMES.has(String(name).trim().toLowerCase());
+}
+
+/* ---------------------------------------------------------------------------
+ * Relay de Tool MCP (run_mcp)
+ * ---------------------------------------------------------------------------
+ * O modelo às vezes emite `run_mcp` SEM o campo `server_name`, e o cliente MCP
+ * da IDE rejeita a chamada com "missing field server_name". O relay injeta um
+ * nome válido:
+ *   1. prioriza o nome anunciado no schema das tools da requisição
+ *      (enum/const/default de `server_name` — ex.: "filesystem");
+ *   2. senão, usa o padrão (configurável via MCP_DEFAULT_SERVER_NAME).
+ * O payload MCP é pass-through: nenhum outro argumento é tocado (o servidor MCP
+ * faz a própria resolução de caminhos dentro dos diretórios permitidos).
+ */
+
+/** Nome padrão do servidor MCP injetado quando o modelo omite `server_name`. */
+export const DEFAULT_MCP_SERVER_NAME = (process.env.MCP_DEFAULT_SERVER_NAME || 'filesystem').trim();
+
+/** Tool que encaminha chamadas para um servidor MCP externo. */
+function isMcpToolCall(name: string | undefined): boolean {
+  return !!name && String(name).trim().toLowerCase() === 'run_mcp';
+}
+
+/** Escolhe o servidor a injetar: o padrão se anunciado, senão o 1º do schema. */
+function pickMcpServerName(mcpServers?: string[]): string {
+  const servers = (mcpServers || []).map((s) => String(s).trim()).filter((s) => s.length > 0);
+  if (servers.length === 0) return DEFAULT_MCP_SERVER_NAME;
+  return servers.includes(DEFAULT_MCP_SERVER_NAME) ? DEFAULT_MCP_SERVER_NAME : servers[0];
+}
+
+/** Injeta `server_name` quando ausente/vazio em uma chamada `run_mcp`. */
+function sanitizeMcpToolArguments(args: unknown, mcpServers?: string[]): unknown {
+  if (typeof args === 'string') {
+    try {
+      const parsed = JSON.parse(protectPathEscapesInJson(args));
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return JSON.stringify(sanitizeMcpToolArguments(parsed, mcpServers));
+      }
+    } catch {
+      // Não é JSON estruturado: repassa intacto.
+    }
+    return args;
+  }
+
+  if (typeof args === 'object' && !Array.isArray(args)) {
+    const out: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+    const server = out.server_name;
+    if (server === undefined || server === null || String(server).trim() === '') {
+      out.server_name = pickMcpServerName(mcpServers);
+    }
+    return out;
+  }
+
+  return args;
+}
+
+/** Marcação do bloqueio do filesystem MCP (resposta de tool real da IDE). */
+export const MCP_ACCESS_DENIED_RE = /Access denied[^\r\n]*path outside allowed directories/i;
+
+/** Marcador idempotência do fallback (evita direcionar o modelo 2x). */
+export const MCP_FALLBACK_MARKER = '[PROXY MCP FALLBACK]';
+
+/**
+ * Diretiva anexada à resposta da tool MCP bloqueada: orienta o modelo a usar as
+ * ferramentas NATIVAS de arquivo da IDE (Write/Read/Edit/SearchReplace/DeleteFile)
+ * em vez de persistir no servidor MCP filesystem bloqueado.
+ */
+export const MCP_NATIVE_FS_FALLBACK_DIRECTIVE = `${MCP_FALLBACK_MARKER} O servidor MCP de arquivos (filesystem) foi bloqueado pela IDE: "Access denied - path outside allowed directories". ` +
+  'PARE de chamar run_mcp/filesystem para este arquivo. ' +
+  'Use as ferramentas NATIVAS da IDE — Write, Read, Edit, SearchReplace ou DeleteFile — sempre com caminhos relativos ao workspace.';
+
+/**
+ * Extrai os nomes de servidores MCP anunciados no schema da tool `run_mcp`
+ * (enum/const/default de `server_name`). Usado para injetar um nome VÁLIDO e
+ * conhecido quando o modelo omite o campo na chamada.
+ */
+export function extractMcpServerNamesFromTools(tools: unknown): string[] {
+  if (!Array.isArray(tools)) return [];
+  const servers = new Set<string>();
+  for (const t of tools) {
+    const fn: any = t?.function ?? t;
+    const toolName = fn?.name ?? t?.name ?? '';
+    if (String(toolName).trim().toLowerCase() !== 'run_mcp') continue;
+    const params = fn?.parameters ?? t?.parameters;
+    const prop = params?.properties?.server_name ?? params?.properties?.serverName;
+    if (prop && typeof prop === 'object') {
+      for (const key of ['enum', 'const', 'default'] as const) {
+        const value = prop[key];
+        if (typeof value === 'string' && value.trim()) servers.add(value.trim());
+        if (Array.isArray(value)) {
+          for (const v of value) {
+            if (typeof v === 'string' && v.trim()) servers.add(v.trim());
+          }
+        }
+      }
+    }
+  }
+  return [...servers];
+}
+
+/** Texto de uma mensagem (string ou array de partes OpenAI). */
+function messageContentText(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((p: any) => (p && typeof p === 'object' ? p.text ?? '' : String(p)))
+      .filter(Boolean)
+      .join('\n');
+  }
+  return content ? String(content) : '';
+}
+
+/**
+ * Fallback TRANSPARENTE do filesystem MCP para as ferramentas nativas da IDE.
+ * Quando uma resposta de tool (role `tool`/`function`) contém o bloqueio
+ * "Access denied - path outside allowed directories", anexa à mensagem uma
+ * diretiva orientando o modelo a usar Write/Read/Edit/SearchReplace/DeleteFile
+ * em vez de continuar no MCP bloqueado. O erro original é preservado (a
+ * diretiva é anexada, não substitui) e a operação é idempotente (marcador).
+ */
+export function applyMcpNativeFilesystemFallback(body: OpenAIRequest): OpenAIRequest {
+  const messages = body?.messages;
+  if (!Array.isArray(messages)) return body;
+
+  let changed = false;
+  const next = messages.map((msg) => {
+    if (!msg || (msg.role !== 'tool' && msg.role !== 'function')) return msg;
+    const text = messageContentText(msg.content);
+    if (!MCP_ACCESS_DENIED_RE.test(text) || text.includes(MCP_FALLBACK_MARKER)) return msg;
+    changed = true;
+    if (typeof msg.content === 'string') {
+      return { ...msg, content: `${msg.content}\n\n${MCP_NATIVE_FS_FALLBACK_DIRECTIVE.trim()}` };
+    }
+    if (Array.isArray(msg.content)) {
+      return {
+        ...msg,
+        content: [...msg.content, { type: 'text' as const, text: `\n\n${MCP_NATIVE_FS_FALLBACK_DIRECTIVE.trim()}` }],
+      };
+    }
+    return msg;
+  });
+
+  if (!changed) return body;
+  return { ...body, messages: next };
+}
 
 /** Headers HTTP candidatos a carregar a raiz do workspace. */
 const WORKSPACE_ROOT_HEADERS = ['x-workspace-root', 'x-project-root', 'x-code-workspace-root'];
@@ -69,12 +235,27 @@ const POSIX_ABS_PATH_RE = /\/(?:Users|home|root|var|opt|workspace|project|data|t
 let cachedWorkspaceRoot: string | null = null;
 
 /**
- * Limpa prefixos relativos repetidos no início de um caminho (ex.: '.\' ou
- * './'). '.\' já foi normalizado para './'. NUNCA deixa resquícios como
- * '././arquivo.txt'. Respeita '../' (traversal legítimo).
+ * PURGA DE PREFIXOS RELATIVOS — SEMPRE a PRIMEIRA ação de sanitização, quando o
+ * valor ainda carrega as barras CRUAS (antes de qualquer regex/resolução).
+ *   - remove '.\', './' e repetições ('././', '.\Src\...');
+ *   - remove um '\' RAIZ único e acidental ('\src\file' → 'src\file') — o
+ *     modelo às vezes prefixa o caminho com barra; '\\server\share' (UNC)
+ *     e 'C:\...' permanecem intocados;
+ *   - NUNCA remove o '/' inicial de caminho POSIX absoluto ('/Users/...').
  */
-function stripRedundantRelativePrefix(p: string): string {
-  return p.replace(/^(?:\.\/)+/, '');
+function stripRelativePrefix(p: string): string {
+  let out = p.replace(/^(?:\.(?:[\\/]))+/, '');
+  if (/^\\(?!\\)/.test(out) && !/^\\[A-Za-z]:/.test(out)) {
+    // '\src\file' → 'src\file' (barra raiz única; '\\server' não entra aqui).
+    out = out.slice(1);
+  }
+  return out;
+}
+
+/** Remove tags XML/HTML acidentais injetadas num caminho pelo modelo
+ *  (ex.: '<\toolcall_error_message>' ou '<error>...</error>'). */
+function stripXmlTags(p: string): string {
+  return p.replace(/<[^>\r\n]*>/g, '');
 }
 
 /** Remove pontuação/ruído que pode acompanhar um caminho capturado numa linha. */
@@ -83,21 +264,59 @@ function trimTrailingPathNoise(p: string): string {
 }
 
 /**
- * Normaliza o valor de um caminho para uso INTERNO (sempre '/', sem escapes):
- *   - remove aspas envelopantes;
- *   - caracteres de controle (Tab/CR/LF e demais \u0000-\u001F, \u007F) —
- *     resíduos de escapes misfired (ex.: '\t' de uma barra invertida real que
- *     a IDE/modelo decodificou) — são restaurados como '/' separador, para que
- *     um caminho como '\src\tests_stress' NUNCA vire ' ests_stress';
- *   - '\' → '/'; dobras de barra colapsadas.
+ * NORMALIZAÇÃO TOTAL DE BARRAS — roda DEPOIS da purga relativa e ANTES de
+ * qualquer verificação de caminho absoluto / resolução:
+ *   - converte TODAS as '\' em '/' (uma barra invertida real 'src\tests_stress'
+ *     vira 'src/tests_stress' — nunca uma Tabulação que comeria a letra);
+ *   - restaura control-chars residuais (Tab/CR/LF que um parseador decodificou
+ *     de escapes misfired) como '/' separador;
+ *   - remove tags XML/HTML acidentais;
+ *   - remove aspas envelopantes e colapsa dobras de barra.
  */
 function normalizePathValue(p: string): string {
   return p
     .trim()
     .replace(/^["'`]|["'`]$/g, '')
-    .replace(/[\u0000-\u001F\u007F]/g, '/')
     .replace(/\\/g, '/')
+    .replace(/<[^>\r\n]*>/g, '')
+    .replace(/[\u0000-\u001F\u007F]/g, '/')
     .replace(/\/{3,}/g, '//');
+}
+
+/** True para caminho já absoluto (POSIX, drive Windows ou UNC) — já com '/'. */
+function isAbsolutePath(p: string): boolean {
+  if (!p) return false;
+  if (p.startsWith('/')) return true;
+  if (/^[A-Za-z]:/.test(p)) return true;
+  if (p.startsWith('//')) return true;
+  return false;
+}
+
+/**
+ * Resolve um caminho JÁ LIMPO (normalizado '/' e SEM prefixo relativo) contra
+ * a raiz do workspace. Caminhos JÁ absolutos nunca recebem o workspaceRoot:
+ *   - Windows (drive/UNC) → win32.normalize (formato nativo com '\');
+ *   - POSIX absoluto → repassado como está (ou posix.normalize).
+ * Rotas relativas: win32.resolve ou posix.join conforme a raiz.
+ */
+function resolveAgainstRoot(p: string, root: string | null): string {
+  if (!root) return p;
+
+  if (isAbsolutePath(p)) {
+    if (isWindowsRoot(root)) {
+      // Não concatena root de novo: só reescreve no estilo Windows quando for
+      // drive/UNC; caminho POSIX absoluto dentro de workspace Windows é
+      // repassado como está.
+      if (/^[A-Za-z]:/.test(p) || p.startsWith('//')) return pathWin32.normalize(p);
+      return p;
+    }
+    return pathPosix.normalize(p);
+  }
+
+  if (isWindowsRoot(root)) {
+    return pathWin32.resolve(root, p);
+  }
+  return pathPosix.normalize(pathPosix.join(root, p));
 }
 
 /**
@@ -129,56 +348,51 @@ function isIncompleteRoot(root: string | null): boolean {
   return false;
 }
 
-/** True para caminho já absoluto (POSIX, drive Windows ou UNC) — já com '/'. */
-function isAbsolutePath(p: string): boolean {
-  if (!p) return false;
-  if (p.startsWith('/')) return true;
-  if (/^[A-Za-z]:/.test(p)) return true;
-  if (p.startsWith('//')) return true;
-  return false;
-}
-
 /** True quando a raiz (normalizada) é de workspace Windows (letra de unidade). */
 function isWindowsRoot(root: string): boolean {
   return /^[A-Za-z]:\//.test(root) || root.startsWith('//');
 }
 
 /**
+ * Pipeline RÍGIDO de sanitização de UM caminho — usado tanto por
+ * `sanitizePathValue` (chave única 'directory'/'path') quanto por itens de
+ * listas multi-arquivo (Read/DeleteFile/Write/SearchReplace):
+ *   1. PURGA do prefixo relativo ('./', '.\', repetidos, '\' raiz) ANTES de
+ *      qualquer regex/resolução — barras ainda cruas;
+ *   2. NORMALIZAÇÃO TOTAL de barras: TODAS as '\' → '/' (nunca Tabulação que
+ *      comeria a letra de '\tests_stress'), remoção de tags XML/HTML
+ *      acidentais e restauração de control-chars residuais como '/';
+ *   3. re-purga relativa (barra de segurança — cobre '.\' surgido no passo 2);
+ *   4. resolução contra o workspaceRoot — caminho JÁ absoluto (C:\..., c:\...,
+ *      \\server\...) nunca recebe o root de novo, só win32.normalize.
+ */
+function sanitizeSinglePath(raw: string, root: string | null): string {
+  if (typeof raw !== 'string' || raw.trim() === '') return raw;
+  const purged = stripRelativePrefix(raw);
+  const normalized = normalizePathValue(purged);
+  if (!normalized) return raw;
+  return resolveAgainstRoot(stripRelativePrefix(normalized), root);
+}
+
+/**
  * Sanitiza UM argumento de caminho.
- *  - Sem raiz: ao menos limpa o prefixo relativo repetido e ' \ '→' / '.
+ *  - Sem raiz: ao menos limpa o prefixo relativo e ' \ '→' / ' e tags XML.
  *  - Raiz Windows: win32.resolve(root, rel) → absoluto completo com '\'.
+ *  - Caminhos JÁ absolutos: nunca duplica o root; só win32.normalize.
  *  - Raiz POSIX: posix.join + normalize → absoluto com '/'.
  */
 export function sanitizePathValue(value: unknown, root: string | null): unknown {
   if (typeof value !== 'string' || value.trim() === '') return value;
-
-  const p = stripRedundantRelativePrefix(normalizePathValue(value));
-  if (!p) return value;
-
-  if (!root) return p;
-
-  if (isAbsolutePath(p)) {
-    if (isWindowsRoot(root)) {
-      // Só reescreve no estilo Windows se for drive/UNC Windows; caminho
-      // POSIX absoluto dentro de workspace Windows é repassado como está.
-      if (/^[A-Za-z]:/.test(p) || p.startsWith('//')) return pathWin32.normalize(p);
-      return p;
-    }
-    return pathPosix.normalize(p);
-  }
-
-  if (isWindowsRoot(root)) {
-    return pathWin32.resolve(root, p);
-  }
-  return pathPosix.normalize(pathPosix.join(root, p));
+  return sanitizeSinglePath(value, root);
 }
 
 /**
  * Sanitiza um argumento de caminho que pode conter VÁRIOS arquivos separados
- * por vírgula (ex.: DeleteFile/Read: "file1.ts,file2.ts"). Divide, aplica
- * sanitizePathValue em cada item e reconstitui a lista. Caminhos absolutos
- * Windows não contêm vírgula, então a estrutura reconstruída permanece
- * inequívoca para a ferramenta da IDE.
+ * por vírgula (ex.: DeleteFile/Read: "file1.ts,file2.ts"). Divide, aplica o
+ * MESMO pipeline rigoroso (sanitizeSinglePath) em cada item e reconstitui a
+ * lista. Cada item é resolvido ABSOLUTO ANTES do join — a string passada ao
+ * resolve nunca contém './'. Caminhos absolutos Windows não contêm vírgula,
+ * então a estrutura reconstruída permanece inequívoca.
  */
 function sanitizeMultiFilePath(value: unknown, root: string | null): unknown {
   if (typeof value !== 'string' || value.trim() === '') return value;
@@ -186,25 +400,60 @@ function sanitizeMultiFilePath(value: unknown, root: string | null): unknown {
     .split(',')
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
-  if (parts.length <= 1) return sanitizePathValue(value, root);
-  return parts.map((part) => sanitizePathValue(part, root)).join(',');
+  if (parts.length <= 1) return sanitizeSinglePath(value, root);
+  return parts
+    .map((part) => sanitizeSinglePath(part, root))
+    .join(',');
+}
+
+/**
+ * Assinatura estável de uma Tool Call (nome + args normalizados) para rastrear
+ * loops de repetição no circuit breaker anti-lazy.
+ */
+export function toolCallSignature(name: string | undefined, args: unknown): string {
+  const toolName = String(name || '').trim().toLowerCase();
+  return `${toolName}(${stableSerialize(args)})`;
+}
+
+/** Serializa args de forma determinística (chaves ordenadas) para a assinatura. */
+function stableSerialize(value: unknown): string {
+  if (Array.isArray(value)) {
+    return '[' + value.map((v) => stableSerialize(v)).join(',') + ']';
+  }
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return '{' + keys.map((k) => `${k}:${stableSerialize(record[k])}`).join(',') + '}';
+  }
+  return JSON.stringify(value);
 }
 
 /**
  * Sanitiza os argumentos de uma Tool Call (objeto OU string JSON), reescrevendo
  * apenas as chaves de caminho. Nenhum outro argumento (content, query, etc.) é
  * tocado.
+ *
+ * ISOLAMENTO: ferramentas de terminal (RunCommand, CheckCommandStatus e afins)
+ * são devolvidas 100% intactas — nem o parse JSON nem a troca de barras ocorrem,
+ * para que o CMD/PowerShell receba exatamente o que o modelo emitiu. Chamadas
+ * `run_mcp` (MCP) recebem apenas a injeção de `server_name` quando ausente
+ * (`mcpServers` = nomes anunciados no schema das tools da requisição).
  */
 export function sanitizeToolCallArguments(
   name: string | undefined,
   args: unknown,
-  root: string | null
+  root: string | null,
+  mcpServers?: string[]
 ): unknown {
   if (args === null || args === undefined) return args;
+  if (isMcpToolCall(name)) return sanitizeMcpToolArguments(args, mcpServers);
+  if (isTerminalTool(name)) return args;
 
   if (typeof args === 'string') {
     try {
-      const parsed = JSON.parse(args);
+      // Protege barras de caminho no JSON cru ANTES do parse: '\tests_stress'
+      // não pode ser decodificado como Tab (o JSON.parse 'engoliria' o 't').
+      const parsed = JSON.parse(protectPathEscapesInJson(args));
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         return JSON.stringify(sanitizeToolCallArguments(name, parsed, root));
       }

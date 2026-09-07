@@ -39,10 +39,15 @@ import { injectHighPrecisionProtocol } from '../utils/system-prompt.ts';
 import {
   isLazyCompletion,
   ANTI_LAZY_RETRY_MESSAGE,
+  noteToolLoopEvent,
+  isToolLoopTripped,
+  TOOL_LOOP_BREAKER_LIMIT,
 } from '../middlewares/anti-lazy.ts';
 import {
   getWorkspaceRootFromContext,
   sanitizeToolCallArguments,
+  extractMcpServerNamesFromTools,
+  toolCallSignature,
 } from '../services/relay-path.ts';
 import {
   acquireGeminiStreamPage,
@@ -69,15 +74,46 @@ interface GeminiTurnOutcome {
 }
 
 /**
+ * Assinaturas de tool calls já presentes na conversa (mensagens do body) —
+ * base para o circuit breaker detectar repetição da mesma chamada no ciclo.
+ */
+function collectHistoryToolSignatures(body: OpenAIRequest): string[] {
+  const signatures: string[] = [];
+  for (const msg of (body as any).messages ?? []) {
+    const tcs = msg?.tool_calls;
+    if (Array.isArray(tcs)) {
+      for (const tc of tcs) {
+        signatures.push(
+          toolCallSignature(tc?.function?.name, tc?.function?.arguments ?? tc?.arguments)
+        );
+      }
+    }
+  }
+  return signatures;
+}
+
+/**
  * Executa um turno no Gemini Web com retry anti-preguiça (máx. 2 tentativas).
  * Se a 1ª resposta for vazia/curta/genérica SEM tool_calls, re-submete o
  * prompt com a mensagem oculta `ANTI_LAZY_RETRY_MESSAGE` (finalização precoce).
+ *
+ * CIRCUIT BREAKER: se o histórico da conversa mostra a mesma tool call se
+ * repetindo por TOOL_LOOP_BREAKER_LIMIT turnos seguidos no ciclo, o retry
+ * oculto é SUPRIMIDO e a resposta é entregue ao usuário como está, para
+ * interromper o loop de comandos/falhas da IDE.
  */
 async function runGeminiTurnWithAntiLazy(
   page: GeminiPageLike,
   prompt: string,
-  opts: { abortSignal?: AbortSignal }
+  opts: { abortSignal?: AbortSignal; historySignatures?: string[] }
 ): Promise<GeminiTurnOutcome> {
+  // Alimenta o breaker com o histórico: repetições consecutivas da mesma tool
+  // call no ciclo contam para o limite.
+  for (const sig of opts.historySignatures ?? []) {
+    noteToolLoopEvent(sig);
+  }
+  const trippedSignature = (opts.historySignatures ?? []).find((sig) => isToolLoopTripped(sig)) ?? null;
+
   for (let attempt = 0; attempt < 2; attempt++) {
     const finalPrompt =
       attempt > 0 ? `${prompt}\n\nUser: ${ANTI_LAZY_RETRY_MESSAGE}` : prompt;
@@ -90,6 +126,13 @@ async function runGeminiTurnWithAntiLazy(
     const parsed = parseToolCallsFromContent(text);
     if (parsed.toolCalls.length > 0 || !isLazyCompletion(parsed.textContent, parsed.toolCalls)) {
       return { rawText: text, ...parsed, retried: attempt > 0 };
+    }
+
+    if (trippedSignature) {
+      console.log(
+        `[gemini-web] CIRCUIT BREAKER: tool call repetida ${trippedSignature} por ${TOOL_LOOP_BREAKER_LIMIT}+ turnos seguidos — sem retry oculto, resposta entregue ao usuário`
+      );
+      return { rawText: text, ...parsed, retried: false };
     }
 
     console.log(
@@ -112,6 +155,7 @@ async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPr
   try {
     const { textContent, toolCalls, error } = await runGeminiTurnWithAntiLazy(page, finalPrompt, {
       abortSignal: signal,
+      historySignatures: collectHistoryToolSignatures(body),
     });
     if (error) throw new Error(error);
 
@@ -127,8 +171,9 @@ async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPr
       // x-workspace-root, '\' -> '/') ANTES de entregar a Tool Call à IDE. Sem
       // I/O local — só manipulação de string pura.
       const workspaceRoot = getWorkspaceRootFromContext(c, body);
+      const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
       message.tool_calls = toolCalls.map((tc) => {
-        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot);
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot, mcpServers);
         return {
           id: tc.id,
           type: 'function',
@@ -261,6 +306,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
     // Raiz do workspace (header 'x-workspace-root' ou body) para a camada de
     // Relay: sanitize dos caminhos dos tool_calls emitidos no SSE.
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+    const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
 
     // A stream HTTP (headers + primeiro chunk) começa ANTES de tocar no
     // Playwright: o Trae vê TTFB ~0 em vez de esperar o goto+fill+send.
@@ -295,7 +341,10 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
         const { rawText, textContent, toolCalls, error, retried } = await runGeminiTurnWithAntiLazy(
           page,
           finalPrompt,
-          { abortSignal: c.req.raw?.signal }
+          {
+            abortSignal: c.req.raw?.signal,
+            historySignatures: collectHistoryToolSignatures(body),
+          }
         );
 
         if (error) {
@@ -323,7 +372,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
         // OpenAI/Gemini esperado pela IDE) — sem execução local. A camada de
         // Relay sanitiza os caminhos antes de entregá-los para a IDE.
         for (const tc of toolCalls) {
-          const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+          const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
           await writeEvent({
             id: completionId,
             object: 'chat.completion.chunk',

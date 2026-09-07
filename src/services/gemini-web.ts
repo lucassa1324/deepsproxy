@@ -140,9 +140,22 @@ export const GEMINI_SCRIPT_SET_PROMPT = `(() => {
  * Playwright NÃO liga `arg` a strings passadas no evaluate (isFunction=false →
  * só `eval(expression)`). O prompt precisa ir embutido no script. `__GEMINI_PROMPT_ARG__`
  * vira o JSON do prompt; o token some do script, então não há colisão.
+ *
+ * IMPORTANTE (SyntaxError: Invalid or unexpected token): NUNCA use
+ * `.replace(marcador, JSON.stringify(prompt))` com a substituição em STRING —
+ * o `String.replace` expande padrões `$&`, `$'`, `` $` `` e `$n` DENTRO do
+ * valor produzido. Um prompt com código contendo `$&`/`$'` corrompe o script
+ * (o resto do template é injetado dentro do literal do prompt) e a avaliação
+ * no navegador quebra com "Invalid or unexpected token". A substituição por
+ * FUNÇÃO usa o valor literal, sem expandir `$`. Os separadores de
+ * linha/parágrafo (U+2028/U+2029) também são escapados: o JSON.stringify não
+ * os escapa e, em engines antigas, quebram o parse do literal.
  */
 export function geminiSetPromptScript(prompt: string): string {
-  return GEMINI_SCRIPT_SET_PROMPT.replace('__GEMINI_PROMPT_ARG__', JSON.stringify(prompt));
+  const payload = JSON.stringify(prompt)
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+  return GEMINI_SCRIPT_SET_PROMPT.replace('__GEMINI_PROMPT_ARG__', () => payload);
 }
 
 /**

@@ -20,6 +20,7 @@ import { startKeepAlive } from '../utils/sse.ts';
 import {
   getWorkspaceRootFromContext,
   sanitizeToolCallArguments,
+  extractMcpServerNamesFromTools,
 } from '../services/relay-path.ts';
 
 function getIncrementalDelta(oldStr: string, newStr: string): string {
@@ -177,8 +178,9 @@ async function handleQwenNonStreaming(
     // Camada de Relay: sanitiza caminhos (relativo -> absoluto via
     // x-workspace-root; '\' -> '/') antes de entregar a Tool Call à IDE.
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+    const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
     message.tool_calls = toolCalls.map((tc) => {
-      const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+      const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
       return {
         id: tc.id,
         type: 'function',
@@ -266,6 +268,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
     // Raiz do workspace (header 'x-workspace-root' ou body) para sanitização
     // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+    const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -391,7 +394,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
                 }
 
                 for (const tc of toolCalls) {
-                  const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+                  const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
                   await writeEvent({
                     id: completionId,
                     object: 'chat.completion.chunk',
@@ -430,7 +433,7 @@ export async function qwenChatCompletions(c: Context, body: OpenAIRequest) {
         });
       }
       for (const tc of remainingToolCalls) {
-        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+        const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
         await writeEvent({
           id: completionId,
           object: 'chat.completion.chunk',

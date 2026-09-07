@@ -136,3 +136,44 @@ export function isLazyCompletion(
   if (text.length < 30) return true;
   return LAZY_TEXT_PATTERNS.some((p) => p.test(text));
 }
+
+/* ---------------------------------------------------------------------------
+ * CIRCUIT BREAKER ANTI-LOOP DE TOOL CALLS
+ * ---------------------------------------------------------------------------
+ * Se a MESMA tool call se repete por turnos seguidos no mesmo ciclo (erro
+ * retornado pela IDE sendo realimentado e o modelo insistindo na chamada), o
+ * retry oculto ANTI-LAZY apenas amplifica o loop. Este breaker conta
+ * ocorrências CONSECUTIVAS de uma determinada assinatura de tool call e, ao
+ * atingir o limite, suprime o retry oculto — a resposta é entregue ao usuário
+ * para interromper o ciclo.
+ */
+
+/** Limite de repetições consecutivas antes de abrir o circuito. */
+export const TOOL_LOOP_BREAKER_LIMIT = 3;
+
+let lastToolSig: string | null = null;
+const toolLoopCounts = new Map<string, number>();
+
+/**
+ * Registra a emissão de uma assinatura de tool call. Repetições consecutivas
+ * da MESMA assinatura incrementam; mudar de ferramenta reinicia o contador
+ * (requisito: "3 turnos seguidos no mesmo ciclo").
+ */
+export function noteToolLoopEvent(signature: string): number {
+  if (lastToolSig !== signature) toolLoopCounts.clear();
+  lastToolSig = signature;
+  const count = (toolLoopCounts.get(signature) ?? 0) + 1;
+  toolLoopCounts.set(signature, count);
+  return count;
+}
+
+/** True quando uma assinatura alcançou o limite do breaker. */
+export function isToolLoopTripped(signature: string): boolean {
+  return (toolLoopCounts.get(signature) ?? 0) >= TOOL_LOOP_BREAKER_LIMIT;
+}
+
+/** Zera o estado do breaker (usado em testes para isolar estado global). */
+export function resetToolLoopBreaker(): void {
+  toolLoopCounts.clear();
+  lastToolSig = null;
+}

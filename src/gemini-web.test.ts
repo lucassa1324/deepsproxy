@@ -22,6 +22,12 @@ import { buildFullHistoryPrompt, buildToolsInstructions } from './utils/prompt.t
 import { repairUnescapedQuotes, robustParseJSON, sanitizeModelBackslashes } from './utils/robust-json.ts';
 import { parseToolCallsFromContent } from './tools/executor.ts';
 import { StreamingToolParser } from './tools/stream-parser.ts';
+import {
+  resetToolLoopBreaker,
+  isToolLoopTripped,
+  ANTI_LAZY_RETRY_MESSAGE,
+} from './middlewares/anti-lazy.ts';
+import { toolCallSignature } from './services/relay-path.ts';
 import { app } from './index.ts';
 import type { Provider } from './services/config.ts';
 
@@ -59,6 +65,31 @@ test('gemini-web: geminiSetPromptScript embute o prompt no script sem token resi
   assert.ok(!script.includes('__GEMINI_PROMPT_ARG__'), 'placeholder deve ser substituído');
   assert.ok(script.includes(JSON.stringify(prompt)), 'JSON do prompt deve estar no script');
   // O que o fake extrai via regex deve devolver o prompt exato.
+  const m = script.match(/const prompt = ("[\s\S]*?");/);
+  assert.ok(m, 'deve casar a linha const prompt');
+  assert.strictEqual(JSON.parse(m[1]), prompt);
+});
+
+test('gemini-web: geminiSetPromptScript NÃO corrompe prompt com padrões $ (SyntaxError fix)', () => {
+  // `$&` e `$'` dentro do prompt ativam a substituição de padrões do
+  // String.replace — o bug antigo (`replace(marker, json)`) injetava o resto do
+  // script DENTRO do literal e o fade quebrava com "Invalid or unexpected token".
+  const prompt = "use $& aqui e $' acolá com ${bar} e \"aspas\", crase ` e C:\\tmp\\rel";
+  const script = geminiSetPromptScript(prompt);
+
+  assert.ok(!script.includes('__GEMINI_PROMPT_ARG__'), 'placeholder deve ser substituído');
+  // Script resultante tem que continuar 100% parseável como JS.
+  assert.doesNotThrow(() => new Function(script), 'script deve continuar válido');
+  // Round-trip do fake: o JSON embutido deve recuparar o prompt EXATO.
+  const m = script.match(/const prompt = ("[\s\S]*?");/);
+  assert.ok(m, 'deve casar a linha const prompt');
+  assert.strictEqual(JSON.parse(m[1]), prompt);
+});
+
+test('gemini-web: geminiSetPromptScript escapa U+2028/U+2029 no prompt', () => {
+  const prompt = 'linha um\u2028linha dois\u2029fim';
+  const script = geminiSetPromptScript(prompt);
+  assert.doesNotThrow(() => new Function(script), 'script não pode ter separador de linha cru');
   const m = script.match(/const prompt = ("[\s\S]*?");/);
   assert.ok(m, 'deve casar a linha const prompt');
   assert.strictEqual(JSON.parse(m[1]), prompt);
@@ -943,5 +974,63 @@ test('gemini-web: erro no fluxo vira 500 com mensagem', async () => {
   } finally {
     setMockGeminiPage(null);
     restore();
+  }
+});
+
+test('gemini-web: circuito anti-loop suprime o retry oculto quando a mesma tool call repete 3x', async () => {
+  resetToolLoopBreaker();
+  const fake = new FakeGeminiPage();
+  // 1ª resposta = preguiçosa (sem tool_call, texto curto) → breaker decide
+  // NÃO re-enviar a mensagem oculta.
+  fake.responseFrames = ['Aqui está o resumo.'];
+  setMockGeminiPage(fake);
+
+  const messages: any[] = [];
+  for (let i = 0; i < 3; i++) {
+    messages.push({
+      role: 'assistant',
+      tool_calls: [
+        {
+          id: `call_${i}`,
+          type: 'function',
+          function: { name: 'DeleteFile', arguments: JSON.stringify({ path: 'a.ts' }) },
+        },
+      ],
+    });
+    messages.push({
+      role: 'tool',
+      tool_call_id: `call_${i}`,
+      content: 'Failed to move to the recycle bin (Failed to parse path)',
+    });
+  }
+  messages.push({ role: 'user', content: 'apague a.ts' });
+
+  try {
+    const res = await app.request('/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-workspace-root': 'C:/Users/Lucas/projeto',
+      },
+      body: JSON.stringify({ model: 'gemini-3-flash', stream: true, messages }),
+    });
+    assert.strictEqual(res.status, 200);
+    const body = await res.text();
+
+    assert.strictEqual(
+      fake.prompts.length,
+      1,
+      'breaker deve pular o retry oculto (apenas o prompt original é enviado)'
+    );
+    assert.ok(!body.includes(ANTI_LAZY_RETRY_MESSAGE), 'não pode conter a mensagem oculta do retry');
+    assert.ok(body.includes('Aqui está o resumo.'), 'a resposta preguiçosa é entregue ao usuário');
+    const expectedSig = toolCallSignature('DeleteFile', JSON.stringify({ path: 'a.ts' }));
+    assert.ok(
+      isToolLoopTripped(expectedSig),
+      `assinatura da tool call repetida deve estar com o circuito aberto (${expectedSig})`
+    );
+  } finally {
+    setMockGeminiPage(null);
+    resetToolLoopBreaker();
   }
 });

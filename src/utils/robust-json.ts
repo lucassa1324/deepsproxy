@@ -162,6 +162,55 @@ function tryRecoverToolCall(jsonString: string): any | null {
   return { name: nameMatch[1], arguments: args };
 }
 
+/**
+ * Dobra a última barra de runs ÍMPARES de '\' DENTRO do valor CRU de uma
+ * CHAVE DE CAMINHO, exceto quando a sequência é um escape JSON válido e
+ * intencional ('\"', '\\', '\/').
+ *
+ * Por que: modelos escrevem paths do Windows com barra simples ('.\tests_stress',
+ * 'src\arquivo.txt'). O JSON.parse decodifica '\t' → Tab REAL e "engole" a
+ * letra 't' ('tests_stress' → 'ests_stress'); já sequências como '\s' são
+ * fugas inválidas que quebram o parse. Dobrando a barra final de cada run
+ * ímpar ('\t' → '\\t', '\s' → '\\s'), o parse conserva a barra REAL + letra
+ * (depois o relay converte '\'→'/') e o caminho NUNCA vira Tabulação nem
+ * quebra o JSON. Runs pares ('\\t' = barra literal escapada) e valores de
+ * outras chaves (ex.: 'content' com '\n' intencionais) não são tocados.
+ */
+export function protectPathEscapesInJson(text: string): string {
+  const pathKeys = '(?:path|file_path|filePath|target_file|absolute_path|directory)';
+  const valueRe = new RegExp(`("(?:${pathKeys})"\\s*:\\s*")((?:[^"\\\\]|\\\\.)*)(")`, 'g');
+  return text.replace(valueRe, (whole: string, head: string, value: string, tail: string) => {
+    return head + doublePathEscapeBackslashes(value) + tail;
+  });
+}
+
+/** Implementação da dobra de runs ímpares dentro do fragmento de valor. */
+function doublePathEscapeBackslashes(value: string): string {
+  let out = '';
+  let i = 0;
+  while (i < value.length) {
+    const ch = value[i];
+    if (ch !== '\\') {
+      out += ch;
+      i++;
+      continue;
+    }
+    let run = 1;
+    while (i + run < value.length && value[i + run] === '\\') run++;
+    const next = value[i + run] ?? '';
+    // Run ímpar seguido de escape JSON inválido/'control' em caminho: dobra a
+    // barra final para o parse produzir '\'+letra (barra real) em vez de
+    // quebrar ("Bad escaped character") ou virar Tab/CR/LF control.
+    if (run % 2 === 1 && next !== '' && !/["\\/]/.test(next)) {
+      out += '\\'.repeat(run + 1);
+    } else {
+      out += '\\'.repeat(run);
+    }
+    i += run;
+  }
+  return out;
+}
+
 export function robustParseJSON(str: string): any {
   let sanitized = str.trim();
 
@@ -170,6 +219,11 @@ export function robustParseJSON(str: string): any {
 
   // Corrige barras de caminho Windows antes de qualquer tentativa de parse.
   sanitized = sanitizeModelBackslashes(sanitized);
+
+  // Protege barras de CAMINHOS contra a decodificação de '\t'→Tab (que
+  // comeriam a letra de '.\tests_stress' → 'ests_stress'). Só chaves de
+  // caminho; `content` com escapes legítimos permanece intacto.
+  sanitized = protectPathEscapesInJson(sanitized);
 
   // Try to find the first '{'
   const firstBrace = sanitized.indexOf('{');

@@ -20,6 +20,8 @@ import { geminiChatCompletions } from './gemini.ts';
 import {
   getWorkspaceRootFromContext,
   sanitizeToolCallArguments,
+  extractMcpServerNamesFromTools,
+  applyMcpNativeFilesystemFallback,
 } from '../services/relay-path.ts';
 import {
   resolveRegistry,
@@ -244,8 +246,9 @@ async function handleDeepSeekNonStreaming(
   // Camada de Relay: sanitiza os caminhos dos tool_calls (relativo -> absoluto
   // via x-workspace-root; '\' -> '/') antes de entregá-los à IDE. Sem I/O local.
   const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+  const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
   const normalizedToolCalls = toolCalls.map((tc) => {
-    const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot);
+    const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers);
     return {
       ...tc,
       arguments: typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs),
@@ -767,6 +770,13 @@ export async function chatCompletions(c: Context) {
     // removido — o servidor jamais ler/edita/deleta arquivos do workspace.
     body = injectAntiLazyDirective(body);
 
+    // Fallback transparente do filesystem MCP (run_mcp): quando uma resposta de
+    // tool da IDE vem bloqueada ("Access denied - path outside allowed
+    // directories"), anexa uma diretiva orientando o modelo a usar as
+    // ferramentas NATIVAS de arquivo (Write/Read/Edit/SearchReplace/DeleteFile).
+    // Idempotente; aplicado a TODOS os provedores (deepseek inline + qwen/gemini delegados).
+    body = applyMcpNativeFilesystemFallback(body);
+
     // ── Roteamento multi-provedor: o provedor é resolvido AUTOMATICAMENTE ──
     // pelo catálogo unificado de modelos (model_id -> provider/baseUrl/apiKey).
     //  - porta 3006 (gateway): o model enviado pelo cliente é ignorado; vale o
@@ -1103,6 +1113,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     // Raiz do workspace (header 'x-workspace-root' ou body) para sanitização
     // dos caminhos dos tool_calls emitidos no SSE (relay puro, sem I/O local).
     const relayWorkspaceRoot = getWorkspaceRootFromContext(c, body);
+    const mcpServers = extractMcpServerNamesFromTools((body as any).tools);
 
     return honoStream(c, async (streamWriter: any) => {
       const writeEvent = async (data: any) => {
@@ -1314,7 +1325,8 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
                         const safeArgs = sanitizeToolCallArguments(
                           toolCallObj.name,
                           toolCallObj.arguments,
-                          relayWorkspaceRoot
+                          relayWorkspaceRoot,
+                          mcpServers
                         );
                         const normalizedArgs = safeArgs;
 

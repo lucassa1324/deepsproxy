@@ -1384,6 +1384,40 @@ describe('relay-path: sanitizeToolOutput — limpeza estrita de tags de erro da 
     assert.ok((out[0].text as string).startsWith('Error:'), out[0].text);
     assert.ok(!out[0].text.includes('deserialize'));
   });
+
+  it('ENOENT com fd.exe ausente (Glob/LS/SearchCodebase) vira fallback de busca por protocolo', () => {
+    const raw = '<toolcall_error_message>Error: ENOENT: no such file or directory, spawn \'C:\\tools\\fd.exe\'</toolcall_error_message>';
+    const out = sanitizeToolOutput(raw) as string;
+    assert.ok(out.includes('[PROXY SEARCH FALLBACK]'), out);
+    assert.ok(out.includes('NÃO repita buscas que dependam de "fd.exe"'), out);
+    assert.ok(!out.includes('ENOENT'), 'não pode vazar o erro cru: ' + out);
+    assert.ok(!out.includes('spawn'), 'não pode vazar o erro cru: ' + out);
+  });
+
+  it('ripgrep/rg.exe ausente também é normalizado (busca por binário externo)', () => {
+    const a = sanitizeToolOutput("Error: spawn ripgrep ENOENT: no such file or directory") as string;
+    const b = sanitizeToolOutput("Error: spawn 'rg.exe' ENOENT") as string;
+    assert.ok(a.includes('[PROXY SEARCH FALLBACK]'), a);
+    assert.ok(b.includes('[PROXY SEARCH FALLBACK]'), b);
+    assert.ok(!a.includes('spawn'), a);
+  });
+
+  it('ENOENT de ARQUIVO não encontrado (Read) NÃO é tratado como binário ausente', () => {
+    const raw = "Error: ENOENT: no such file or directory, open 'C:\\Users\\Lucas\\projeto\\src\\nao-existe.ts'";
+    assert.equal(sanitizeToolOutput(raw), raw);
+  });
+
+  it('erro de shell sem binário de busca (spawn sh) NÃO é desviado para fallback de busca', () => {
+    const raw = 'Error: spawn sh ENOENT';
+    assert.equal(sanitizeToolOutput(raw), raw);
+  });
+
+  it('fallback de busca é idempotente (não re-dispara na próxima passada)', () => {
+    const raw = "Error: ENOENT: no such file or directory, spawn 'fd.exe'";
+    const once = sanitizeToolOutput(raw) as string;
+    assert.ok(once.includes('[PROXY SEARCH FALLBACK]'), once);
+    assert.equal(sanitizeToolOutput(once), once);
+  });
 });
 
 describe('relay-path: leitura de arquivos de RAÍZ (package.json etc.) resolve no workspaceRoot', () => {

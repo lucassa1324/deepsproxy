@@ -61,6 +61,17 @@ const READ_LIKE_TOOLS = new Set([
   'read_relevant',
 ]);
 
+/** Campos de STRING obrigatórios nos argumentos de tool call: quando o modelo
+ *  envia NULL/undefined no JSON, caem para '' — NUNCA serializam 'undefined'
+ *  (o payload enviado à IDE/API pode perder a chave, mas nunca carregar o
+ *  literal inválido em nenhum campo). */
+const STRICT_STRING_FIELDS = new Set(['content', 'path', 'file_path', 'filePath', 'command', 'command_line', 'target_file', 'absolute_path']);
+
+/** Ferramentas de CRIAÇÃO/ESCRITA de arquivo: EXIGEM a chave 'content'. Se o
+ *  modelo omitir o campo, o relay injeta '' explícito — sem isso o texto some
+ *  do JSON serializado ('content' ausente → IDE falha a escrita). */
+const WRITE_LIKE_TOOLS = new Set(['write', 'writefile', 'createfile', 'create_file', 'createnewfile']);
+
 /** Chaves de ferramentas de Terminal que carregam um COMANDO (recebem aspas
  *  duplas defensivas para nomes com espaços/acentos/parenteses no CMD/PowerShell)
  *  e chaves que são apenas um caminho (aspas envolventes quando necessário). */
@@ -760,6 +771,26 @@ function cleanTerminalParamError(text: string): string {
   return out;
 }
 
+/** Erro de BINÁRIO de BUSCA AUSENTE no SO (fd.exe/ripgrep) em Glob/LS/
+ *  SearchCodebase: a linha menciona o binário E que há ENOENT/'no such file'/
+ *  'not found'/'not recognized'. É um FALSO-negativo de infraestrutura — a IDE
+ *  tenta 'spawn' um binário externo que não existe, e o modelo ficaria repetindo
+ *  a mesma busca. Detecta e substitui a linha INTEIRA por instrução de fallback
+ *  (listagem simples por caminhos relativos / resolução direta, sem 'fd.exe'). */
+const SEARCH_BIN_MISSING_LINE_RE =
+  /[^\r\n]*(?:\b(?:enoent|no such file|not found|not recognized)\b[^\r\n]*\b(?:fd\.exe|rg\.exe|ripgrep)\b|\b(?:fd\.exe|rg\.exe|ripgrep)\b[^\r\n]*\b(?:enoent|no such file|not found|not recognized)\b)[^\r\n]*/gi;
+
+const SEARCH_BIN_MISSING_FRIENDLY =
+  '[PROXY SEARCH FALLBACK] A ferramenta de busca falhou porque o binário externo (fd.exe / ripgrep) não está instalado no sistema operacional. Resolva os caminhos diretamente com ferramentas de arquivo por caminhos relativos ao workspace (Read/SearchReplace/Edit) ou use listagem simples baseada no protocolo — NÃO repita buscas que dependam de "fd.exe" nem solicite sua instalação ao usuário.';
+
+/** Normaliza erros de binário de busca ausente (idempotente: o fallback não
+ *  re-dispara o padrão na próxima passada). */
+function cleanMissingSearchBinaryError(text: string): string {
+  if (!SEARCH_BIN_MISSING_LINE_RE.test(text)) return text;
+  SEARCH_BIN_MISSING_LINE_RE.lastIndex = 0;
+  return text.replace(SEARCH_BIN_MISSING_LINE_RE, SEARCH_BIN_MISSING_FRIENDLY);
+}
+
 function cleanToolcallTags(text: string): string {
   let out = text.replace(TOOLCALL_BLOCK_RE, (_whole, kind: string, inner: string) => {
     const t = String(inner ?? '').trim();
@@ -775,6 +806,8 @@ function cleanToolcallTags(text: string): string {
   });
   // Erros crus de parâmetros de terminal → mensagem amigável (idempotente).
   out = cleanTerminalParamError(out);
+  // Binário de busca ausente (ENOENT: fd.exe/ripgrep) → fallback protocolo.
+  out = cleanMissingSearchBinaryError(out);
   out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   return out;
 }
@@ -941,6 +974,11 @@ function isWindowsRoot(root: string): boolean {
 /** True para ferramentas de LEITURA (resolução por nome simples habilitada). */
 function isReadLikeTool(name: string | undefined): boolean {
   return !!name && READ_LIKE_TOOLS.has(String(name).trim().toLowerCase());
+}
+
+/** True para ferramentas de CRIAÇÃO/ESCRITA de arquivo (exigem 'content'). */
+function isWriteLikeTool(name: string | undefined): boolean {
+  return !!name && WRITE_LIKE_TOOLS.has(String(name).trim().toLowerCase());
 }
 
 /** Arquivos de CONFIGURAÇÃO/RAIZ do workspace: quando o modelo pede só o nome
@@ -1190,11 +1228,20 @@ export function sanitizeToolCallArguments(
     const readLike = isReadLikeTool(name);
     const out: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(args as Record<string, unknown>)) {
+      if (STRICT_STRING_FIELDS.has(key) && (val === undefined || val === null)) {
+        out[key] = '';
+        continue;
+      }
       if (FILE_PATH_KEYS.has(key)) out[key] = sanitizeMultiFilePath(val, root, readLike, knownPaths);
       else if (key === 'directory') out[key] = sanitizePathValue(val, root);
       else if (PATTERN_PATH_KEYS.has(key) && typeof val === 'string') {
         out[key] = collapseDuplicateSlashes(val);
       } else out[key] = val;
+    }
+    // Chamada de CRIAÇÃO de arquivo SEM o campo 'content' (ausente) → conteúdo
+    // vazio EXPLÍCITO: a chave nunca some do JSON serializado para a IDE.
+    if (isWriteLikeTool(name) && !Object.prototype.hasOwnProperty.call(out, 'content')) {
+      out.content = '';
     }
     return out;
   }

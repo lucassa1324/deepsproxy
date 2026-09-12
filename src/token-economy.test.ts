@@ -147,7 +147,7 @@ test('economy: applyTokenEconomy aplica stripReasoning + toolOutput + cachePrefi
 
 test('economy: applyTokenEconomy trunca histórico e opcionalmente resume', async () => {
   const input = msgs(6);
-  const base = { ...DEFAULT_ECONOMY, enabled: true, truncateHistory: true, maxContextTokens: 800 };
+  const base = { ...DEFAULT_ECONOMY, enabled: true, truncateHistory: true, smartTruncation: false, summarizeHistory: false, maxContextTokens: 800 };
   const { payload, actions } = await applyTokenEconomy({ messages: input }, base);
   assert.ok(actions.some((a) => a.startsWith('truncate(')));
   assert.ok(payload.messages.length < input.length);

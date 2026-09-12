@@ -211,6 +211,8 @@ test('session-parent-tracking: appends messages using response message_id as par
     const stream = new ReadableStream({
       start(c) {
         c.enqueue(new TextEncoder().encode(`data: {"v":{"response":{"message_id":${mockMessageId}}}}\n\n`));
+        // Content event (>=30 chars) so the response is not treated as lazy and re-prompted.
+        c.enqueue(new TextEncoder().encode('data: {"p":"response/content","v":"Resposta satisfatória para o turno de teste."}\n\n'));
         c.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
         c.close();
       }
@@ -258,7 +260,8 @@ test('session-parent-tracking: appends messages using response message_id as par
     assert.strictEqual(capturedPayloads[0].parent_message_id, null);
     // In Turn 2, parent_message_id should be 1001 (the ID returned in Turn 1)
     assert.strictEqual(capturedPayloads[1].parent_message_id, 1001, 'Turn 2 should use message_id from Turn 1 as parent');
-    assert.strictEqual(capturedPayloads[1].prompt, 'User: Turn 2\n\n', 'Should only send the last message');
+    assert.ok(capturedPayloads[1].prompt.endsWith('User: Turn 2\n\n'), 'Should only send the last message');
+    assert.ok(!capturedPayloads[1].prompt.includes('Turn 1'), 'turn 1 must not be re-sent (parent_message_id tracks history)');
   } finally {
     restore();
   }

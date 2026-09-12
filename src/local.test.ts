@@ -223,12 +223,12 @@ test('local agentic: image parts preserved when tools are present (vision + tool
     assert.strictEqual(res.status, 200);
     await res.text();
 
-    assert.ok(!('tools' in capturedBody), 'tools must be injected as system prompt');
-    assert.ok(capturedBody.messages[0].role === 'system', 'first message must be system with tools');
-    assert.ok(capturedBody.messages[0].content.includes('# TOOLS AVAILABLE'));
+    assert.ok(!('tools' in capturedBody), 'tools are never injected into the prompt');
+    assert.ok(!('tool_choice' in capturedBody));
     const userMsg = capturedBody.messages.find((m: any) => m.role === 'user');
     assert.ok(Array.isArray(userMsg.content), 'user content must remain an array with the image');
     assert.strictEqual(userMsg.content.find((p: any) => p.type === 'image_url').image_url.url, 'data:image/png;base64,iVBORw0KGgo=');
+    assert.ok(!capturedBody.messages.some((m: any) => (m.role === 'system' && m.content.includes('# TOOLS AVAILABLE'))), 'no agentic prompt injection');
   } finally {
     restore();
   }

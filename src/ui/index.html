@@ -483,6 +483,7 @@
   <button data-tab="settings"><span class="icon">&#9881;</span> Configurações</button>
   <button data-tab="local-models"><span class="icon">&#9729;</span> Modelos Locais</button>
   <button data-tab="examples"><span class="icon">&#10697;</span> Exemplos</button>
+  <button data-tab="guide"><span class="icon">&#128214;</span> Instruções</button>
   <button data-tab="logs"><span class="icon">&#9776;</span> Logs</button>
 </aside>
 
@@ -1063,6 +1064,216 @@
         Substitua <code class="inline">SUA_API_KEY</code> pela chave do seu <code class="inline">.env</code>.
         Sem chave configurada, basta remover o cabeçalho <code class="inline">Authorization</code>.
       </div>
+    </div>
+  </section>
+
+  <!-- ============ INSTRUÇÕES ============ -->
+  <section class="tab" id="tab-guide">
+    <div class="card">
+      <h3>O que é o DeepProxy (em 2 frases)</h3>
+      <p class="note" style="margin:0 0 6px;">
+        O DeepProxy é um <b>telefone entre dois mundos</b>: ele roda no seu computador e liga
+        programas de edição de código (Trae, Cursor, VS Code) aos modelos de IA (Gemini, DeepSeek,
+        Qwen e outros). Você não precisa configurar nada de programação — basta seguir o passo a passo.
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h4 style="margin:0 0 8px;">Dicionário rápido (termos que aparecem daqui pra baixo)</h4>
+      <ul style="margin:0; padding-left:18px; line-height:1.7;">
+        <li><b>IDE</b> — o programa em que você escreve código (Trae, Cursor, VS Code).</li>
+        <li><b>Modelo</b> — a "cabeça" da IA (ex.: Gemini, DeepSeek, Qwen).</li>
+        <li><b>Provedor</b> — a empresa que fornece o modelo (ex.: Google dá o Gemini).</li>
+        <li><b>Chave de API</b> — uma senha que permite usar um modelo. Cada conta tem uma.</li>
+        <li><b>Porta</b> — um número de "porta" por onde o pedido entra. Este painel usa a 3005 e a 3006.</li>
+        <li><b>Gateway</b> — aqui é o "central de distribuição": ele decide qual modelo atende cada pedido.</li>
+      </ul>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>1. Ligar sua IDE ao DeepProxy</h3>
+      <ol class="steps">
+        <li>Abra as configurações de modelo da sua IDE e escolha <b>OpenAI-compatible</b> (em algumas aparece como "Custom" ou "Custom Provider").</li>
+        <li>
+          Em <b>Base URL</b>, cole um destes dois endereços:
+          <br>- <b>Você não quer escolher modelo toda hora</b>: use a porta do gateway
+          (<code class="inline" id="guideGatewayPort">http://localhost:3006/v1</code>) — quem decide o modelo é o painel.
+          <br>- <b>Você prefere escolher o modelo na própria IDE</b>: use a porta direta
+          (<code class="inline">http://localhost:3005/v1</code>).
+        </li>
+        <li>Na aba <b>Apps (Gateway)</b>, crie uma <b>chave virtual</b> (é só um nome de identificação) e cole em <b>API Key</b> na IDE.</li>
+        <li>Escolha o modelo <b>auto</b> na IDE e comece a conversar. É só isso.</li>
+      </ol>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>2. Escolher qual modelo vai responder</h3>
+      <ul style="margin:0; padding-left:18px; line-height:1.7;">
+        <li><b>auto (recomendado)</b> — o DeepProxy escolhe o melhor modelo pela sua conta de API (Gemini, Anthropic, Groq...). Se uma falhar, ele tenta as outras. Somente no último caso usa o acesso grátis pelo navegador.</li>
+        <li><b>auto-free</b> — usa só os gratuitos pelo navegador (DeepSeek, Qwen, Gemini Web). Funciona, mas pode ser mais lento e nem sempre executa ferramentas.</li>
+        <li><b>Um modelo específico</b> — amarra aquele app/teste sempre ao mesmo modelo.</li>
+      </ul>
+      <p class="note" style="margin-top:8px;">
+        Para saber <b>qual modelo atendeu</b> o último pedido, olhe o cabeçalho
+        <code class="inline">X-AutoRouter-FinalModel</code> na resposta (ou nos logs).
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>3. Adicionar contas (chaves de API)</h3>
+      <ol class="steps">
+        <li>Vá na aba <b>Conexão</b> e clique em <b>+ Novo provedor</b> (ex.: Gemini).</li>
+        <li>Cadastre <b>as contas que você tiver</b> — dá pra ter 3 chaves do Gemini, por exemplo.</li>
+        <li>Quando um pedido chega, o proxy <b>usa cada chave por vez</b>: se a primeira estourou o limite (a resposta é o código 429), ele "descansa" essa chave por um tempo e tenta a próxima no mesmo pedido.</li>
+        <li>Se <b>todas</b> estiverem descansando, você recebe um aviso claro. É só esperar o limite renovar ou cadastrar outra conta.</li>
+      </ol>
+      <p class="note" style="margin-top:8px;">
+        O painel mostra o status de cada chave (ativa / descansando). Quando o tempo de descanso
+        acaba, a chave volta sozinha — e esse estado continua valendo mesmo se você reiniciar o programa
+        (fica salvo no <code class="inline">providers.json</code>).
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>4. Chat direto (sem abrir a IDE)</h3>
+      <p class="note" style="margin:0;">Na aba <b>Chat</b> (ou no endereço <code class="inline">/chat</code>) você conversa com a IA direto pelo proxy — útil para testar ou quando a IDE não está aberta.</p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>5. Conferir se está tudo funcionando</h3>
+      <p class="note" style="margin:0;">
+        A aba <b>Testar API</b> manda uma conversa de teste de verdade para a IA, usando o modelo que você
+        escolher. Em segundos você vê se a conexão funciona, se as chaves estão ok e o que a IA respondeu.
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>6. Auto Router (o "chefe" que decide o modelo)</h3>
+      <ul style="margin:0; padding-left:18px; line-height:1.7;">
+        <li><b>Política de custo</b> — como escolher o modelo: Balanceado (padrão), Econômico, Qualidade, Só gratuitos ou Só pagos.</li>
+        <li><b>Circuit breaker</b> — se um modelo vem falhando na prática, ele sai da disputa por um tempo e volta sozinho quando está melhor.</li>
+        <li><b>Catálogo</b> — as "notas" que o chefe usa para decidir qual modelo é melhor para cada tarefa.</li>
+      </ul>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>7. Modelos que rodam no seu PC (Ollama / LM Studio)</h3>
+      <p class="note" style="margin:0;">
+        A aba <b>Modelos Locais</b> acha sozinha os modelos rodando na sua máquina, mostra se estão
+        saudáveis e pode <b>recorrer à nuvem</b> automaticamente quando o modelo do PC falha ou demora.
+      </p>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>8. Templates prontos (opcional — para quem quer tirar mais proveito da IA)</h3>
+      <p class="note" style="margin:0 0 10px;">
+        São 3 "receitas" prontas que você cola no início da conversa (se não souber usar, pule esta parte —
+        não é obrigatória). Elas ensinam a IA a: ler os arquivos antes de editar, copiar código exatamente
+        como está, trabalhar em partes pequenas e conferir cada etapa. Clique em <b>Copiar</b>, cole na
+        conversa e complete o que estiver entre chaves.
+      </p>
+
+      <h4 style="margin:14px 0 6px;">8.1 Especificação de melhorias</h4>
+      <pre class="code"><button class="copy" data-copy="tmplSpec">Copiar</button><code id="tmplSpec"># Template: Especificação de Melhorias
+
+Cole este texto no início da conversa com o seu agente (Trae, Cursor, VS Code Copilot) e complete os campos entre chaves. O agente passa a seguir o roteiro abaixo.
+
+---
+
+MELHORIA solicitada no projeto atual. Siga este roteiro exatamente:
+
+## 1. OBJETIVO
+Descreva em 1 parágrafo o que deve mudar e o que o usuário final ganha. {coloque o objetivo aqui}
+
+## 2. ESCOPO (SEMPRE confirmar antes de codar)
+- Liste os arquivos que existem hoje e o papel de cada um nos pontos que serão tocados.
+- Marque explicitamente o que NÃO vai mudar.
+- Liste os efeitos colaterais possíveis desta mudança.
+
+## 3. PLANO EM PASSOS NUMERADOS
+Para cada passo: arquivo + função/região a alterar + exatamente o que muda.
+Faça UM passo por mensagem e receba o meu "ok" antes de seguir para o próximo.
+
+## 4. REGRAS OBRIGATÓRIAS
+- Leia o arquivo inteiro antes de editar qualquer trecho.
+- Nunca reescreva um arquivo por completo sem autorização explícita.
+- Ao referenciar código existente, copie-o byte a byte do arquivo lido (nunca "de memória").
+- Não adicione código novo que não esteja previsto neste plano.
+- Ao terminar os passos, rode o linter/typecheck e a suíte de testes do projeto e reporte o resultado.
+
+## 5. VALIDAÇÃO
+- Defina junto comigo como saberemos que a melhoria ficou pronta (passo de teste manual ou automatizado).
+- Se o projeto tiver git, faça commits pequenos e descritivos (uma mudança lógica por commit).
+- Ao final, envie o resumo: o que mudou, o que quebrou no caminho (se algo) e como validamos.</code></pre>
+
+      <h4 style="margin:14px 0 6px;">8.2 Refactor seguro com reversão</h4>
+      <pre class="code"><button class="copy" data-copy="tmplRefactor">Copiar</button><code id="tmplRefactor"># Template: Refactor Seguro com Reversão
+
+Cole este texto no início da conversa e complete os campos entre chaves.
+Usa para reorganizar código existente SEM quebrar comportamento.
+
+---
+
+REFACTOR SEGURO com reversão garantida. Trabalhe em ATÉ 3 MILESTONES independentes.
+Cada milestone tem: um comportamento observável de antes/depois, um passo de validação
+que prova que nada quebrou, e precisa poder ser revertido sozinho (git revert ou restore).
+
+MILESTONE 1 {nome do milestone}: comportamento {o que deve continuar idêntico}.
+MILESTONE 2 {nome do milestone}: comportamento {o que deve continuar idêntico}.
+MILESTONE 3 {nome do milestone}: comportamento {o que deve continuar idêntico}.
+
+## SEQUÊNCIA DE EXECUÇÃO
+1. Antes de qualquer edição, descreva o estado atual da região (1 parágrafo).
+2. Execute o MILESTONE 1, rode a validação dele e me mostre o resultado.
+3. Só depois do meu "ok", avance para o MILESTONE 2.
+4. Se algo falhar no meio: reverta até o último estado válido e me explique o que aconteceu antes de tentar de novo.
+
+## SELO DE SEGURANÇA (responda ao final de cada milestone)
+- [OK] Todos os testes relevantes passam.
+- [OK] Nenhum comportamento não-relacionado mudou.
+- [OK] O diff deste milestone é mínimo e revisável.
+- [OK] O milestone reverte sozinho sem afetar os outros.</code></pre>
+
+      <h4 style="margin:14px 0 6px;">8.3 Debug de bug intermitente</h4>
+      <pre class="code"><button class="copy" data-copy="tmplDebug">Copiar</button><code id="tmplDebug"># Template: Debug de Bug Intermitente
+
+Cole este texto no início da conversa e complete os campos entre chaves.
+Usa quando o problema aparece "de vez em quando" e ninguém sabe a causa.
+
+---
+
+DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
+
+## 1. REPRODUZIR (mínimo possível)
+- Me pergunte o passo exato que faz o bug aparecer.
+- Crie uma reprodução reduzida se possível (menos arquivos, menos estados).
+
+## 2. RASTREAR (use instrumentação, não teorias)
+- Adicione logs com contexto. O log é o PRIMEIRO indício, não a resposta.
+- Liste as variáveis que mudam entre o caso que funciona e o caso que falha.
+- Diga qual hipótese cada observação descarta.
+
+## 3. ISOLAR (uma variável por vez)
+- Mude UMA coisa por tentativa.
+- Depois de cada tentativa, me diga: o que mudou? o que NÃO mudou?
+
+## 4. TROCA DE OPINIÃO
+- Ao propor uma causa, cite a evidência exata (log, valor, comparação).
+- Se eu discordar, trate como dado novo, não como conflito de opinião.
+
+## 5. CORREÇÃO
+- Mínima: só o que explica o sintoma observado.
+- Toda correção vem acompanhada de 1 teste que falhava antes e passou depois.</code></pre>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <h3>9. Se algo der errado (o que essas mensagens significam)</h3>
+      <ul style="margin:0; padding-left:18px; line-height:1.7;">
+        <li><b>"atingiu a cota" (nos logs)</b> — uma chave acabou o limite e o proxy pulou para a próxima. Normal, não é erro.</li>
+        <li><b>[tool-error]</b> — sua IDE recusou uma ação da IA (ex.: editar um arquivo). Leia a mensagem e tente de novo.</li>
+        <li><b>X-AutoRouter-FinalModel</b> — o nome do modelo que respondeu (aparece nos logs ou no cabeçalho da resposta).</li>
+        <li><b>429 "Todas as contas..."</b> — todas as chaves desse provedor estão descansando. Cadastre mais uma ou espere o limite renovar.</li>
+      </ul>
     </div>
   </section>
 
@@ -1834,6 +2045,13 @@
         gwLabel.textContent = String(status.gateway.port);
         gwLabel.title = status.gateway.enabled
           ? "AI Gateway ativo — Base URL " + status.gateway.baseUrl
+          : "AI Gateway desativado (ENABLE_GATEWAY=false no .env)";
+      }
+      const guideGw = $("#guideGatewayPort");
+      if (guideGw && status.gateway) {
+        guideGw.textContent = status.gateway.baseUrl;
+        guideGw.title = status.gateway.enabled
+          ? "AI Gateway ativo"
           : "AI Gateway desativado (ENABLE_GATEWAY=false no .env)";
       }
 
@@ -2959,15 +3177,11 @@ for await (const chunk of stream) {
   });
 
   document.querySelectorAll(".copy").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const text = $("#codeBlock").textContent;
-      try {
-        await navigator.clipboard.writeText(text);
-        btn.textContent = "Copiado!";
-      } catch {
-        btn.textContent = "Erro";
-      }
-      setTimeout(() => (btn.textContent = "Copiar"), 1500);
+    btn.addEventListener("click", () => {
+      const targetId = btn.dataset.copy || "codeBlock";
+      const el = document.getElementById(targetId);
+      const text = el ? el.textContent : "";
+      copyText(text, btn);
     });
   });
 

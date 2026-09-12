@@ -319,7 +319,7 @@ test('gateway e2e: /api/settings/token-economy GET/PATCH', async () => {
     const getRes = await app.request('/api/settings/token-economy');
     assert.equal(getRes.status, 200);
     const before: any = await getRes.json();
-    assert.equal(before.settings.enabled, false);
+    assert.equal(before.settings.enabled, true, 'economy is default enabled');
 
     const patchRes = await app.request('/api/settings/token-economy', {
       method: 'PATCH',

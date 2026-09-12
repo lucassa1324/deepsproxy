@@ -95,26 +95,35 @@ export function routeRequest(
 
   // 4. Obter metadados apenas dos modelos disponíveis no catálogo e não down
   const availableIds = new Set(availableModels.map((m) => m.id));
+  const BROWSER_TYPES = new Set(['deepseek', 'qwen', 'gemini-web']);
+  const browserProviderIds = new Set(
+    availableModels
+      .filter((m) => m.providerType && BROWSER_TYPES.has(m.providerType))
+      .map((m) => m.providerId)
+  );
   let candidates = getAllModelMetadata().filter(
     (m) => m.isAvailable && availableIds.has(m.id) && !isModelDown(m.id)
   );
 
-  // 4b. Se browserOnly, filtrar para apenas provedores Playwright (gratuitos)
+  // 4b. auto-free (browserOnly): só provedores Playwright (gratuitos).
   if (browserOnly) {
-    const BROWSER_TYPES = new Set(['deepseek', 'qwen', 'gemini-web']);
-    const browserProviderIds = new Set(
-      availableModels
-        .filter((m) => m.providerType && BROWSER_TYPES.has(m.providerType))
-        .map((m) => m.providerId)
-    );
     candidates = candidates.filter((m) => browserProviderIds.has(m.providerId));
   } else {
-    // 4c. Modo "auto" (com recursos): evita modelos Google deprecados ou não
-    // suportados na API oficial (v1beta/generateContent) — retornam 404/429
-    // ("no longer available to new users", "not found for API version v1beta").
-    // O modo auto-free (browser) continua podendo usar esses ids pelo gemini-web.
-    const filtered = candidates.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
-    if (filtered.length > 0) candidates = filtered;
+    // 4c. Modo "auto" (com recursos): APENAS modelos de API oficial. Provedores
+    // de navegador (gemini-web/deepseek/qwen) ficam de fora do roteamento do
+    // auto — entram SOMENTE como último recurso (failover) quando nenhum modelo
+    // de API responder. Também evita modelos Google deprecados/insuportados na
+    // API oficial (v1beta/generateContent) — retornam 404/429 ("no longer
+    // available to new users", "not found for API version v1beta").
+    const apiOnly = candidates.filter((m) => !browserProviderIds.has(m.providerId));
+    const apiUsable = apiOnly.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
+    if (apiUsable.length > 0) {
+      candidates = apiUsable;
+    } else {
+      // Nenhum modelo de API disponível/up: permite cair para o navegador web
+      // (ainda excluindo os Google indisponíveis na API).
+      candidates = candidates.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
+    }
   }
 
   if (candidates.length === 0) {

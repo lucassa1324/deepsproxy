@@ -793,6 +793,73 @@ function messageContentEmpty(content: unknown): boolean {
   return true;
 }
 
+/* ---------------------------------------------------------------------------
+ * Rejeições da IDE (role: tool) — classificação, log estruturado e feedback
+ * ---------------------------------------------------------------------------
+ * A IDE devolve o resultado das tool calls em mensagens `role: tool`. Quando a
+ * chamada FALHA (edições sem match byte-exato, parâmetros inválidos, comando de
+ * terminal malformado), o provedor web não tem contexto do protocolo da IDE —
+ * só o texto do erro. Este bloco classifica a falha, registra um log estruturado
+ * (payload da tool + resposta exata da IDE) e injeta uma diretiva de correção
+ * dirigida na própria resposta da tool, garantindo que o modelo web receba a
+ * causa e o caminho de correção no turno seguinte (auto-correção dirigida).
+ */
+
+/** Famílias de erro de tool reconhecidas nas respostas da IDE. */
+export type ToolErrorKind =
+  | 'edit-no-match'
+  | 'invalid-params'
+  | 'terminal-params'
+  | 'search-binary-missing'
+  | 'mcp-access-denied';
+
+/** Padrões por família — ordem: os mais específicos primeiro. Avaliado de
+ *  forma LAZY porque referencia regexes declaradas mais abaixo no arquivo. */
+function buildToolErrorKindPatterns(): Array<{ kind: ToolErrorKind; re: RegExp }> {
+  return [
+    { kind: 'search-binary-missing', re: SEARCH_BIN_MISSING_LINE_RE },
+    { kind: 'mcp-access-denied', re: MCP_ACCESS_DENIED_RE },
+    { kind: 'terminal-params', re: /invalid\s+end\s+of\s+line|invalidendofline/gi },
+    {
+      kind: 'edit-no-match',
+      re: /(?:failed\s+to\s+(?:edit|apply|replace|find|locate)|old[-_ ]?string\s+not\s+found|search\s+string\s+not\s+found|no\s+exact\s+match|replacement\s+(?:text\s+)?not\s+found|did\s+not\s+match\s+(?:any\s+)?(?:text|content)|no\s+match(?:es)?\s+found)/gi,
+    },
+    {
+      kind: 'invalid-params',
+      re: /invalid\s+params?:?\s+deserialize|missing\s+field\s+["']?[a-z_]+|deserialize\s+params?\s+error|invalid\s+request[^\r\n]*\b(?:missing|invalid)\b[^\r\n]*\b(?:parameter|field)\b/gi,
+    },
+  ];
+}
+
+/** Classifica o texto de um resultado de tool devolvido pela IDE (null = ok). */
+export function detectToolErrorKind(content: unknown): ToolErrorKind | null {
+  const text = messageContentText(content);
+  if (!text) return null;
+  for (const { kind, re } of buildToolErrorKindPatterns()) {
+    if (re.test(text)) return kind;
+  }
+  return null;
+}
+
+/** Marcador de idempotência do feedback (evita injetar a diretiva 2x). */
+export const TOOL_ERROR_FEEDBACK_MARKER = '[SYSTEM ERROR FEEDBACK]';
+
+/** Diretivas de auto-correção por família reconhecida. */
+const TOOL_ERROR_FEEDBACK_TEXT: Partial<Record<ToolErrorKind, string>> = {
+  'edit-no-match':
+    `${TOOL_ERROR_FEEDBACK_MARKER}: A edição falhou na IDE porque o trecho não foi encontrado BYTE A BYTE (o 'old_string'/'search' precisa bater EXATAMENTE com o conteúdo atual do arquivo). Execute 'Read' no arquivo-alvo agora e copie o trecho caractere por caractere — espaços, indentação e quebras de linha (CRLF vs LF) contam — antes de tentar 'SearchReplace'/'Edit' de novo.`,
+  'invalid-params':
+    `${TOOL_ERROR_FEEDBACK_MARKER}: A IDE rejeitou os parâmetros da chamada (campo obrigatório ausente ou tipo inválido). Revise o schema da ferramenta no bloco TOOLS AVAILABLE e refaça a chamada informando TODAS as propriedades obrigatórias com o NOME e o TIPO exatos do schema.`,
+  'terminal-params':
+    `${TOOL_ERROR_FEEDBACK_MARKER}: A IDE rejeitou o comando de terminal (campo "command" ausente ou sintaxe de linha inválida). Use um único comando de terminal simples e válido.`,
+};
+
+/** Log estruturado de diagnóstico: família, tool, id e a resposta exata da IDE. */
+function logToolError(kind: ToolErrorKind, tool: string, id: string, content: unknown): void {
+  const raw = (messageContentText(content) || '').replace(/\s+/g, ' ').trim();
+  console.warn(`[tool-error] kind=${kind} tool=${tool} id=${id} text=${raw.slice(0, 300)}`);
+}
+
 /**
  * Aplica `sanitizeToolOutput` a TODAS as mensagens do corpo (string ou partes
  * OpenAI). Idempotente e NUNCA toca em fields estruturais (role/name/tool_call_id).
@@ -803,6 +870,10 @@ function messageContentEmpty(content: unknown): boolean {
  * escrita: resultado VAZIO de um 'Write' (correlacionado pelo tool_call_id com o
  * assistant que o emitiu) recebe a confirmação `WRITE_CONFIRMATION`, impedindo o
  * loop de re-escrita do mesmo arquivo.
+ *
+ * E classifica/LOGA rejeições da IDE (Failed to edit, invalid params...) e
+ * injeta feedback dirigido de correção no próprio resultado da tool —
+ * idempotente (marcador `[SYSTEM ERROR FEEDBACK]`).
  */
 export function applyToolOutputSanitization(body: OpenAIRequest): OpenAIRequest {
   const messages = body?.messages;
@@ -826,10 +897,48 @@ export function applyToolOutputSanitization(body: OpenAIRequest): OpenAIRequest 
         return { ...msg, content: WRITE_CONFIRMATION };
       }
     }
+
+    // Classificação e log de rejeições da IDE (ANTES da limpeza de tags).
+    let ideErrorKind: ToolErrorKind | null = null;
+    if ((msg.role === 'tool' || msg.role === 'function') && typeof (msg as any).tool_call_id === 'string') {
+      ideErrorKind = detectToolErrorKind(msg.content);
+      if (ideErrorKind) {
+        const toolName = toolNames.get(String((msg as any).tool_call_id)) || (msg as any).name || 'tool';
+        logToolError(ideErrorKind, toolName, String((msg as any).tool_call_id), msg.content);
+      }
+    }
+
     const clean = sanitizeToolOutput(msg.content);
     if (clean !== msg.content) {
+      // Sanitizer já reescreveu (tags limpas / erro amigável): mesmo assim
+      // injeta o feedback dirigido sobre o conteúdo JÁ limpo (idempotente).
+      if (ideErrorKind && TOOL_ERROR_FEEDBACK_TEXT[ideErrorKind]) {
+        const cleanText = messageContentText(clean);
+        if (!cleanText.includes(TOOL_ERROR_FEEDBACK_MARKER)) {
+          changed = true;
+          const feedback = TOOL_ERROR_FEEDBACK_TEXT[ideErrorKind]!;
+          if (typeof clean === 'string') return { ...msg, content: `${clean}\n\n${feedback}` };
+          if (Array.isArray(clean)) {
+            return { ...msg, content: [...clean, { type: 'text' as const, text: `\n\n${feedback}` }] };
+          }
+        }
+      }
       changed = true;
       return { ...msg, content: clean as MessageContent };
+    }
+
+    // Feedback dirigido de auto-correção: injeta diretiva de correção no
+    // próprio resultado da tool (idempotente — marcador evita duplicação).
+    if (ideErrorKind && TOOL_ERROR_FEEDBACK_TEXT[ideErrorKind]) {
+      const rawText = messageContentText(msg.content);
+      if (!rawText.includes(TOOL_ERROR_FEEDBACK_MARKER)) {
+        changed = true;
+        const feedback = TOOL_ERROR_FEEDBACK_TEXT[ideErrorKind]!;
+        if (typeof msg.content === 'string') return { ...msg, content: `${msg.content}\n\n${feedback}` };
+        if (Array.isArray(msg.content)) {
+          return { ...msg, content: [...msg.content, { type: 'text' as const, text: `\n\n${feedback}` }] };
+        }
+      }
     }
     return msg;
   });

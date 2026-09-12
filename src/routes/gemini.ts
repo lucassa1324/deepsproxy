@@ -74,6 +74,13 @@ interface GeminiTurnOutcome {
   retried: boolean;
 }
 
+/** Log de diagnóstico do payload de tool_call emitido à IDE (nome + args). */
+function logEmittedToolCall(name: string, safeArgs: unknown): void {
+  const argsStr = typeof safeArgs === 'string' ? safeArgs : JSON.stringify(safeArgs);
+  const capped = argsStr.length > 600 ? argsStr.slice(0, 600) + '…(truncado)' : argsStr;
+  console.log(`[gemini-web] tool_call → IDE name=${name} args=${capped}`);
+}
+
 /**
  * Assinaturas de tool calls já presentes na conversa (mensagens do body) —
  * base para o circuit breaker detectar repetição da mesma chamada no ciclo.
@@ -176,6 +183,7 @@ async function handleGeminiNonStreaming(c: Context, body: OpenAIRequest, finalPr
       const knownPaths = extractKnownRelativePaths((body as any).messages);
       message.tool_calls = toolCalls.map((tc) => {
         const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, workspaceRoot, mcpServers, knownPaths);
+        logEmittedToolCall(tc.name, safeArgs);
         return {
           id: tc.id,
           type: 'function',
@@ -376,6 +384,7 @@ export async function geminiChatCompletions(c: Context, body: OpenAIRequest) {
         // Relay sanitiza os caminhos antes de entregá-los para a IDE.
         for (const tc of toolCalls) {
           const safeArgs = sanitizeToolCallArguments(tc.name, tc.arguments, relayWorkspaceRoot, mcpServers, knownPaths);
+          logEmittedToolCall(tc.name, safeArgs);
           await writeEvent({
             id: completionId,
             object: 'chat.completion.chunk',

@@ -31,6 +31,8 @@ import {
   MCP_NATIVE_FS_FALLBACK_DIRECTIVE,
   extractKnownRelativePaths,
   stripControlChars,
+  detectToolErrorKind,
+  TOOL_ERROR_FEEDBACK_MARKER,
 } from './services/relay-path.ts';
 
 function makeContextWithHeader(name: string, value: string | undefined) {
@@ -1682,5 +1684,105 @@ describe('relay-path: RunCommand com caracteres especiais do shell NÃO é dupla
       ROOT
     ) as any;
     assert.equal(out.command, 'powershell -Command "Get-ChildItem | Select-Object Name"');
+  });
+});
+
+describe('relay-path: classificação de rejeições da IDE (detectToolErrorKind)', () => {
+  it('Failed to edit → edit-no-match', () => {
+    assert.equal(detectToolErrorKind('Failed to edit old_string. Could not find the text in the current document.'), 'edit-no-match');
+    assert.equal(detectToolErrorKind('Error: <toolcall_error_message>old_string not found in file</toolcall_error_message>'), 'edit-no-match');
+  });
+
+  it('invalid params / missing field → invalid-params', () => {
+    assert.equal(detectToolErrorKind('invalid params: deserialize params error: missing field command'), 'invalid-params');
+    assert.equal(detectToolErrorKind('Error: missing field "old_string"'), 'invalid-params');
+    assert.equal(detectToolErrorKind("Error: missing field 'file_path'"), 'invalid-params');
+  });
+
+  it('InvalidEndOfLine → terminal-params', () => {
+    assert.equal(detectToolErrorKind('invalid end of line at char 5'), 'terminal-params');
+    assert.equal(detectToolErrorKind('InvalidEndOfLine when parsing this param'), 'terminal-params');
+  });
+
+  it('ENOENT fd.exe → search-binary-missing; MCP block → mcp-access-denied', () => {
+    assert.equal(detectToolErrorKind('ENOENT: no such file, spawn \'C:\\tools\\fd.exe\''), 'search-binary-missing');
+    assert.equal(detectToolErrorKind('Access denied - path outside allowed directories'), 'mcp-access-denied');
+  });
+
+  it('sucesso/resultado normal → null', () => {
+    assert.equal(detectToolErrorKind('Arquivo editado com sucesso.'), null);
+    assert.equal(detectToolErrorKind(''), null);
+    assert.equal(detectToolErrorKind('ENOENT: no such file, open \'C:\\proj\\x.ts\''), null);
+  });
+});
+
+describe('relay-path: feedback dirigido de auto-correção (applyToolOutputSanitization)', () => {
+  it('Failed to edit injeta diretiva de byte-exato na resposta da tool', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_e', type: 'function', function: { name: 'SearchReplace', arguments: '{"file_path":"src/a.ts","old_string":"x","new_string":"y"}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_e', content: 'Failed to edit old_string. Could not find the text.' },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    const got = out.messages[1].content as string;
+    assert.ok(got.includes(TOOL_ERROR_FEEDBACK_MARKER), got);
+    assert.ok(got.includes('BYTE A BYTE'), got);
+    assert.ok(got.includes('Execute \'Read\''), got);
+  });
+
+  it('invalid params injeta diretiva de schema na resposta da tool', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_p', function: { name: 'SearchReplace', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_p', content: 'invalid params: deserialize params error: missing field old_string' },
+      ],
+    };
+    const out = applyToolOutputSanitization(body);
+    const got = out.messages[1].content as string;
+    assert.ok(got.includes(TOOL_ERROR_FEEDBACK_MARKER), got);
+    assert.ok(got.includes('schema'), got);
+  });
+
+  it('feedback é idempotente (marcador impede duplicação)', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_id', function: { name: 'Edit', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_id', content: 'Failed to edit: no exact match. ' + TOOL_ERROR_FEEDBACK_MARKER + ': já injetado' },
+      ],
+    };
+    const out1 = applyToolOutputSanitization(body);
+    const out2 = applyToolOutputSanitization(out1);
+    assert.strictEqual(out2, out1);
+  });
+
+  it('resultado SUCCESS não recebe feedback', () => {
+    const body: any = {
+      model: 'x',
+      messages: [
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: [{ id: 'call_ok', function: { name: 'SearchReplace', arguments: '{}' } }],
+        },
+        { role: 'tool', tool_call_id: 'call_ok', content: 'Edição aplicada com sucesso.' },
+      ],
+    };
+    assert.strictEqual(applyToolOutputSanitization(body), body);
   });
 });

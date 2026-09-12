@@ -114,6 +114,19 @@ function buildExampleArguments(schema: any): string {
   return JSON.stringify(obj);
 }
 
+/**
+ * REGRA DE OURO para ferramentas de edição (Edit/SearchReplace/Replace):
+ * leitura prévia + cópia byte-exata do trecho. A IDE rejeita QUALQUER
+ * divergência de espaços, indentação ou quebras de linha (CRLF vs LF) com
+ * "Failed to edit" — o modelo web precisa desta regra no contrato textual,
+ * pois não tem a validação do schema nativa dos provedores de API.
+ */
+export const GOLDEN_EDIT_RULE =
+  `GOLDEN RULE FOR Edit/SearchReplace:\n` +
+  `1. NEVER call "SearchReplace"/"Edit"/"Replace" without a prior "Read" of the target file in the same or previous turn.\n` +
+  `2. The 'old_string' (or equivalent) MUST be copied BYTE FOR BYTE, character by character, exactly as returned by the "Read" tool. Any difference in spaces, indentation or line breaks (CRLF vs LF, trailing spaces) causes a FATAL rejection by the IDE ("Failed to edit").\n` +
+  `3. If you are not 100%% sure of the exact bytes of the snippet, execute "Read" again before editing.`;
+
 /** Bloco de reforço para modelos fracos (booster): regras duras + few-shot. */
 function buildBoosterReinforcement(formattedTools: any[]): string {
   const tool = formattedTools[0];
@@ -174,6 +187,7 @@ export function buildToolsInstructions(body: OpenAIRequest, opts: PromptOptions 
     `3. The JSON must be valid and accurately follow the tool's parameters.\n` +
     `4. When passing code/HTML inside a JSON string value (ex.: <html lang="pt-BR">), escape the inner double quotes as \\" so the JSON stays valid.\n` +
     `5. Use forward slashes (/) in file_path values (ex.: "C:/Users/nome/arquivo.html"), NEVER backslashes — they break the JSON.\n\n` +
+    `${GOLDEN_EDIT_RULE}\n\n` +
     `Detailed schemas (JSON):\n${toolsJson}\n`;
 
   if (bodyAny.tool_choice && typeof bodyAny.tool_choice === 'object' && bodyAny.tool_choice.function) {

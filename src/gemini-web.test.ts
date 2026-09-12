@@ -314,6 +314,8 @@ test('utils: FALLBACK_TOOLS_CONTRACT instrui responder no idioma do usuário', (
     contract.toLowerCase().includes('same language as the user'),
     'contrato fallback também instrui responder no idioma do usuário'
   );
+  assert.ok(contract.includes('GOLDEN RULE FOR Edit/SearchReplace'), 'regra de ouro no contrato fallback');
+  assert.ok(contract.includes('BYTE FOR BYTE'), 'byte-match explícito');
 });
 
 test('utils: StreamingToolParser flush descarta tool call truncada sem argumentos', () => {

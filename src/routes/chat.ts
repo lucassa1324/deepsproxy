@@ -640,6 +640,18 @@ async function resolveAutoModel(
     fullCatalog.map((m) => m.id)
   );
 
+  // Modo "auto" (API-only): modelos de navegador entram na cadeia SOMENTE como
+  // último recurso — depois de todas as APIs falharem. auto-free não muda.
+  if (!isBrowserOnly) {
+    const browserTypes = new Set(['deepseek', 'qwen', 'gemini-web']);
+    const webIds = fullCatalog
+      .filter((m) => browserTypes.has(m.providerType) && !isModelDown(m.id))
+      .map((m) => m.id);
+    for (const id of webIds) {
+      if (!failoverChain.includes(id)) failoverChain.push(id);
+    }
+  }
+
   // Registra o modelo usado nesta conversa: o próximo turno o usará como
   // previousModelId (bonus de estabilidade no selectBestModel).
   rememberAutoModel(messages as Array<{ role: string; content: string | any[] }>, namespace, mode, model);

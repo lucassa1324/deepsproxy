@@ -106,6 +106,8 @@ test('booster: buildToolsInstructions sem booster não muda (modelos fortes inta
   assert.ok(!block.includes('WEAK MODEL REINFORCEMENT'), 'sem reforço quando booster off');
   assert.ok(block.includes('<tool_call>'));
   assert.ok(block.includes('Detailed schemas'));
+  assert.ok(block.includes('GOLDEN RULE FOR Edit/SearchReplace'), 'regra de ouro no contrato de tools');
+  assert.ok(block.includes('BYTE FOR BYTE'), 'byte-match explícito');
 });
 
 test('booster: buildToolsInstructions com booster injeta reforço + exemplo com tool real', () => {

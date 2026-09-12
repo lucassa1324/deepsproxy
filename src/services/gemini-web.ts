@@ -21,7 +21,7 @@
 import type { Page } from 'playwright';
 import path from 'path';
 import { OpenAIRequest } from '../utils/types.ts';
-import { buildFullHistoryPrompt, buildToolsInstructions } from '../utils/prompt.ts';
+import { buildFullHistoryPrompt, buildToolsInstructions, GOLDEN_EDIT_RULE } from '../utils/prompt.ts';
 import { isModelBoosted } from './booster.ts';
 
 /** Modelos conhecidos do Gemini (usados no catálogo quando não há API). */
@@ -330,6 +330,8 @@ RULES:
 4. When passing code/HTML inside a JSON string value (ex.: <html lang="pt-BR">), escape the inner double quotes as \\" so the JSON stays valid.
 5. Use forward slashes (/) in file_path values (ex.: "C:/Users/nome/arquivo.html"), NEVER backslashes — they break the JSON.
 6. Always respond in the same language as the user's latest message (ex.: user writes in Portuguese -> reply in Portuguese, not English).
+
+${GOLDEN_EDIT_RULE}
 `;
 
 /** Bloco de tools para o prompt: schema do cliente ou contrato fallback. */

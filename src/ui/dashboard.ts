@@ -78,6 +78,7 @@ import type { ProviderRegistry } from '../services/config.ts';
 import { getModelCatalog, resolveModelEntry } from '../services/modelCatalog.ts';
 import { getTokenEconomy, updateTokenEconomy } from '../services/token-economy.ts';
 import { getBoosterSettings, updateBoosterSettings, toggleModelBooster, isModelBoosted } from '../services/booster.ts';
+import { clearWorkspaceRootCache } from '../services/relay-path.ts';
 import { APP_VERSION, APP_TAG } from '../version.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
 export const dashboard = new Hono();
@@ -728,6 +729,15 @@ dashboard.post('/api/settings/booster/models', async (c) => {
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }
+});
+
+// Limpa o cache da última raiz de workspace (troca manual de projeto, sem
+// reiniciar o proxy). A partir daí, a raiz passa a ser decidida pela evidência
+// do PRÓXIMO request (header x-workspace-root / workspacePath / mensagens).
+dashboard.post('/api/settings/clear-workspace-root', (c) => {
+  clearWorkspaceRootCache();
+  console.log('[workspace-root] cache de raiz limpo via dashboard');
+  return c.json({ ok: true });
 });
 
 dashboard.get('/api/apps', async (c) => {

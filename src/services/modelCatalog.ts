@@ -78,17 +78,18 @@ function registryKey(registry: ProviderRegistry): string {
 async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogModel[]> {
   const enabled = enabledProviders(registry);
   const out: CatalogModel[] = [];
-  const seen = new Set<string>();
 
-  // Modelos do Gemini Web (navegador) têm prioridade sobre o Gemini por API:
-  // assim, quando ambos estão habilitados, os modelos conhecidos apontam para o
-  // provedor gemini-web (sem API key e sem modelo deprecated).
-  const hasGeminiWeb = enabled.some((p) => p.type === 'gemini-web');
-  const geminiWebIds = new Set(GEMINI_KNOWN_MODELS.map((m) => m.id));
+  // Dedupe por (id + tipo de provedor): um mesmo id pode coexistir entre um
+  // provedor de API oficial (ex.: 'gemini' com chave) e o navegador web
+  // ('gemini-web'). A resolução em `resolveModelEntry` escolhe o oficial quando
+  // há chave; o web continua no catálogo como fallback e para o auto-free.
+  const seenKeys = new Set<string>();
 
   const push = (m: CatalogModel) => {
-    if (!m.id || seen.has(m.id)) return;
-    seen.add(m.id);
+    if (!m.id) return;
+    const key = `${m.id}::${m.providerType}`;
+    if (seenKeys.has(key)) return;
+    seenKeys.add(key);
     out.push(m);
   };
 
@@ -186,7 +187,6 @@ async function buildModelCatalog(registry: ProviderRegistry): Promise<CatalogMod
         for (const m of models) {
           const id = normalizeModelId(m.id);
           if (!id) continue;
-          if (hasGeminiWeb && geminiWebIds.has(id)) continue;
           result.push({ id, name: m.name || m.model || id, ...base });
         }
       }
@@ -237,7 +237,15 @@ export async function resolveModelEntry(
   const id = normalizeModelId(modelId);
   if (!id) return null;
   const catalog = await getModelCatalog(registry);
-  return catalog.find((m) => m.id === id) ?? null;
+  const matches = catalog.filter((m) => m.id === id);
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  // Id duplicado (ex.: 'gemini-2.5-flash' no provedor oficial 'gemini' com
+  // chave E no 'gemini-web'): prefere o provedor de API oficial (tool-calling
+  // nativo, sem camadas de gambiarra) ao navegador web.
+  const browserTypes = new Set(['deepseek', 'qwen', 'gemini-web']);
+  const official = matches.find((m) => !browserTypes.has(m.providerType));
+  return official ?? matches[0];
 }
 
 /** Agrupa os modelos do catálogo por nome de provedor (para <optgroup>). */

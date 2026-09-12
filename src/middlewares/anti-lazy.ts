@@ -102,8 +102,15 @@ export function injectAntiLazyDirective(body: OpenAIRequest): OpenAIRequest {
   return { ...body, messages };
 }
 
-/** Padrões de texto genérico/preguiçoso emitidos SEM chamar nenhuma tool. */
-const LAZY_TEXT_PATTERNS: RegExp[] = [
+/**
+ * Padrões de texto genérico/preguiçoso OU de DESISTÊNCIA emitidos SEM chamar
+ * nenhuma tool. Cobre desde "Aqui está o resumo..." até refugos longos e
+ * reescritos ("Aguardando a instrução/tarefa", "qual alteração você deseja",
+ * "o usuário esqueceu de incluir a tarefa", "vou perguntar ao usuário qual é
+ * a tarefa desejada"). Como o modelo sempre REPARAFRASEIA, há também a regra
+ * estrutural abaixo (TASK_SIGNAL + DODGE_SIGNAL) para pegar variações novas.
+ */
+const TASK_REFUSAL_PATTERNS: RegExp[] = [
   /aqui (est[áa]|est[aã]o) o (meu )?resumo/i,
   /aqui vai o (meu )?resumo/i,
   /resumo (do|da|dos|das) turno/i,
@@ -120,11 +127,62 @@ const LAZY_TEXT_PATTERNS: RegExp[] = [
   /devo (eu )?implementar/i,
   /voc[êe] quem (implementa|faz|cria|edita)/i,
   /n[ãa]o posso executar/i,
+  /aguardando\s+(a\s+)?(instru[cç][aã]o|tarefa|orienta[cç][aã]o)/i,
+  /aguardando\s+novas?\s+(instru[cç][oõ]es|tarefas|orienta[cç][oõ]es)/i,
+  /aguardando\s+suas?\s+instru[cç][oõ]es/i,
+  /n[ãa]o\s+continha\s+(uma\s+)?(solicita[cç][aã]o|tarefa|instru[cç][aã]o)/i,
+  /sem\s+(uma\s+)?(solicita[cç][aã]o|tarefa|instru[cç][aã]o|altera[cç][aã]o)\s+espec[ií]fica/i,
+  /informe\s+(qual|o\s+que\s+alterar|o\s+que\s+voc[êe]\s+deseja)/i,
+  /qual\s+(altera[cç][aã]o|corre[cç][aã]o|funcionalidade|mudan[cç]a|nov[aã]\s+funcionalidade)\s+(voc[êe]|o\s+usu[aá]rio)\s+(deseja|quer|gostaria)/i,
+  /o\s+que\s+(voc[êe]|o\s+usu[aá]rio)\s+(deseja|quer|gostaria)\s+que\s+(eu\s+|se\s+)?(fa[çc]a|implemente|altere|corrija|adicione)/i,
+  /what\s+(changes?|features?|tasks?)\s+would\s+you\s+like/i,
+  /no\s+specific\s+(request|task|instruction|change|feature)/i,
+  /please\s+inform\s+(me\s+)?(what|which)/i,
+  // Refugos longos observados ("esqueceu de incluir a tarefa", "vou perguntar...")
+  /(o\s+usu[aá]rio\s+|voc[êe]\s+)?esqueceu\s+de\s+incluir\s+(a\s+|uma\s+)?(tarefa|instru[cç][aã]o|solicita[cç][aã]o)/i,
+  /esqueceu[^\n]{0,40}tarefa/i,
+  /a\s+(última\s+)?mensagem\s+(est[áa]|esta)\s+vazia/i,
+  /(preciso|precisamos|vou|devo|tenho)\s+saber\s+o\s+que\s+(o\s+usu[aá]rio|voc[êe])\s+(quer|deseja|gostaria)/i,
+  /vou\s+perguntar/i,
+  /perguntar\s+(diretamente\s+)?(ao\s+usu[aá]rio|a\s+voc[êe])/i,
+  /qual\s+(é\s+|ser[áa]\s+)?a\s+(tarefa|altera[cç][aã]o|funcionalidade|mudan[cç]a)\s+(desejada|solicitada|pedida)/i,
+  /tarefa\s+(desejada|solicitada|pedida|requerida)/i,
+  /ex:\s*(adicionar|corrigir|melhorar|remover|implementar|nov[aã]\s+funcionalidade)/i,
+  /preciso\s+que\s+voc[êe]\s+me\s+(diga|informe|d[êe])/i,
+  /me\s+diga\s+(qual|o\s+que|a\s+tarefa|o\s+objetivo)/i,
+  /(sem\s+instru[cç][oõ]es|sem\s+tarefa|sem\s+uma\s+tarefa)\s+(clara|definida|espec[ií]fica|v[aã]lida)/i,
+  /(n[ãa]o|sem)\s+recebi\s+(a\s+|nenhuma\s+)?(tarefa|instru[cç][aã]o|solicita[cç][aã]o|pedido)/i,
 ];
+
+/** Sinal de que o texto menciona a TAREFA/decisão (para a regra estrutural). */
+const TASK_SIGNAL_RE =
+  /(tarefa|instru[cç][aã]o|solicita[cç][aã]o|altera[cç][aã]o|funcionalidade|mudan[cç]a|pedido|requisi[cç][aã]o|o\s+que\s+(eu|voc[êe])\s+devo)/i;
+
+/** Sinal de que o texto pergunta/PASSA A RESPONSABILIDADE ao usuário. */
+const DODGE_SIGNAL_RE =
+  /(pergunt|me\s+diga|informe-?me|qual|o\s+que\s+(voc[êe]|o\s+usu[aá]rio)\s+(quer|deseja|gostaria)|quer\s+que\s+(eu|lhe|eu\s+lhe)|preciso\s+saber|vou\s+perguntar|ag[uú]ardando|aguardo\s+(a|suas|novas))/i;
+
+/**
+ * Detecta respostas que DEVOLVEM a tarefa ao usuário em vez de executar
+ * ("aguardando instrução", "qual alteração você deseja", "o usuário esqueceu
+ * de incluir a tarefa... vou perguntar qual é a tarefa desejada"). Retorna
+ * true também para texto vazio. O modelo sempre reparafraseia, por isso a
+ * regra estrutural (menciona tarefa E pergunta/passa a bola) complementa os
+ * padrões literais.
+ */
+export function isTaskRefusal(text: string | null | undefined): boolean {
+  if (!text) return true;
+  const t = text.trim();
+  if (t.length === 0) return true;
+  if (TASK_REFUSAL_PATTERNS.some((re) => re.test(text))) return true;
+  const sample = t.slice(0, 1200);
+  return TASK_SIGNAL_RE.test(sample) && DODGE_SIGNAL_RE.test(sample);
+}
 
 /**
  * Detecta finalização precoce: toolCalls == 0 E texto ausente, curto ou
- * genérico (ex.: "Aqui está o resumo..." sem executar as alterações).
+ * genérico (ex.: "Aqui está o resumo...", "Aguardando instrução/tarefa",
+ * "qual alteração você deseja", "esqueceu de incluir a tarefa" — sem executar).
  */
 export function isLazyCompletion(
   content: string | null | undefined,
@@ -134,7 +192,7 @@ export function isLazyCompletion(
   const text = (content ?? '').trim();
   if (!text) return true;
   if (text.length < 30) return true;
-  return LAZY_TEXT_PATTERNS.some((p) => p.test(text));
+  return isTaskRefusal(text);
 }
 
 /* ---------------------------------------------------------------------------

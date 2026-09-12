@@ -108,6 +108,13 @@ export function routeRequest(
         .map((m) => m.providerId)
     );
     candidates = candidates.filter((m) => browserProviderIds.has(m.providerId));
+  } else {
+    // 4c. Modo "auto" (com recursos): evita modelos Google deprecados ou não
+    // suportados na API oficial (v1beta/generateContent) — retornam 404/429
+    // ("no longer available to new users", "not found for API version v1beta").
+    // O modo auto-free (browser) continua podendo usar esses ids pelo gemini-web.
+    const filtered = candidates.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
+    if (filtered.length > 0) candidates = filtered;
   }
 
   if (candidates.length === 0) {
@@ -156,6 +163,24 @@ export function routeRequest(
 }
 
 // ── Log de decisões ─────────────────────────────────────────────────────
+
+// Modelos Google que a API oficial (generativelanguage v1beta / generateContent)
+// NÃO atende: deprecados ("no longer available to new users" = família 2.5),
+// não suportados em v1beta ("not found for API version v1beta" = família 3.x)
+// ou premium sem cota (429). O modo "auto" não deve escolhê-los; o modo
+// "auto-free" (browser web) segue podendo usá-los via gemini-web.
+const GOOGLE_API_UNAVAILABLE = new Set([
+  'gemini-2.0-flash',
+  'gemini-2.5-flash',
+  'gemini-2.5-pro',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro-preview-10-2025',
+  'gemini-3-flash',
+  'gemini-3-pro',
+  'gemini-3-flash-lite',
+  'gemini-3.1-pro-preview',
+  'gemini-omni-flash-preview',
+]);
 
 function logDecision(decision: RoutingDecision): void {
   const tc = decision.taskClassification;

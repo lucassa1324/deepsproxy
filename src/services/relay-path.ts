@@ -175,6 +175,60 @@ function collapseDuplicateSlashes(p: string): string {
 }
 
 /**
+ * Normaliza valores de chaves de BUSCA e glob (pattern, glob, paths, query,
+ * search): colapsa dobras de barra como antes e, quando o valor é um CAMINHO
+ * concreto ancorado na raiz ('/package.json' — POSIX-absoluto que a IDE lê na
+ * raiz do DRIVE, 'C:\package.json' → 'sem resultados'), resolve contra o
+ * workspaceRoot. Globs com '*'/'?', raízes de sistema POSIX ('/Users', '/home')
+ * e caminhos relativos (sem '/' inicial) ficam como estão: só o colapso.
+ * Suporta arrays de caminhos (chave 'paths').
+ */
+function sanitizePatternPathValue(value: unknown, root: string | null): unknown {
+  if (typeof value === 'string') {
+    const collapsed = collapseDuplicateSlashes(value);
+    if (!root) return collapsed;
+    const t = collapsed.trim();
+    if (t.length === 0 || t.startsWith('//')) return collapsed;
+    if (t.startsWith('/') && !POSIX_SYSTEM_ROOT_RE.test(t)) {
+      if (t.includes('*') || t.includes('?') || t.includes('[') || t.includes(']')) return collapsed;
+      return sanitizeSinglePath(t, root);
+    }
+    // Padrão ABSOLUTO (C:\...\file) DENTRO do workspace: vira RELATIVO à raiz —
+    // a IDE resolve globs a partir do workspace, não da raiz do drive (senão
+    // devolve "No results found" mesmo para arquivo existente).
+    const rel = toRelativeUnderRoot(t, root);
+    if (rel !== null) return rel;
+    return collapsed;
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => sanitizePatternPathValue(v, root));
+  }
+  return value;
+}
+
+/**
+ * Converte um caminho ABSOLUTO (que esteja dentro do workspaceRoot) em
+ * RELATIVO à raiz, para chaves de busca (pattern/glob/paths/query/search) que
+ * a IDE resolve a partir do workspace. Ex.: root='C:/proj' e pattern
+ * 'C:/proj/package.json' → 'package.json'. Null se o caminho estiver FORA da
+ * raiz (o absoluto é preservado) ou não for absoluto Windows/path.
+ */
+function toRelativeUnderRoot(pattern: string, root: string): string | null {
+  const normPat = pattern.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+  const normRoot = root.replace(/\\/g, '/').replace(/\/+$/, '');
+  if (!normRoot) return null;
+  if (!/^[A-Za-z]:\//.test(normPat)) return null;
+  const patLower = normPat.toLowerCase();
+  const rootLower = normRoot.toLowerCase();
+  if (patLower === rootLower) return '/';
+  if (patLower.startsWith(rootLower + '/')) {
+    const rel = normPat.slice(normRoot.length + 1);
+    return rel || '/';
+  }
+  return null;
+}
+
+/**
  * Decodifica o fragmento CRU de um valor string JSON (sem as aspas externas):
  *  lida com \" \\ \/ \b \f \n \r \t e \uXXXX; escapes INVALIDOS (barra solta de
  *  modelo, já duplicada pelo protectPathEscapesInJson) viram a letra junto da
@@ -875,7 +929,25 @@ const WINDOWS_ABS_PATH_RE =
 /** Caminho absoluto POSIX '/home/...', '/Users/...', '/var/...' (com espaços). */
 const POSIX_ABS_PATH_RE = /\/(?:Users|home|root|var|opt|workspace|project|data|tmp|mnt)\/[^"'`\r\n<>]+/g;
 
+/**
+ * Cache de raiz por conversa/sessão: só é usado quando o request traz um id
+ * estável (header x-conversation-id/x-session-id ou body conversation_id/...).
+ * Cada conversa guarda a PRÓPRIA raiz — trocar de projeto nunca contamina a
+ * conversa de outro projeto.
+ */
+const workspaceRootCache = new Map<string, string>();
+
+/** Fallback global da ÚLTIMA raiz vista — usado apenas por requests SEM id. */
 let cachedWorkspaceRoot: string | null = null;
+
+/** Fontes de id estável de conversa/sessão no request (para o cache por conversa). */
+const WORKSPACE_ROOT_KEY_SOURCES: Array<{ header: string } | { body: string[] }> = [
+  { header: 'x-conversation-id' },
+  { header: 'x-session-id' },
+  {
+    body: ['conversation_id', 'conversationId', 'session_id', 'sessionId', 'chat_session_id'],
+  },
+];
 
 /**
  * PURGA RE-ENTRANTE DE PREFIXOS RELATIVOS — SEMPRE a PRIMEIRA ação de
@@ -989,6 +1061,28 @@ function cleanRootValue(raw: string): string | null {
   if (!cleaned) return null;
   const root = cleaned.replace(/\\/g, '/').replace(/\/+$/, '');
   return root || null;
+}
+
+/**
+ * Corta "cauda narrativa" de um candidato a raiz detectado em TEXTO LIVRE.
+ * Caso real: o modelo usa 'C:\Users\Lucas sá\Documents\trae_projects\Teste_pratico_proxy. A
+ * tarefa abaixo é OBRIGATÓRIA...' (caminho seguido de frase NA MESMA LINHA) —
+ * o regex guloso come o folder + a frase inteira. A fronteira mais comum é um
+ * '. ' (ponto+espaço) DEPOIS do último separador: a porção real termina aí.
+ *   '...\Teste_pratico_proxy. A tarefa...' → '...\Teste_pratico_proxy'
+ */
+function truncateRootCandidateTail(candidate: string): string {
+  const lastSep = Math.max(candidate.lastIndexOf('\\'), candidate.lastIndexOf('/'));
+  const bodyStart = lastSep + 1;
+  const tail = lastSep >= 0 ? candidate.slice(bodyStart) : candidate;
+  const dotSpace = tail.search(/\.\s+\S/);
+  if (dotSpace >= 0) return candidate.slice(0, bodyStart + dotSpace);
+  return candidate;
+}
+
+/** cleanRootValue + corte da cauda narrativa (usado na varredura das mensagens). */
+function cleanRootCandidate(raw: string): string | null {
+  return cleanRootValue(truncateRootCandidateTail(raw));
 }
 
 /**
@@ -1196,7 +1290,7 @@ function rewritePathValuesInJsonRaw(
     const decoded = stripControlChars(decodeJsonStringFragment(match[2]));
     let replaced: string;
     if (PATTERN_PATH_KEYS.has(key)) {
-      replaced = collapseDuplicateSlashes(decoded);
+      replaced = String(sanitizePatternPathValue(decoded, root));
     } else {
       // Multi-arquivo ('x.ts, y.ts') divide cada item E re-resolve — string
       // JSON de Read/DeleteFile com listas continua funcionando.
@@ -1226,8 +1320,10 @@ function rewritePathValuesInJsonRaw(
  * anunciados no schema das tools da requisição). Read/Write/Edit/
  * SearchReplace/DeleteFile passam pelo pipeline rígido de sanitização; Read-like
  * recebe resolução por nome simples contra caminhos conhecidos (`knownPaths`
- * = extractKnownRelativePaths das messages) e keys de busca (pattern/glob)
- * recebem só o colapso de '/'.
+ * = extractKnownRelativePaths das messages) e keys de busca (pattern/glob/
+ * paths/query) colapsam '/' e, quando o valor é um caminho concreto ancorado
+ * na raiz ('/package.json'), resolvem contra o workspaceRoot — a IDE não busca
+ * na raiz do drive.
  */
 export function sanitizeToolCallArguments(
   name: string | undefined,
@@ -1276,9 +1372,8 @@ export function sanitizeToolCallArguments(
       }
       if (FILE_PATH_KEYS.has(key)) out[key] = sanitizeMultiFilePath(val, root, readLike, knownPaths);
       else if (key === 'directory') out[key] = sanitizePathValue(val, root);
-      else if (PATTERN_PATH_KEYS.has(key) && typeof val === 'string') {
-        out[key] = collapseDuplicateSlashes(val);
-      } else out[key] = val;
+      else if (PATTERN_PATH_KEYS.has(key)) out[key] = sanitizePatternPathValue(val, root);
+      else out[key] = val;
     }
     // Chamada de CRIAÇÃO de arquivo SEM o campo 'content' (ausente) → conteúdo
     // vazio EXPLÍCITO: a chave nunca some do JSON serializado para a IDE.
@@ -1331,7 +1426,7 @@ export function extractWorkspaceRootFromMessages(messages: any): string | null {
   let cwdMatch: string | null = null;
   for (const text of texts) {
     for (const m of text.matchAll(CWD_NOTICE_RE)) {
-      const candidate = cleanRootValue(m[1]);
+      const candidate = cleanRootCandidate(m[1]);
       if (candidate && !isIncompleteRoot(candidate)) cwdMatch = candidate;
     }
   }
@@ -1341,7 +1436,7 @@ export function extractWorkspaceRootFromMessages(messages: any): string | null {
   let tagMatch: string | null = null;
   for (const text of texts) {
     for (const m of text.matchAll(WORKSPACE_TAG_RE)) {
-      const candidate = cleanRootValue(m[1]);
+      const candidate = cleanRootCandidate(m[1]);
       if (candidate) tagMatch = candidate;
     }
   }
@@ -1351,7 +1446,7 @@ export function extractWorkspaceRootFromMessages(messages: any): string | null {
   let keyMatch: string | null = null;
   for (const text of texts) {
     for (const m of text.matchAll(WORKSPACE_PATH_KEY_RE)) {
-      const candidate = cleanRootValue(m[1]);
+      const candidate = cleanRootCandidate(m[1]);
       if (candidate) keyMatch = candidate;
     }
   }
@@ -1363,7 +1458,7 @@ export function extractWorkspaceRootFromMessages(messages: any): string | null {
   for (const text of texts) {
     for (const re of [WINDOWS_ABS_PATH_RE, POSIX_ABS_PATH_RE]) {
       for (const m of text.matchAll(re)) {
-        const candidate = cleanRootValue(m[0]);
+        const candidate = cleanRootCandidate(m[0]);
         if (candidate && !isIncompleteRoot(candidate)) absMatch = candidate;
       }
     }
@@ -1371,47 +1466,65 @@ export function extractWorkspaceRootFromMessages(messages: any): string | null {
   return absMatch;
 }
 
-/** Zera o cache de raiz (usado pelos testes para isolar o estado global). */
+/** Zera o cache de raiz (semântica de 'o próximo projeto é quem decide agora'). */
 export function clearWorkspaceRootCache(): void {
   cachedWorkspaceRoot = null;
+  workspaceRootCache.clear();
 }
 
 /**
  * Resolve a raiz do workspace a partir do contexto HTTP:
  *   header 'x-workspace-root' → demais headers → body.workspacePath/rootPath →
- *   varredura das mensagens (fallback Trae) → cache da última raiz.
- * A última raiz resolvida é guardada em memória para servir de fallback em
- * requisições seguintes sem header.
+ *   varredura das mensagens (fallback Trae) → cache.
+ * Se o request trouxer id de conversa/sessão, apenas o cache DAQUELA conversa
+ * é consultado/gravado — a última raiz global NUNCA é emprestada para uma
+ * conversa que já tem uma raiz própria. Requests sem id usam a última raiz
+ * global vista como conveniência (compat. com clientes que não enviam contexto).
  */
 export function getWorkspaceRootFromContext(
   c: Context,
   body?: { workspacePath?: string; rootPath?: string; messages?: any[] } | any
 ): string | null {
+  const key = requestConversationKey(c, body);
+  const remember = (root: string): string => {
+    if (key) workspaceRootCache.set(key, root);
+    cachedWorkspaceRoot = root;
+    return root;
+  };
+
   for (const header of WORKSPACE_ROOT_HEADERS) {
     const value = c?.req?.header(header);
     if (value && value.trim()) {
       const root = cleanRootValue(value);
-      if (root) {
-        cachedWorkspaceRoot = root;
-        return root;
-      }
+      if (root) return remember(root);
     }
   }
 
   const bodyRoot = body?.workspacePath ?? body?.rootPath;
   if (bodyRoot && String(bodyRoot).trim()) {
     const root = cleanRootValue(String(bodyRoot));
-    if (root) {
-      cachedWorkspaceRoot = root;
-      return root;
-    }
+    if (root) return remember(root);
   }
 
   const msgRoot = extractWorkspaceRootFromMessages(body?.messages);
-  if (msgRoot) {
-    cachedWorkspaceRoot = msgRoot;
-    return msgRoot;
-  }
+  if (msgRoot) return remember(msgRoot);
 
+  if (key) return workspaceRootCache.get(key) ?? null;
   return cachedWorkspaceRoot;
+}
+
+/** Extrai id estável de conversa/sessão do request, se o cliente enviar. */
+function requestConversationKey(c: Context, body?: any): string | null {
+  for (const src of WORKSPACE_ROOT_KEY_SOURCES) {
+    if ('header' in src) {
+      const value = c?.req?.header(src.header);
+      if (value && value.trim()) return value.trim();
+    } else {
+      for (const field of src.body) {
+        const value = body?.[field];
+        if (value && String(value).trim()) return String(value).trim();
+      }
+    }
+  }
+  return null;
 }

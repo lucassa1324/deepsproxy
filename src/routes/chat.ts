@@ -44,8 +44,9 @@ import {
   maybeInjectDiagnosticDirective,
   buildGenericRejection,
   buildNullEditRejection,
+  isPassiveResponse,
 } from '../services/validation-guard.ts';
-import { injectAntiLazyDirective } from '../middlewares/anti-lazy.ts';
+import { injectAntiLazyDirective, isLazyCompletion, ANTI_LAZY_RETRY_MESSAGE } from '../middlewares/anti-lazy.ts';
 import { applyPromptCaching } from '../services/prompt-cache.ts';
 import {
   getTokenEconomy,
@@ -226,25 +227,44 @@ async function handleDeepSeekNonStreaming(
   refFileIds: string[] = [],
   visionOpts: { chatSessionId?: string; modelType?: string | null } = {}
 ) {
-  let result: { stream: ReadableStream; headers: Record<string, string>; uiSessionId: string };
-  let retries = 3;
-  const forceNewParent = visionOpts.chatSessionId ? null : (isNewSession ? null : undefined);
-  while (retries > 0) {
-    try {
-      result = await createDeepSeekStream(finalPrompt, isThinkingModel, forceNewParent, refFileIds, visionOpts);
-      break;
-    } catch (err: any) {
-      retries--;
-      if (retries === 0) throw err;
-      await new Promise((r) => setTimeout(r, 1000));
+  // Anti-Preguiça: quando o DeepSeek responde texto passivo SEM tool_calls
+  // ("qual alteração você deseja", "aguardando instrução/tarefa" — mesmo que
+  // longo), agenda 1 retry oculto com a mensagem de execução obrigatória.
+  let effectivePrompt = finalPrompt;
+  let attempt = 0;
+  for (;;) {
+    let result: { stream: ReadableStream; headers: Record<string, string>; uiSessionId: string };
+    let retries = 3;
+    const forceNewParent = visionOpts.chatSessionId ? null : (isNewSession ? null : undefined);
+    while (retries > 0) {
+      try {
+        result = await createDeepSeekStream(effectivePrompt, isThinkingModel, forceNewParent, refFileIds, visionOpts);
+        break;
+      } catch (err: any) {
+        retries--;
+        if (retries === 0) throw err;
+        await new Promise((r) => setTimeout(r, 1000));
+      }
     }
-  }
 
-  const acc = await consumeDeepSeekStream(result!.stream, refFileIds.length > 0);
-  if (acc.messageId) updateSessionParent(result!.uiSessionId, acc.messageId);
+    const acc = await consumeDeepSeekStream(result!.stream, refFileIds.length > 0);
+    if (acc.messageId) updateSessionParent(result!.uiSessionId, acc.messageId);
 
-  const { textContent, toolCalls } = parseToolCallsFromContent(acc.content);
-  const promptTokens = Math.ceil(finalPrompt.length / 3.5);
+    const { textContent, toolCalls } = parseToolCallsFromContent(acc.content);
+
+    if (
+      attempt === 0 &&
+      (isPassiveResponse(textContent, toolCalls as any) || isLazyCompletion(textContent, toolCalls))
+    ) {
+      console.log(
+        `[anti-lazy] DeepSeek resposta passiva (${textContent.length} chars, 0 tool_calls) — retry #${attempt + 1} oculto`
+      );
+      effectivePrompt = `${effectivePrompt}\n\nUser: ${ANTI_LAZY_RETRY_MESSAGE}`;
+      attempt++;
+      continue;
+    }
+
+    const promptTokens = Math.ceil(effectivePrompt.length / 3.5);
 
   // Camada de Relay: sanitiza os caminhos dos tool_calls (relativo -> absoluto
   // via x-workspace-root; '\' -> '/') antes de entregá-los à IDE. Sem I/O local.
@@ -300,6 +320,7 @@ async function handleDeepSeekNonStreaming(
       prompt_tokens_details: { cached_tokens: 0 },
     },
   });
+  }
 }
 
 /**
@@ -835,17 +856,21 @@ export async function chatCompletions(c: Context) {
       } else {
         // Diretiva autônoma de arquivos padrão (injeção quando app não tem override próprio)
         // Ensina a IA a NÃO perguntar "onde está o arquivo" e usar ferramentas para localizar.
-        const autonomousFileDirective = `AUTONOMIA DE ARQUIVOS (Padrão do Proxy):
-- NÃO pergunte "onde está o arquivo", "qual o caminho", "me dê o path".
-- O usuário PODE ser leigo e não saber o caminho exato.
+        // CUIDADO: NÃO usar frases no formato "Se o usuário disser X..." — agentes que têm
+        // regra própria de AskUserQuestion ("se não houver tarefa, pergunte") casam com esse
+        // template e param de executar a tarefa que já veio na última mensagem do usuário.
+        const autonomousFileDirective = `[DIRETRIZ DO PROXY — AUTONOMIA DE ARQUIVOS]
+- A tarefa a realizar está na ÚLTIMA MENSAGEM DO USUÁRIO. Execute-a diretamente com as ferramentas; não pergunte qual é a tarefa nem confirme com o usuário o que fazer.
+- Não pergunte "onde está o arquivo", "qual o caminho", "me dê o path".
+- O usuário pode ser leigo e não saber o caminho exato.
 - Use as ferramentas disponíveis (glob, grep, read_file, list_dir) para LOCALIZAR e LER arquivos automaticamente.
-- Se o usuário disser "altere o título do relatório", use glob/grep para achar "relatório", leia, e altere.
+- Para alterar algo no projeto, localize o arquivo pelo nome/conteúdo com glob/grep, leia e faça a alteração — execute a tarefa que já foi pedida.
 - Assuma que você tem acesso ao sistema de arquivos do projeto. Aja como engenheiro autônomo.
 
 BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
 - Se uma busca por caminho exato falhar (ex: "front_end", "src/components"), NÃO trave no literal.
 - IMEDIATAMENTE use busca por curinga/regex: *front*, *src*, *component*, *dashboard*, etc.
-- Use glob com padrões: **/*front*/**, **/front_end/**, **/*front*/**.
+- Use glob com padrões: **/*front*/, **/front_end/, **/*front*/**.
 - Tente variações: front-end, front_end, frontend, front, FE, fe.
 - A busca exata é tentativa 1; a busca por curinga é tentativa 2 AUTOMÁTICA.`;
 

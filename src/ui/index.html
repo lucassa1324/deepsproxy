@@ -967,6 +967,20 @@
         <div id="boosterModels" style="margin-top:10px; display:flex; flex-direction:column; gap:6px;"></div>
       </div>
     </div>
+
+    <div class="card" style="margin-top:14px;" id="wsRootCard">
+      <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
+        <h3 style="margin:0;">🗂️ Workspace (raiz do projeto)</h3>
+        <button class="btn" id="btnClearWorkspaceRoot" type="button">Limpar cache da última raiz</button>
+        <span class="hint" title="Limpa a lembrança da última raiz de projeto. Use ao trocar de projeto/workspace sem o proxy detectar sozinho: a partir daí a raiz é decidida pela evidência do PRÓXIMO request (header x-workspace-root, body.workspacePath ou o caminho absoluto citado no prompt da conversa).">?</span>
+      </div>
+      <p class="note" style="margin:8px 0 0;">
+        O proxy resolve a raiz por conversa automaticamente. Se você trabalha em
+        <b>vários projetos ao mesmo tempo</b> e percebe que o agente resolveu o
+        workspace errado, limpe o cache — a próxima conversa decide sozinha.
+      </p>
+      <span id="wsRootFeedback" class="note" style="margin-top:8px;"></span>
+    </div>
   </section>
 
   <!-- ============ CHAT ============ -->
@@ -3226,6 +3240,22 @@ for await (const chunk of stream) {
       fb.textContent = "Erro: " + e.message;
     }
   });
+
+  const btnClearWsRoot = $("#btnClearWorkspaceRoot");
+  if (btnClearWsRoot) {
+    btnClearWsRoot.addEventListener("click", async () => {
+      const fb = $("#wsRootFeedback");
+      fb.textContent = "Limpando...";
+      try {
+        const res = await fetch("/api/settings/clear-workspace-root", { method: "POST" });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+        fb.textContent = "Cache limpo ✓ — a raiz agora será decidida pelo próximo request (header / workspacePath / prompt da conversa).";
+      } catch (e) {
+        fb.textContent = "Erro: " + e.message;
+      }
+    });
+  }
 
   function groupedModelOptions(selected) {
     const groups = {};

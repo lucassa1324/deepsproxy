@@ -6,6 +6,7 @@
  */
 
 import type { OpenAIRequest, MessageToolCall } from '../utils/types.ts';
+import { isTaskRefusal } from '../middlewares/anti-lazy.ts';
 
 /** Tipos de ferramentas de edição/escrita que podem causar loops nulos */
 const EDIT_TOOL_NAMES = new Set([
@@ -117,7 +118,9 @@ export function needsDiagnosticDirective(userPrompt: string): boolean {
 
 /**
  * Padrões de respostas passivas/desistência que a IA emite quando não sabe o caminho
- * Só são considerados passivos se a IA NÃO chamou nenhuma ferramenta (tool_calls === 0)
+ * OU devolve a tarefa ao usuário ("Aguardando instrução/tarefa", "qual alteração
+ * você deseja", "informe o que deseja"). Só são considerados passivos se a IA
+ * NÃO chamou nenhuma ferramenta (tool_calls === 0)
  */
 const PASSIVE_PATTERNS = [
   /qual\s+o\s+caminho/i,
@@ -145,6 +148,17 @@ const PASSIVE_PATTERNS = [
   /n[ãa]o\s+foi\s+poss[ií]vel\s+(localizar|encontrar|ler)/i,
   /me\s+passe\s+o\s+(caminho|arquivo|c[oó]digo)/i,
   /ocorreu\s+um\s+erro\s+ao\s+tentar/i,
+  /aguardando\s+(a\s+)?(instru[cç][aã]o|tarefa|orienta[cç][aã]o)/i,
+  /aguardando\s+novas?\s+(instru[cç][oõ]es|tarefas|orienta[cç][oõ]es)/i,
+  /aguardando\s+suas?\s+instru[cç][oõ]es/i,
+  /n[ãa]o\s+continha\s+(uma\s+)?(solicita[cç][aã]o|tarefa|instru[cç][aã]o)/i,
+  /sem\s+(uma\s+)?(solicita[cç][aã]o|tarefa|instru[cç][aã]o|altera[cç][aã]o)\s+espec[ií]fica/i,
+  /informe\s+(qual|o\s+que\s+alterar|o\s+que\s+voc[êe]\s+deseja)/i,
+  /qual\s+(altera[cç][aã]o|corre[cç][aã]o|funcionalidade|mudan[cç]a|nov[aã]\s+funcionalidade)\s+(voc[êe]|o\s+usu[aá]rio)\s+(deseja|quer|gostaria)/i,
+  /o\s+que\s+(voc[êe]|o\s+usu[aá]rio)\s+(deseja|quer|gostaria)\s+que\s+(eu\s+|se\s+)?(fa[çc]a|implemente|altere|corrija|adicione)/i,
+  /what\s+(changes?|features?|tasks?)\s+would\s+you\s+like/i,
+  /no\s+specific\s+(request|task|instruction|change|feature)/i,
+  /please\s+inform\s+(me\s+)?(what|which)/i,
 ];
 
 /**
@@ -158,7 +172,10 @@ export function isPassiveResponse(content: string, toolCalls: MessageToolCall[] 
   const lower = content.toLowerCase().trim();
   if (lower.length === 0) return false;
   
-  return PASSIVE_PATTERNS.some(p => p.test(lower));
+  if (PASSIVE_PATTERNS.some(p => p.test(lower))) return true;
+  // Unificado com o detector anti-preguiça (padrões "esqueceu de incluir a
+  // tarefa", "vou perguntar qual é a tarefa", regra estrutural tarefa+pergunta).
+  return isTaskRefusal(content);
 }
 
 /**
@@ -430,12 +447,13 @@ export function validateResponse(
     // Só bloqueia se tool_calls === 0 (regra de segurança: se usou ferramenta, não bloqueia)
     if (enableAntiLazy) {
       if (isPassiveResponse(content, toolCalls)) {
-        const rejection = `[REJEIÇÃO AUTOMÁTICA DO PROXY — RESPOSTA PASSIVA]: A IA desistiu sem tentar ferramentas.
+        const rejection = `[REJEIÇÃO AUTOMÁTICA DO PROXY — RESPOSTA PASSIVA]: A IA desistiu sem tentar ferramentas ou pediu instrução apesar da tarefa já estar na última mensagem do usuário.
 
 RE-INSTRUÇÃO OBRIGATÓRIA:
-1. NÃO responda "qual o caminho", "onde está o arquivo", "não encontrei".
-2. Use IMEDIATAMENTE glob/grep/read_file/list_dir para LOCALIZAR o arquivo.
-3. Se o usuário pedir "altere X", use glob/grep para ACHAR "X" e LEIA antes de alterar.`;
+1. A TAREFA JÁ ESTÁ NA ÚLTIMA MENSAGEM DO USUÁRIO (com os passos numerados). NÃO pergunte qual é a tarefa, NÃO diga "aguardando instrução/tarefa", NÃO pergunte "qual alteração você deseja".
+2. Se ainda não leu os arquivos, use glob/grep/read_file/list_dir para LOCALIZÁ-LOS AGORA.
+3. Se JÁ leu os arquivos, EXECUTE a alteração pedida (Write/Edit/SearchReplace) e releia para confirmar.
+4. Não encerre o turno sem aplicar as alterações e rodar o comando pedido (ex.: bun dev).`;
         const modifiedBody = {
           ...body,
           messages: [...body.messages, { role: 'system' as const, content: rejection }],

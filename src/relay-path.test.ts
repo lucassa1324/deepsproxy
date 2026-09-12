@@ -109,6 +109,93 @@ describe('relay-path: getWorkspaceRootFromContext', () => {
     clearWorkspaceRootCache();
     assert.equal(getWorkspaceRootFromContext(noHeaderContext(), {}), null);
   });
+
+  it('cache por conversa: conversas diferentes NUNCA herdam a raiz da outra', () => {
+    clearWorkspaceRootCache();
+    // conversa A resolve sua raiz via mensagens
+    assert.equal(
+      getWorkspaceRootFromContext(makeContextWithHeader('x-conversation-id', 'conv-A'), {
+        messages: [{ role: 'system', content: '<workspace>C:/projeto-alpha</workspace>' }],
+      }),
+      'C:/projeto-alpha'
+    );
+    // conversa B (outro projeto) sem evidência → NÃO herda a raiz da A
+    assert.equal(
+      getWorkspaceRootFromContext(makeContextWithHeader('x-conversation-id', 'conv-B'), {}),
+      null
+    );
+    // conversa A de novo (continuacao) → mantém a própria raiz
+    assert.equal(
+      getWorkspaceRootFromContext(makeContextWithHeader('x-conversation-id', 'conv-A'), {}),
+      'C:/projeto-alpha'
+    );
+  });
+
+  it('cache por conversa via body.conversation_id e clearWorkspaceRootCache zera tudo', () => {
+    clearWorkspaceRootCache();
+    assert.equal(
+      getWorkspaceRootFromContext(noHeaderContext(), {
+        conversation_id: 'sess-1',
+        messages: [{ role: 'user', content: 'workspacePath: "D:/beta"' }],
+      }),
+      'D:/beta'
+    );
+    assert.equal(
+      getWorkspaceRootFromContext(noHeaderContext(), { conversation_id: 'sess-1' }),
+      'D:/beta'
+    );
+    assert.equal(
+      getWorkspaceRootFromContext(noHeaderContext(), { conversation_id: 'sess-2' }),
+      null
+    );
+    clearWorkspaceRootCache();
+    assert.equal(
+      getWorkspaceRootFromContext(noHeaderContext(), { conversation_id: 'sess-1' }),
+      null
+    );
+  });
+
+  it('corta a cauda narrativa após a raiz ("X. A tarefa é..." → X)', () => {
+    clearWorkspaceRootCache();
+    const root = getWorkspaceRootFromContext(noHeaderContext(), {
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Estamos no projeto C:\\Users\\Lucas sá\\Documents\\trae_projects\\Teste_pratico_proxy. A tarefa abaixo é OBRIGATÓRIA e deve ser executada agora, sem perguntar o que fazer. Adicione o script dev no package.json.',
+        },
+      ],
+    });
+    assert.equal(root, 'C:/Users/Lucas sá/Documents/trae_projects/Teste_pratico_proxy');
+  });
+
+  it('corta a cauda narrativa também no aviso de CWD da IDE', () => {
+    clearWorkspaceRootCache();
+    const root = getWorkspaceRootFromContext(noHeaderContext(), {
+      messages: [
+        {
+          role: 'system',
+          content:
+            'current working directory is C:/Users/Lucas sá/projeto. Em seguida faça a alteração e confirme.',
+        },
+      ],
+    });
+    assert.equal(root, 'C:/Users/Lucas sá/projeto');
+  });
+
+  it('preserva ponto+espaço em segmento intermediário e corta a cauda narrativa', () => {
+    clearWorkspaceRootCache();
+    const root = getWorkspaceRootFromContext(noHeaderContext(), {
+      messages: [
+        {
+          role: 'user',
+          content:
+            'Edite em C:\\Users\\Lucas sá\\v1.2 proj\\app\\package.json. Em seguida rode o servidor.',
+        },
+      ],
+    });
+    assert.equal(root, 'C:/Users/Lucas sá/v1.2 proj/app/package.json');
+  });
 });
 
 describe('relay-path: limpeza de prefixos relativos repetidos', () => {
@@ -1149,6 +1236,64 @@ describe('relay-path: escudo defensivo — colapso de barras duplas', () => {
 
   it('POSIX (sys-root) intacto com raiz Windows; barra única acidental é relativa', () => {
     assert.equal(sanitizePathValue('/home/dev/app/x.ts', ROOT), '/home/dev/app/x.ts');
+  });
+
+  it("busca '/package.json' (caminho concreto na raiz) resolve contra o workspace", () => {
+    const out = sanitizeToolCallArguments('TraeSearch', { pattern: '/package.json' }, ROOT) as any;
+    assert.equal(out.pattern, 'C:\\Users\\Lucas\\projeto\\package.json');
+    const outJson = JSON.parse(
+      String(sanitizeToolCallArguments('TraeSearch', JSON.stringify({ pattern: '/package.json' }), ROOT))
+    ) as any;
+    assert.equal(outJson.pattern, 'C:\\Users\\Lucas\\projeto\\package.json');
+  });
+
+  it("busca com 'paths' em ARRAY resolve item a item; globs e relativos ficam", () => {
+    const out = sanitizeToolCallArguments(
+      'GlobSearch',
+      { paths: ['/package.json', 'src//*.ts', '/src/*.ts'], query: '/package-lock.json' },
+      ROOT
+    ) as any;
+    assert.deepEqual(out.paths, [
+      'C:\\Users\\Lucas\\projeto\\package.json',
+      'src/*.ts',
+      '/src/*.ts',
+    ]);
+    assert.equal(out.query, 'C:\\Users\\Lucas\\projeto\\package-lock.json');
+  });
+
+  it("busca root-anchored sem raiz disponível fica só com colapso de barra", () => {
+    const out = sanitizeToolCallArguments('GlobSearch', { pattern: '/package//lock.json' }, null) as any;
+    assert.equal(out.pattern, '/package/lock.json');
+  });
+
+  it("padrão ABSOLUTO dentro da raiz vira RELATIVO para a IDE buscar", () => {
+    const abs = 'C:/Users/Lucas/projeto/package.json';
+    const out = sanitizeToolCallArguments('TraeSearch', { pattern: abs }, ROOT) as any;
+    assert.equal(out.pattern, 'package.json');
+    const outArray = sanitizeToolCallArguments(
+      'GlobSearch',
+      { paths: ['C:\\Users\\Lucas\\projeto\\package.json', 'src\\*.ts'] },
+      ROOT
+    ) as any;
+    assert.deepEqual(outArray.paths, ['package.json', 'src\\*.ts']);
+  });
+
+  it("padrão ABSOLUTO fora da raiz é preservado (sem perda de informação)", () => {
+    const out = sanitizeToolCallArguments(
+      'TraeSearch',
+      { pattern: 'D:/outro-projeto/package.json' },
+      ROOT
+    ) as any;
+    assert.equal(out.pattern, 'D:/outro-projeto/package.json');
+  });
+
+  it('conversão de absoluto→relativo tolera diferença de caixa na letra da unidade', () => {
+    const out = sanitizeToolCallArguments(
+      'TraeSearch',
+      { pattern: 'c:/users/lucas/projeto/package.json' },
+      ROOT
+    ) as any;
+    assert.equal(out.pattern, 'package.json');
   });
 });
 

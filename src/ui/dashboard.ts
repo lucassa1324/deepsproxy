@@ -912,20 +912,48 @@ RETORNE APENAS JSON VÁLIDO:
 }
     `.trim();
 
-    const userPrompt = `Caso de uso: ${description}`;
+    const userPrompt = `PROFILE DO USUÁRIO (leia com atenção e ajuste TODA a configuração a este perfil):
 
-    // Chama o modelo ativo para gerar a configuração
-    const primary = resolveActiveProvider(c.req.header('Cookie'));
+${description}
+
+Decida cada parâmetro baseado EXCLUSIVAMENTE neste perfil:
+- código/programação → máxima precisão e determinismo;
+- escrita criativa/marketing → variedade e expressividade;
+- análise de dados/logs → estrutura e foco em extrair insights;
+- etc.
+Escreva o "systemPromptOverride" específico deste perfil (nunca genérico).`;
+
+    // Escolhe um provedor de API para gerar a configuração. Provedores de
+    // navegador (deepseek/qwen/gemini-web) não expõem HTTP para chamada direta
+    // e cairiam sempre no fallback heurístico — por isso buscamos qualquer
+    // provedor de API habilitado, mesmo que o principal seja via navegador.
+    const apiProviders = enabled.filter(
+      (p) => p.type !== 'deepseek' && p.type !== 'qwen' && p.type !== 'gemini-web'
+    );
+    const llmProvider = apiProviders.find((p) => p.id === registry.active) ?? apiProviders[0] ?? null;
     let configJson = null;
 
-    // Tenta usar o provedor ativo (precisa ser HTTP, não browser)
-    if (primary.type !== 'deepseek' && primary.type !== 'qwen' && primary.type !== 'gemini-web') {
+    if (llmProvider) {
       try {
+        // Resolve um modelo REAL para o provedor: o modelo cadastrado, senão o
+        // primeiro do catálogo daquele provedor, senão um padrão por tipo.
+        // Enviar "default" ao Gemini resultava em 404 (modelo inexistente).
+        const defaultByType: Record<string, string> = {
+          gemini: 'gemini-2.5-flash',
+          anthropic: 'claude-sonnet-4-5',
+        };
+        const catalogModel = catalog.find((m: any) => m.provider === llmProvider.id)?.id || '';
+        const chosenModel =
+          (llmProvider.model && llmProvider.model !== 'default' ? llmProvider.model : '') ||
+          catalogModel ||
+          defaultByType[llmProvider.type] ||
+          '';
+
         const payload = {
-          model: primary.model || 'default',
+          model: chosenModel,
           stream: false,
-          temperature: 0.1,
-          max_tokens: 800,
+          temperature: 0.2,
+          max_tokens: 2048,
           messages: [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: userPrompt }
@@ -933,13 +961,13 @@ RETORNE APENAS JSON VÁLIDO:
         };
 
         let resp: Response | null = null;
-        const resolvedKey = primaryApiKey(primary);
-        if (primary.type === 'gemini' || primary.type === 'anthropic' || primary.type === 'ollama') {
+        const resolvedKey = primaryApiKey(llmProvider);
+        if (llmProvider.type === 'gemini' || llmProvider.type === 'anthropic' || llmProvider.type === 'ollama') {
           const { dispatchAdapterChat } = await import('../services/adapters/index.ts');
-          resp = await dispatchAdapterChat(payload, primary);
-        } else if (primary.type === 'openai-compatible' && primary.baseUrl && resolvedKey) {
+          resp = await dispatchAdapterChat(payload, llmProvider);
+        } else if (llmProvider.type === 'openai-compatible' && llmProvider.baseUrl && resolvedKey) {
           const { optimizedFetch } = await import('../services/optimizations.ts');
-          resp = await optimizedFetch(`${primary.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+          resp = await optimizedFetch(`${llmProvider.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${resolvedKey}` },
             body: JSON.stringify(payload)
@@ -949,17 +977,28 @@ RETORNE APENAS JSON VÁLIDO:
         if (resp && resp.ok) {
           const data = await resp.json();
           const content = data.choices?.[0]?.message?.content || '';
-          try {
-            configJson = JSON.parse(content);
-          } catch {
-            // Tenta extrair JSON do texto
-            const match = content.match(/\{[\s\S]*\}/);
-            if (match) configJson = JSON.parse(match[0]);
+          configJson = extractJsonObject(content);
+        } else {
+          let detail = `status ${resp?.status || 'sem resposta'}`;
+          if (resp) {
+            try {
+              const errBody: any = await resp.clone().json();
+              const msg = String(errBody?.error?.message || errBody?.message || '').slice(0, 300);
+              if (msg) detail += ` — ${msg}`;
+            } catch {}
           }
+          console.warn(
+            `[ai-config] LLM ${llmProvider.name}/${chosenModel || 'default'} respondeu ${detail} — fallback heurístico`
+          );
         }
+        console.log(
+          `[ai-config] LLM ${llmProvider.name}/${chosenModel || 'default'} → ${configJson ? 'config gerada pela IA' : 'resposta sem JSON válido, fallback heurístico'}`
+        );
       } catch (e) {
         console.warn('[ai-config] Falha ao chamar LLM para config, usando fallback:', (e as Error).message);
       }
+    } else {
+      console.log('[ai-config] Sem provedor de API habilitado — usando fallback heurístico');
     }
 
     // Fallback heurístico se a IA falhou
@@ -1003,9 +1042,30 @@ RETORNE APENAS JSON VÁLIDO:
   }
 });
 
+function extractJsonObject(content: string): any {
+  if (!content) return null;
+  const raw = String(content).trim();
+  try { return JSON.parse(raw); } catch {}
+  // Fences markdown: ```json { ... } ```
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenced) {
+    try { return JSON.parse(fenced[1].trim()); } catch {}
+  }
+  // Texto ao redor: pega do primeiro "{" ao último "}".
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    try { return JSON.parse(raw.slice(start, end + 1)); } catch {}
+  }
+  return null;
+}
+
 function generateHeuristicConfig(description: string, providerType: string, currentModel: string, catalog: any[]): any {
   const desc = description.toLowerCase();
-  const isCoding = /programa|c[oó]digo|desenvolv|agent|aut[oô]nom|refator|debug|bug|arquivo|edit|write|read|file|code|coding/i.test(desc);
+  // Design/arte/visual com HTML+CSS é CRIATIVO — suprime a classificação de
+  // coding que o regex pegaria em palavras como "código"/"css".
+  const isDesignCreative = /design|artes?|parte criativa|ilustra|visual|layout|branding|pouca programa|html|css|front-?end|web design|marketing|copy|escrita|poesia|redes sociais|hist[óo]ria/i.test(desc);
+  const isCoding = !isDesignCreative && /programa|c[oó]digo|desenvolv|agent|aut[oô]nom|refator|debug|bug|arquivo|edit|write|read|file|code|coding/i.test(desc);
   const isChat = /chat|conversa|atendimento|suporte|assistente|geral/i.test(desc);
   const isData = /dados|an[aá]lise|relat[oó]rio|processar|arquivo grande|log|csv|json|dataset/i.test(desc);
   const isCreative = /criativ|escrita|texto|hist[oó]ria|poesia|marketing|copy|redes sociais/i.test(desc);

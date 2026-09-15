@@ -398,3 +398,269 @@ test('gateway e2e: agent:true é recusado (Gateway HTTP Puro, sem execução loc
     globalThis.fetch = originalFetch;
   }
 });
+
+test('gateway e2e: ai-config usa provedor de API mesmo com principal browser e envia a descrição', async () => {
+  resetModelCatalogCache();
+  const { app } = await import('./index.ts');
+  const { resetEconomyCache } = await import('./services/token-economy.ts');
+  const tmpFile = join(tmpdir(), 'deepsproxy-economy-aiconfig1.json');
+  const prevFile = process.env.ECONOMY_FILE;
+  process.env.ECONOMY_FILE = tmpFile;
+  resetEconomyCache();
+
+  const registry = {
+    active: 'ds',
+    providers: [
+      { id: 'ds', name: 'DeepSeek', type: 'deepseek', baseUrl: '', apiKey: '', model: '', enabled: true },
+      { id: 'api', name: 'Mock', type: 'openai-compatible', baseUrl: 'http://localhost:9123/v1', apiKey: 'sk-test', model: '', enabled: true },
+    ],
+  };
+  const cookie = 'deepsproxy_providers=' + encodeURIComponent(JSON.stringify(registry));
+
+  let llmHit = false;
+  let llmBody: any = null;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : ('url' in input ? input.url : String(input));
+    if (url.includes('/v1/models')) {
+      return new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-test' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (url.includes('/chat/completions')) {
+      llmHit = true;
+      llmBody = JSON.parse(String(init?.body));
+      const descSeen = (llmBody.messages.find((m: any) => m.role === 'user')?.content || '').includes('marketing');
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { role: 'assistant', content: JSON.stringify({
+            llmParams: { temperature: descSeen ? 0.42 : 0.01, top_p: 0.9, systemPromptOverride: descSeen ? 'visto' : 'nao visto', maxTokens: 1000 },
+            tokenEconomy: { enabled: true },
+            booster: { enabled: false },
+            recommendedModel: '',
+            reasoning: 'mock',
+          }) } }],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    const createRes = await app.request('/api/apps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ name: 'AI config 1', model: 'gpt-test' }),
+    });
+    assert.equal(createRes.status, 201);
+    const created: any = await createRes.json();
+
+    const res = await app.request(`/api/apps/${created.app.id}/ai-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ description: 'geração de ideias e cópias de marketing — respostas criativas e variadas' }),
+    });
+    assert.equal(res.status, 200);
+    const data: any = await res.json();
+
+    assert.equal(llmHit, true, 'LLM deve ser chamado mesmo com o ativo sendo browser (deepseek)');
+    assert.equal(data.config.llmParams.temperature, 0.42, 'config deve vir da IA e refletir a descrição');
+    assert.equal(data.config.llmParams.systemPromptOverride, 'visto');
+    // Modelo real resolvido do catálogo (nunca literal "default"), senão o Gemini 404.
+    assert.ok(llmBody, 'payload do LLM deve ter sido capturado');
+    assert.notEqual(llmBody.model, 'default');
+    assert.equal(llmBody.model, 'gpt-test');
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetEconomyCache();
+    process.env.ECONOMY_FILE = prevFile;
+    try { rmSync(tmpFile, { force: true }); } catch {}
+  }
+});
+
+test('gateway e2e: ai-config com LLM inválido cai no heurístico e varia por descrição', async () => {
+  resetModelCatalogCache();
+  const { app } = await import('./index.ts');
+  const { resetEconomyCache } = await import('./services/token-economy.ts');
+  const tmpFile = join(tmpdir(), 'deepsproxy-economy-aiconfig2.json');
+  const prevFile = process.env.ECONOMY_FILE;
+  process.env.ECONOMY_FILE = tmpFile;
+  resetEconomyCache();
+
+  const registry = {
+    active: 'api',
+    providers: [
+      { id: 'api', name: 'Mock', type: 'openai-compatible', baseUrl: 'http://localhost:9123/v1', apiKey: 'sk-test', model: '', enabled: true },
+    ],
+  };
+  const cookie = 'deepsproxy_providers=' + encodeURIComponent(JSON.stringify(registry));
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : ('url' in input ? input.url : String(input));
+    if (url.includes('/v1/models')) {
+      return new Response(JSON.stringify({ object: 'list', data: [{ id: 'gpt-test' }] }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (url.includes('/chat/completions')) {
+      // Resposta sem JSON válido força o fallback heurístico.
+      return new Response('resposta sem json', { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    const createRes = await app.request('/api/apps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ name: 'AI config 2', model: 'gpt-test' }),
+    });
+    const created: any = await createRes.json();
+    const call = async (d: string) => {
+      const r = await app.request(`/api/apps/${created.app.id}/ai-config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie },
+        body: JSON.stringify({ description: d }),
+      });
+      assert.equal(r.status, 200);
+      return (await r.json()).config;
+    };
+
+    const code = await call('refatoração de código e arquitetura — respostas determinísticas');
+    const marketing = await call('geração de ideias e cópias de marketing — respostas criativas e variadas');
+    const designer = await call('usar a IA como designer, pouca programação, gerar a parte criativa — artes com código html e css');
+    assert.equal(code.llmParams.temperature, 0.1);
+    assert.equal(marketing.llmParams.temperature, 0.9);
+    // "código" + "html/css" num contexto de DESIGN NÃO deve virar coding (0.1).
+    assert.equal(designer.llmParams.temperature, 0.9, 'design com html/css é criativo, não programação');
+    assert.ok(String(code.reasoning).includes('heurística'));
+    assert.notEqual(code.llmParams.temperature, marketing.llmParams.temperature);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetEconomyCache();
+    process.env.ECONOMY_FILE = prevFile;
+    try { rmSync(tmpFile, { force: true }); } catch {}
+  }
+});
+
+test('gateway e2e: ai-config sem provedor de API usa heurístico sem chamar LLM', async () => {
+  resetModelCatalogCache();
+  const { app } = await import('./index.ts');
+  const { resetEconomyCache } = await import('./services/token-economy.ts');
+  const tmpFile = join(tmpdir(), 'deepsproxy-economy-aiconfig3.json');
+  const prevFile = process.env.ECONOMY_FILE;
+  process.env.ECONOMY_FILE = tmpFile;
+  resetEconomyCache();
+
+  const registry = {
+    active: 'ds',
+    providers: [
+      { id: 'ds', name: 'DeepSeek', type: 'deepseek', baseUrl: '', apiKey: '', model: '', enabled: true },
+      { id: 'qw', name: 'Qwen', type: 'qwen', baseUrl: '', apiKey: '', model: '', enabled: true },
+    ],
+  };
+  const cookie = 'deepsproxy_providers=' + encodeURIComponent(JSON.stringify(registry));
+
+  let llmHit = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : ('url' in input ? input.url : String(input));
+    if (url.includes('/chat/completions') && !url.includes('localhost:9123')) {
+      llmHit = true;
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    // Sem modelo no catálogo, cria a app direto no registry (sem validação do painel).
+    const { app: createdApp } = createApp({ name: 'AI config 3', model: 'gpt-test' });
+    const res = await app.request(`/api/apps/${createdApp.id}/ai-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ description: 'análise de dados e logs — estruturado' }),
+    });
+    assert.equal(res.status, 200);
+    const data: any = await res.json();
+    assert.equal(llmHit, false, 'sem provedor de API, nenhum LLM deve ser chamado');
+    assert.ok(String(data.config.reasoning).includes('heurística'));
+    assert.equal(data.config.llmParams.temperature, 0.2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetEconomyCache();
+    process.env.ECONOMY_FILE = prevFile;
+    try { rmSync(tmpFile, { force: true }); } catch {}
+  }
+});
+
+test('gateway e2e: ai-config com Gemini extrai JSON de fence markdown e usa modelo real', async () => {
+  resetModelCatalogCache();
+  const { app } = await import('./index.ts');
+  const { resetEconomyCache } = await import('./services/token-economy.ts');
+  const tmpFile = join(tmpdir(), 'deepsproxy-economy-aiconfig4.json');
+  const prevFile = process.env.ECONOMY_FILE;
+  process.env.ECONOMY_FILE = tmpFile;
+  resetEconomyCache();
+
+  const registry = {
+    active: 'gem',
+    providers: [
+      { id: 'gem', name: 'Google AI', type: 'gemini', baseUrl: '', apiKey: 'gemkey', model: '', enabled: true },
+    ],
+  };
+  const cookie = 'deepsproxy_providers=' + encodeURIComponent(JSON.stringify(registry));
+
+  let llmUrl = '';
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : ('url' in input ? input.url : String(input));
+    if (url.includes('/models?key=')) {
+      return new Response(
+        JSON.stringify({ models: [{ name: 'models/gemini-2.5-flash', displayName: 'Gemini 2.5 Flash', supportedGenerationMethods: ['generateContent'] }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    if (url.includes(':generateContent')) {
+      llmUrl = url;
+      const config = {
+        llmParams: { temperature: 0.55, top_p: 0.95, systemPromptOverride: 'gerado', maxTokens: 5000 },
+        tokenEconomy: { enabled: true },
+        booster: { enabled: false },
+        recommendedModel: '',
+        reasoning: 'customização por perfil',
+      };
+      const text = 'Aqui está a config ideal:\n\n```json\n' + JSON.stringify(config) + '\n```\nEspero ter ajudado.';
+      return new Response(
+        JSON.stringify({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }], usageMetadata: {} }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    }
+    return originalFetch(input, init);
+  };
+
+  try {
+    const createRes = await app.request('/api/apps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ name: 'AI config 4', model: 'gemini-2.5-flash' }),
+    });
+    assert.equal(createRes.status, 201);
+    const created: any = await createRes.json();
+
+    const res = await app.request(`/api/apps/${created.app.id}/ai-config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
+      body: JSON.stringify({ description: 'uso criativo: design e artes para a web' }),
+    });
+    assert.equal(res.status, 200);
+    const data: any = await res.json();
+    assert.equal(data.config.llmParams.temperature, 0.55, 'JSON extraído do fence markdown deve virar a config da IA');
+    assert.equal(data.config.llmParams.systemPromptOverride, 'gerado');
+    assert.ok(!String(data.config.reasoning).includes('heurística'), 'LLM válido não deve cair no heurístico');
+    // Modelo real no URL (nunca o literal "default", que daria 404 no Gemini).
+    assert.ok(llmUrl.includes('gemini-2.5-flash'), 'URL do Gemini deve conter modelo real, got: ' + llmUrl);
+    assert.ok(!llmUrl.includes(':default:'), 'nunca pode chamar o modelo default');
+  } finally {
+    globalThis.fetch = originalFetch;
+    resetEconomyCache();
+    process.env.ECONOMY_FILE = prevFile;
+    try { rmSync(tmpFile, { force: true }); } catch {}
+  }
+});

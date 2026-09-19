@@ -4,7 +4,7 @@
  * Playwright dedicado ao Qwen (chat.qwen.ai). Mantém perfil, sessão e headers
  * separados do playwright da DeepSeek para os dois backends funcionarem juntos.
  *
- * Portado do qwenproxy (autor: Pedro Farias), com naming qwen-específico.
+ * Portado do qwenproxy, com naming qwen-específico.
  */
 
 import { chromium, BrowserContext, Page } from 'playwright';

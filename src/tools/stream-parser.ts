@@ -2,7 +2,7 @@
  * File: stream-parser.ts
  * Project: deepsproxy
  * Parser streaming de tags <tool_call> </tool_call> para modelos agentic,
- * portado do qwenproxy (autor: Pedro Farias).
+ * portado do qwenproxy.
  */
 
 import { v4 as uuidv4 } from 'uuid';

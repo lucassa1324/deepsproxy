@@ -1,7 +1,7 @@
 /*
  * File: qwen.ts
  * Project: deepsproxy
- * Handler de chat do Qwen (portado do qwenproxy — autor: Pedro Farias).
+ * Handler de chat do Qwen (portado do qwenproxy).
  * Recebe o corpo OpenAI-compatível já parseado pelo roteador e responde via
  * streaming (SSE) ou JSON único, com suporte a raciocínio e tool calls.
  */

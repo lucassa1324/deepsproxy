@@ -1,0 +1,164 @@
+#!/usr/bin/env bash
+# deepsproxy — launcher Linux do DeepsProxy.
+#
+# Equivalente ao DeepsProxy.exe do Windows: sobe o servidor node embutido em
+# segundo plano, espera /health e abre a dashboard no navegador padrão.
+# Para usuário comum: basta dar dois cliques (via menu de apps) ou rodar
+# ./deepsproxy  (sem precisar instalar Node, Python ou nada além do essencial).
+#
+# Comandos:
+#   deepsproxy            = deepsproxy start
+#   deepsproxy start      sobe o servidor e abre a dashboard
+#   deepsproxy stop       encerra servidor e navegadores filhos
+#   deepsproxy restart    reinicia o servidor
+#   deepsproxy status     mostra se está no ar
+#   deepsproxy logs       mostra as últimas linhas do log
+set -u
+
+SCRIPT="$0"
+while [ -L "$SCRIPT" ]; do
+  LINK="$(readlink -f "$SCRIPT")"
+  [ -n "$LINK" ] || break
+  SCRIPT="$LINK"
+done
+APP_DIR="$(cd "$(dirname -- "$SCRIPT")" && pwd)"
+
+NODE="$APP_DIR/node"
+ENTRY="$APP_DIR/dist/index.js"
+LOG="$APP_DIR/server.log"
+PIDFILE="$APP_DIR/run.pid"
+
+PORT=3005
+ENV_FILE="$APP_DIR/.env"
+if [ -r "$ENV_FILE" ]; then
+  P="$(sed -n 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ENV_FILE" | tail -n 1)"
+  [ -n "$P" ] && PORT="$P"
+fi
+URL="http://127.0.0.1:$PORT"
+
+fail() { echo "✖ $*" >&2; exit 1; }
+
+health() {
+  local body
+  if command -v curl >/dev/null 2>&1; then
+    body="$(curl -s --max-time 2 "$URL/health" 2>/dev/null)" || return 1
+  else
+    exec 3<>"/dev/tcp/127.0.0.1/$PORT" 2>/dev/null || return 1
+    printf 'GET /health HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3
+    body="$(timeout 3 cat <&3 2>/dev/null)"
+    exec 3>&-
+  fi
+  case "$body" in
+    *'"ok"'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+open_browser() {
+  if command -v xdg-open >/dev/null 2>&1; then
+    (xdg-open "$URL" >/dev/null 2>&1 &) || true
+  fi
+  if command -v notify-send >/dev/null 2>&1; then
+    notify-send "DeepsProxy" "Rodando em $URL" >/dev/null 2>&1 || true
+  fi
+  echo "DeepsProxy disponível em $URL"
+}
+
+start_node() {
+  [ -x "$NODE" ] || fail "Node não encontrado em $NODE — reinstale o DeepsProxy."
+  [ -f "$ENTRY" ] || fail "Servidor não encontrado em $ENTRY — reinstale o DeepsProxy."
+
+  export PLAYWRIGHT_BROWSERS_PATH="$APP_DIR/browsers"
+  export NODE_ENV=production
+
+  rm -f "$PIDFILE"
+  nohup "$NODE" "$ENTRY" >> "$LOG" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$PIDFILE"
+}
+
+wait_health() {
+  local max=${1:-120} i
+  for i in $(seq 1 "$max"); do
+    health && return 0
+    if [ -f "$PIDFILE" ]; then
+      local pid
+      pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+      if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+        echo "✖ O servidor encerrou sozinho. Veja o log:" >&2
+        tail -n 20 "$LOG" >&2 2>/dev/null || true
+        return 1
+      fi
+    fi
+    sleep 1
+  done
+  echo "⚠  DeepsProxy não respondeu em /health após ${max}s — abrindo mesmo assim." >&2
+  return 0
+}
+
+kill_tree() {
+  local pid=$1 child
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill_tree "$child"
+  done
+  kill -TERM "$pid" 2>/dev/null || true
+}
+
+stop_server() {
+  local pid
+  if [ -f "$PIDFILE" ]; then
+    pid="$(cat "$PIDFILE" 2>/dev/null || true)"
+    rm -f "$PIDFILE"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      kill_tree "$pid"
+      local i
+      for i in $(seq 1 10); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.3
+      done
+      kill -KILL "$pid" 2>/dev/null || true
+      echo "DeepsProxy encerrado."
+      return 0
+    fi
+  fi
+  echo "DeepsProxy não estava rodando."
+}
+
+case "${1:-start}" in
+  start)
+    if health; then
+      echo "DeepsProxy já está no ar em $URL"
+      open_browser
+    else
+      start_node
+      wait_health 120
+      open_browser
+    fi
+    ;;
+  stop)
+    stop_server
+    ;;
+  restart)
+    stop_server
+    sleep 1
+    start_node
+    wait_health 120
+    open_browser
+    ;;
+  status)
+    if health; then
+      echo "No ar: $URL"
+      [ -f "$PIDFILE" ] && echo "PID: $(cat "$PIDFILE")"
+    else
+      echo "Parado."
+      exit 1
+    fi
+    ;;
+  logs)
+    [ -f "$LOG" ] && tail -n "${2:-120}" "$LOG" || echo "(sem log ainda)"
+    ;;
+  *)
+    echo "Uso: $0 {start|stop|restart|status|logs}" >&2
+    exit 2
+    ;;
+esac

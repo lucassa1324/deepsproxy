@@ -4,6 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>DeepsProxy Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 <style>
   :root {
     --bg: #0b0f17;
@@ -25,6 +26,31 @@
     z-index: 999; pointer-events: none; user-select: none;
     letter-spacing: 0.02em;
   }
+  /* ---- Banner de atualização ---- */
+  #updateBanner {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    z-index: 9999;
+  }
+  .ub-card {
+    display: flex; align-items: center; gap: 16px;
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    border-radius: 12px;
+    padding: 10px 16px;
+    box-shadow: 0 10px 34px rgba(0,0,0,0.55);
+    max-width: 660px;
+  }
+  .ub-card strong { color: var(--accent); font-size: 14px; }
+  .ub-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .ub-sub a { color: var(--muted); }
+  .ub-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .ub-card button {
+    font-size: 13px; padding: 8px 14px; border-radius: 8px;
+    border: none; cursor: pointer; background: var(--accent); color: #fff;
+    white-space: nowrap;
+  }
+  .ub-card button:disabled { opacity: 0.6; cursor: default; }
+  .ub-card button.ub-ghost { background: transparent; color: var(--muted); border: 1px solid var(--border); }
   body {
     background: var(--bg);
     color: var(--text);
@@ -469,6 +495,19 @@
   <div class="pills" id="pills"></div>
   <a href="/chat" class="btn" style="margin-left:10px; text-decoration:none;" title="Abrir chat em página separada">Chat</a>
 </header>
+
+<div id="updateBanner" hidden>
+  <div class="ub-card">
+    <div>
+      <strong>Nova versão <span id="ubVersion"></span> disponível</strong>
+      <div class="ub-sub">Você está na v<span id="ubCurrent"></span> · <a id="ubLink" href="#" target="_blank" rel="noopener">Ver o que mudou</a></div>
+    </div>
+    <div class="ub-actions">
+      <button id="ubBtn">Baixar e atualizar</button>
+      <button id="ubDismiss" class="ub-ghost">Agora não</button>
+    </div>
+  </div>
+</div>
 
 <div class="app-layout">
 <aside class="sidebar" id="sidebar">
@@ -5230,6 +5269,56 @@ for await (const chunk of stream) {
       if (window.deepsproxyChat) window.deepsproxyChat.clearChat();
     });
   }
+</script>
+<script>
+  // Atualização via GitHub Releases: mostra banner se houver versão nova
+  // e permite baixar/abrir o instalador sem sair da dashboard.
+  (function () {
+    var banner = document.getElementById("updateBanner");
+    var btn = document.getElementById("ubBtn");
+    var dismiss = document.getElementById("ubDismiss");
+    if (!banner || !btn) return;
+
+    fetch("/api/update/check")
+      .then(function (r) { return r.json(); })
+      .then(function (s) {
+        if (!s || s.enabled === false || !s.updateAvailable) return;
+        document.getElementById("ubVersion").textContent = s.latest || "";
+        document.getElementById("ubCurrent").textContent = s.currentVersion || "";
+        var link = document.getElementById("ubLink");
+        if (s.releaseUrl) link.href = s.releaseUrl;
+        else link.parentNode.removeChild(link);
+        banner.hidden = false;
+      })
+      .catch(function () { /* sem rede/update: silencioso */ });
+
+    var RESTORE = "Baixar e atualizar";
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      btn.textContent = "Baixando nova versão...";
+      fetch("/api/update/download", { method: "POST" })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (!d.ok) throw new Error(d.error || "falha no download");
+          btn.textContent = "Abrindo instalador...";
+          return fetch("/api/update/launch", { method: "POST" }).then(function (r) { return r.json(); });
+        })
+        .then(function (l) {
+          if (l.ok) {
+            btn.textContent = "Instalador aberto — conclua e reinicie";
+          } else {
+            btn.disabled = false;
+            btn.textContent = RESTORE;
+          }
+        })
+        .catch(function () {
+          btn.disabled = false;
+          btn.textContent = RESTORE;
+        });
+    });
+
+    dismiss.addEventListener("click", function () { banner.hidden = true; });
+  })();
 </script>
 <div id="appVersion">v__APP_VERSION__ · __APP_TAG__</div>
 </body>

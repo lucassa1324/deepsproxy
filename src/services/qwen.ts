@@ -1,8 +1,8 @@
 /*
  * File: qwen.ts
  * Project: deepsproxy
- * Cliente da API do Qwen (chat.qwen.ai), portado do qwenproxy (autor: Pedro
- * Farias). Usa o playwright qwen-específico para extrair headers/PoW.
+ * Cliente da API do Qwen (chat.qwen.ai), portado do qwenproxy.
+ * Usa o playwright qwen-específico para extrair headers/PoW.
  */
 
 import { getQwenHeaders, getQwenBasicHeaders, acquireQwenStreamPage, releaseQwenStreamPage, isQwenLoginFlowActive } from './qwen-playwright.ts';

@@ -7,11 +7,14 @@
     "start": "npx tsx src/index.ts",
     "login": "npx tsx src/login.ts",
     "test": "tsx --test src/**/*.test.ts",
-    "build": "tsc",
+    "build": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
+    "build:release": "node scripts/build-release.mjs",
+    "build:install": "node scripts/build-installer.mjs",
+    "build:linux": "node scripts/build-linux.mjs",
     "postinstall": "npx playwright install chromium"
   },
   "keywords": [],
-  "author": "Pedro Farias",
+  "author": "Lucas Sá",
   "license": "ISC",
   "dependencies": {
     "@hono/node-server": "^2.0.2",

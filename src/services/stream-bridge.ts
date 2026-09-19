@@ -7,7 +7,7 @@ import crypto from 'crypto';
  * real do browser). Isso evita o desafio anti-bot (TMD/x5sec) que bloqueia o
  * fetch feito diretamente pelo Node com headers extraídos.
  *
- * Port de stream-bridge.ts do qwenproxy (pedrofariasx/qwenproxy).
+ * Port de stream-bridge.ts do qwenproxy.
  */
 
 const streamCallbacks = new Map<string, {

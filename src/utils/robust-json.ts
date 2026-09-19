@@ -2,7 +2,7 @@
  * File: robust-json.ts
  * Project: deepsproxy
  * Parser de JSON robusto para conteúdo gerado por LLM (streaming tool calls),
- * portado do qwenproxy (autor: Pedro Farias).
+ * portado do qwenproxy.
  */
 
 /**

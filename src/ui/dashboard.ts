@@ -111,6 +111,7 @@ function isGeminiWebModel(id: string): boolean {
 
 const html = readFileSync(fileURLToPath(new URL('./index.html', import.meta.url)), 'utf-8');
 const chatHtml = readFileSync(fileURLToPath(new URL('./chat.html', import.meta.url)), 'utf-8');
+const faviconSvg = readFileSync(fileURLToPath(new URL('./proxy-logo.svg', import.meta.url)), 'utf-8');
 const chatComponentJs = readFileSync(
   fileURLToPath(new URL('./components/chat-component.js', import.meta.url)),
   'utf-8'
@@ -123,6 +124,10 @@ const chatExampleHtml = readFileSync(
 const htmlWithVersion = html.replace('__APP_VERSION__', APP_VERSION).replace('__APP_TAG__', APP_TAG);
 
 dashboard.get('/', (c) => c.html(htmlWithVersion));
+
+dashboard.get('/favicon.svg', (c) =>
+  c.body(faviconSvg, 200, { 'Content-Type': 'image/svg+xml; charset=utf-8' })
+);
 
 dashboard.get('/chat', (c) => c.html(chatHtml));
 

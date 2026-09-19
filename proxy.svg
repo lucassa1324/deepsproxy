@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Fundo Escuro Sólido / Estilo App Desktop -->
+    <rect id="bg-canvas" width="512" height="512" rx="108" fill="#0A0E17" />
+
+    <!-- Gradientes Facetados do Poliedro (Corta a luz em ângulos geométricos) -->
+    <linearGradient id="facet-top" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+
+    <linearGradient id="facet-left" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#0284C7" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+
+    <linearGradient id="facet-right" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1E293B" />
+      <stop offset="100%" stop-color="#0F172A" />
+    </linearGradient>
+
+    <linearGradient id="facet-core" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818CF8" />
+      <stop offset="100%" stop-color="#4F46E5" />
+    </linearGradient>
+  </defs>
+
+  <use href="#bg-canvas" />
+
+  <!-- SÍMBOLO: POLIEDRO / CRISTAL GEOMÉTRICO (Forma 3D plana, limpa e abstrata) -->
+  <g transform="translate(136, 95)">
+    
+    <!-- Face Superior (Topo / Entrada) -->
+    <polygon points="120,20 200,70 120,110 40,70" fill="url(#facet-top)" />
+
+    <!-- Face Lateral Esquerda (Sombra / Profundidade) -->
+    <polygon points="40,70 120,110 120,230 40,170" fill="url(#facet-left)" />
+
+    <!-- Face Lateral Direita (Estrutura Básica) -->
+    <polygon points="200,70 200,170 120,230 120,110" fill="url(#facet-right)" />
+
+    <!-- Núcleo Intersetado / Destaque de Refração (O Centro de Processamento) -->
+    <polygon points="120,110 165,135 120,190 75,135" fill="url(#facet-core)" />
+
+    <!-- Linhas de Corte Geométricas (Precisão Utilitária) -->
+    <line x1="120" y1="20" x2="120" y2="110" stroke="#0A0E17" stroke-width="4" />
+    <line x1="40" y1="70" x2="120" y2="110" stroke="#0A0E17" stroke-width="4" />
+    <line x1="200" y1="70" x2="120" y2="110" stroke="#0A0E17" stroke-width="4" />
+    <line x1="120" y1="110" x2="120" y2="230" stroke="#0A0E17" stroke-width="4" />
+
+  </g>
+
+  <!-- TIPOGRAFIA: Utilitária, Reta e Focada em Produto -->
+  <g transform="translate(256, 420)">
+    <text x="0" y="0" 
+          text-anchor="middle" 
+          font-family="system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" 
+          font-weight="800" 
+          font-size="32" 
+          letter-spacing="6" 
+          fill="#F8FAFC">
+      DEEPS<tspan fill="#38BDF8">PROXY</tspan>
+    </text>
+  </g>
+</svg>

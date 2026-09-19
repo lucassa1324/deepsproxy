@@ -1,11 +1,11 @@
 /*
  * File: login.ts
  * Project: deepsproxy
- * Author: Pedro Farias
+ * Author: Lucas Sá
  * Created: 2026-05-09
  * 
  * Last Modified: Sat May 09 2026
- * Modified By: Pedro Farias
+ * Modified By: Lucas Sá
  */
 
 import { initPlaywright, closePlaywright, activePage } from './services/playwright.ts';

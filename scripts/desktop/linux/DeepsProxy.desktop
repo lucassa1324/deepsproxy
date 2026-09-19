@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=DeepsProxy
+Comment=Proxy de API local para IDEs e agentes de IA
+Exec=__APP_DIR__/deepsproxy start
+Icon=__APP_DIR__/icon.png
+Terminal=false
+Categories=Development;Network;
+StartupNotify=false

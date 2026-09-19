@@ -1,11 +1,11 @@
 /*
  * File: index.ts
  * Project: deepsproxy
- * Author: Pedro Farias
+ * Author: Lucas Sá
  * Created: 2026-05-09
  * 
  * Last Modified: Sat May 09 2026
- * Modified By: Pedro Farias
+ * Modified By: Lucas Sá
  */
 
 import { serve } from '@hono/node-server';
@@ -46,6 +46,7 @@ import {
 } from './services/gateway.ts';
 import { shutdownAgentPool, optimizedFetch } from './services/optimizations.ts';
 import { startDiscovery, stopDiscovery, startHealthCheck, stopHealthCheck } from './services/local-discovery.ts';
+import { updateApp } from './update.ts';
 
 dotenv.config();
 
@@ -130,6 +131,9 @@ const PUBLIC_PATHS = new Set([
   '/api/qwen/login/finish',
   '/api/gemini/login/start',
   '/api/gemini/login/finish',
+  '/api/update/check',
+  '/api/update/download',
+  '/api/update/launch',
 ]);
 
 // Rotas do gateway (OpenAI-compatível): autenticáveis por chave virtual de app.
@@ -165,6 +169,9 @@ app.use('*', async (c, next) => {
 /* ------------------------- Modo direto (PORT, padrão 3005) ------------------------- */
 // Dashboard (interface gráfica)
 app.route('/', dashboard);
+
+// Atualização via GitHub Releases (banner no dashboard).
+app.route('/', updateApp);
 
 // Login remoto (VNC) — apenas quando ENABLE_VNC=true (Docker)
 attachVnc(app);

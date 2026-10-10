@@ -5304,8 +5304,10 @@ for await (const chunk of stream) {
           return fetch("/api/update/launch", { method: "POST" }).then(function (r) { return r.json(); });
         })
         .then(function (l) {
-          if (l.ok) {
-            btn.textContent = "Instalador aberto — conclua e reinicie";
+          if (l.ok && l.mode === "self-update") {
+            btn.textContent = "Atualizando... o app vai reiniciar";
+          } else if (l.ok) {
+            btn.textContent = "Pacote aberto — conclua e reinicie";
           } else {
             btn.disabled = false;
             btn.textContent = RESTORE;

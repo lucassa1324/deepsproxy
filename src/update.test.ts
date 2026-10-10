@@ -8,12 +8,18 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   parseVersion,
   compareVersions,
   pickAsset,
   checkUpdateNow,
   clearUpdateCache,
+  findTopDir,
+  updaterScript,
   type ReleaseInfo,
 } from './update.ts';
 
@@ -59,10 +65,10 @@ test('compareVersions ordena corretamente', () => {
   assert.ok(compareVersions('2.0.0', '1.99.99') > 0);
 });
 
-test('pickAsset escolhe o instalador .exe no Windows (fallback para o zip)', () => {
-  const onlyZip = makeRelease({ assets: [makeRelease().assets[1]] });
-  assert.equal(pickAsset(makeRelease(), 'win32')!.name, 'DeepsProxy-Setup-1.1.0.exe');
-  assert.equal(pickAsset(onlyZip, 'win32')!.name, 'DeepsProxy-Portable-v1.1.0.zip');
+test('pickAsset escolhe o portátil .zip no Windows (fallback para o instalador .exe)', () => {
+  const onlyExe = makeRelease({ assets: [makeRelease().assets[0]] });
+  assert.equal(pickAsset(makeRelease(), 'win32')!.name, 'DeepsProxy-Portable-v1.1.0.zip');
+  assert.equal(pickAsset(onlyExe, 'win32')!.name, 'DeepsProxy-Setup-1.1.0.exe');
 });
 
 test('pickAsset escolhe o tar.gz no Linux (e não o .exe)', () => {
@@ -88,7 +94,7 @@ test('checkUpdateNow reporta versão nova quando latest > atual', async () => {
   assert.equal(s.enabled, true);
   assert.equal(s.updateAvailable, true);
   assert.equal(s.latest, '1.1.0');
-  assert.equal(s.asset!.name, 'DeepsProxy-Setup-1.1.0.exe');
+  assert.equal(s.asset!.name, 'DeepsProxy-Portable-v1.1.0.zip');
   assert.equal(s.changelog, 'Correções e melhorias.');
 });
 
@@ -114,6 +120,36 @@ test('checkUpdateNow propaga status HTTP não-ok', async () => {
   const fetchFn = async () => ({ ok: false, status: 403, statusText: 'Forbidden' }) as unknown as Response;
   const s = await checkUpdateNow({ repoName: 'user/deepsproxy', version: '1.0.0', fetchFn });
   assert.match(s.error ?? '', /403/);
+});
+
+test('findTopDir resolve a única pasta raiz do zip (padrão do build)', () => {
+  const root = path.join(os.tmpdir(), `deepsproxy-ftd-${process.pid}`);
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.mkdirSync(path.join(root, 'app', 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'app', 'DeepsProxy.exe'), '');
+  try {
+    assert.equal(path.basename(findTopDir(root)), 'app');
+    fs.writeFileSync(path.join(root, 'extra.txt'), '');
+    assert.equal(findTopDir(root), root, 'com arquivo solto o root é o próprio dir');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('updaterScript é um script PowerShell válido', { skip: process.platform !== 'win32' }, () => {
+  const script = updaterScript();
+  assert.match(script, /DEEPSPROXY_UPDATE_APP/);
+  assert.match(script, /Move-Item/);
+  assert.match(script, /Start-Process -FilePath/);
+  assert.match(script, /DeepsProxy\.exe/);
+  const ps = spawnSync('powershell', ['-NoProfile', '-Command', `
+$errors = $null
+[System.Management.Automation.Language.Parser]::ParseInput(@'
+${script}
+'@, [ref]$null, [ref]$errors) | Out-Null
+if ($errors -and $errors.Count -gt 0) { throw ($errors | ForEach-Object { $_.Message } -join '; ') }
+`], { encoding: 'utf-8' });
+  assert.equal(ps.status, 0, ps.stderr ?? ps.stdout);
 });
 
 test('checkUpdate (cache) reaproveita resultado dentro do TTL', async () => {

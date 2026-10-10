@@ -17,6 +17,7 @@ providers.json
 gateway-apps.json
 gateway-economy.json
 gateway-booster.json
+release/
 
 # Playwright
 blob_report/

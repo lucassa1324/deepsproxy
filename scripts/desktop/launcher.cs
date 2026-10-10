@@ -56,6 +56,7 @@ namespace DeepsProxy
                 Application.SetCompatibleTextRenderingDefault(false);
                 SetupTray();
                 StartServer();
+                StartUpdateWatch();
 
                 var t = new Thread(delegate() { WaitAndOpen(120); });
                 t.IsBackground = true;
@@ -169,6 +170,33 @@ namespace DeepsProxy
             }
             catch { }
             nodeProc = null;
+        }
+
+        /* ---------------- auto-atualização ---------------- */
+
+        // Quando a auto-atualização (botão no dashboard) dispara, o servidor
+        // grava "update.flag" na pasta do app. Aqui encerramos a bandeja de
+        // forma graciosa para o updater externo trocar os arquivos e relançar.
+        static System.Windows.Forms.Timer updTimer;
+        static void StartUpdateWatch()
+        {
+            updTimer = new System.Windows.Forms.Timer();
+            updTimer.Interval = 500;
+            updTimer.Tick += delegate(object s, EventArgs e) { CheckUpdateFlag(); };
+            updTimer.Start();
+        }
+
+        static void CheckUpdateFlag()
+        {
+            string flag;
+            try { flag = Path.Combine(appDir, "update.flag"); }
+            catch { return; }
+            if (!File.Exists(flag)) return;
+            try { File.Delete(flag); } catch { }
+            quitting = true;
+            if (tray != null) tray.Visible = false;
+            StopServer();
+            Application.Exit();
         }
 
         static void RestartServer()

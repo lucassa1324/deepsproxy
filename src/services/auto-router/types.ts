@@ -87,5 +87,23 @@ export interface ModelScore {
   capabilityScore: number;
   costPenalty: number;
   speedBonus: number;
+  reliabilityScore: number;  // 0-1 (0.5 = neutro/não medido)
+  quotaHeadroom: number;     // 0-1 (1 = folga total; 1 quando desconhecido)
   reason: string;
+}
+
+// ── Contexto opcional de scoring ────────────────────────────────────────
+// Alimenta o seletor com sinais aprendidos/observados (histórico, latência,
+// cota, tamanho do prompt) SEM tornar o scoring dependente de estado global:
+// quando ausente, o seletor mantém o comportamento determinístico original.
+
+export interface ScoringContext {
+  /** Métricas de um modelo (taxa de sucesso, requests, latência média). */
+  reliability?: (modelId: string) =>
+    | { successRate: number; requests: number; avgLatencyMs: number }
+    | undefined;
+  /** Headroom de cota 0-1 (1 = folga total). undefined = desconhecido. */
+  quotaHeadroom?: (modelId: string) => number | undefined;
+  /** Tokens estimados do prompt atual (para headroom de contexto). */
+  estimatedTokens?: number;
 }

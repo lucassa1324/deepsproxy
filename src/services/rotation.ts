@@ -22,7 +22,9 @@ import {
   detectRateLimit,
   markKeyRateLimited,
   normalizeAccountKeys,
+  recordKeyUse,
 } from './config.ts';
+import { isRateTrackingEnabled, acquireKeyBudget, releaseKeyBudget, cooldownUntilWindowEnd } from './rate-tracker.ts';
 
 /** Erro interno que representa "todas as chaves do provedor excederam a cota". */
 export class AllQuotaExhaustedError extends Error {
@@ -103,21 +105,40 @@ export async function driveRotation<T>(opts: {
   for (let i = 0; i < keys.length; i++) {
     const key = keys[i];
     attempts = i + 1;
+
+    // Rate tracking leve: pula a chave ANTES de chamar o provedor quando a
+    // janela local de 60s (RPM/TPM) está esgotada — evita o 429 desperdiçado.
+    if (isRateTrackingEnabled() && key.id) {
+      if (!acquireKeyBudget(opts.provider.id, key.id)) {
+        markKeyRateLimited(opts.provider.id, key.id, cooldownUntilWindowEnd());
+        recordKeyUse(opts.provider.id, key.id, 'quota');
+        console.warn(
+          `[rotation] "${opts.provider.name}" chave "${key.label || key.id}" estourou o orçamento local (RPM/TPM); pulando até o fim da janela. Tentando próxima chave...`
+        );
+        lastError = new Error(`rate-local: ${key.label || key.id}`);
+        continue;
+      }
+    }
+
     let res: Response;
     try {
       res = await opts.call(key, i);
     } catch (err: any) {
+      // Sem consumo real (falha de rede): devolve a reserva da janela local.
+      if (isRateTrackingEnabled() && key.id) releaseKeyBudget(opts.provider.id, key.id);
       // Exceção pode carregar além do HTTP status um corpo (ex.: HttpError dos
       // adapters). Se for cota/rate limit, marca a chave e tenta a próxima.
       const det = detectRateLimit({ status: err?.status, body: typeof err?.body === 'string' ? err.body : undefined });
       if (det.quota) {
         markKeyRateLimited(opts.provider.id, key.id, det.cooldownMs);
+        recordKeyUse(opts.provider.id, key.id, 'quota');
         console.warn(
           `[rotation] "${opts.provider.name}" chave "${key.label || key.id}" atingiu a cota (${err?.status || 'quota'}); cooldown de ${Math.round(det.cooldownMs / 1000)}s. Tentando próxima chave...`
         );
         lastError = new Error(`quota: ${key.label || key.id}`);
         continue;
       }
+      recordKeyUse(opts.provider.id, key.id, 'error');
       console.warn(
         `[rotation] "${opts.provider.name}" chave "${key.label || key.id}" falhou na conexão: ${err?.message || String(err)}`
       );
@@ -134,6 +155,7 @@ export async function driveRotation<T>(opts: {
       quota = det.quota;
       if (quota) {
         markKeyRateLimited(opts.provider.id, key.id, det.cooldownMs);
+        recordKeyUse(opts.provider.id, key.id, 'quota');
         console.warn(
           `[rotation] "${opts.provider.name}" chave "${key.label || key.id}" atingiu a cota (HTTP ${res.status}); cooldown de ${Math.round(det.cooldownMs / 1000)}s. Tentando próxima chave...`
         );
@@ -142,6 +164,7 @@ export async function driveRotation<T>(opts: {
       }
     }
 
+    recordKeyUse(opts.provider.id, key.id, res.ok ? 'success' : 'error');
     return { value: await opts.handle(res, key, i), attempts };
   }
 

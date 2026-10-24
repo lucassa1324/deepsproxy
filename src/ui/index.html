@@ -178,6 +178,34 @@
     width: 100%; font-size: 11.5px; font-weight: 700; color: var(--muted);
     letter-spacing: .4px; margin: 6px 0 6px;
   }
+  /* ---- Saúde dos modelos (aba Conexão) ---- */
+  .mh-row {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px;
+  }
+  .mh-row:last-child { border-bottom: none; }
+  .mh-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .mh-dot.working { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .mh-dot.broken { background: var(--red); box-shadow: 0 0 6px var(--red); }
+  .mh-dot.testing { background: var(--yellow); }
+  .mh-dot.untested { background: var(--muted); }
+  .mh-id {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12.5px;
+    color: var(--purple); min-width: 200px; max-width: 320px; word-break: break-all;
+  }
+  .mh-badge { font-size: 11px; font-weight: 700; padding: 2px 9px; border-radius: 999px; }
+  .mh-badge.working { color: var(--green); background: rgba(53,208,127,.12); border: 1px solid #1f4d38; }
+  .mh-badge.broken { color: var(--red); background: rgba(242,100,95,.12); border: 1px solid #5a2727; }
+  .mh-badge.testing { color: var(--yellow); background: rgba(232,181,58,.12); border: 1px solid #5a4a1f; }
+  .mh-badge.untested { color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); }
+  .mh-meta { font-size: 12px; color: var(--muted); }
+  .mh-err { font-size: 12px; color: var(--red); word-break: break-word; }
+  .mh-row .spacer { flex: 1; }
+  .mh-test { font-size: 12px; padding: 4px 10px; }
+  .mh-summary { font-size: 12px; font-weight: 600; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .mh-summary.working { color: var(--green); border-color: #1f4d38; }
+  .mh-summary.broken { color: var(--red); border-color: #5a2727; }
+  .mh-summary.testing { color: var(--yellow); border-color: #5a4a1f; }
   .method {
     font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 5px;
     color: #0b0f17; background: var(--green); min-width: 44px; text-align: center;
@@ -486,14 +514,977 @@
     header { flex-direction: column; gap: 10px; align-items: flex-start; }
     main { padding: 14px 14px 40px; }
   }
+  :root {
+    color-scheme: dark;
+    --bg: #06070c;
+    --panel: #0e111c;
+    --panel-2: #0a0d16;
+    --panel-3: #151a2b;
+    --border: rgba(148, 163, 205, .13);
+    --border-strong: rgba(148, 163, 205, .24);
+    --text: #e9ecf6;
+    --muted: #8e97af;
+    --muted-2: #606a85;
+    --accent: #7c6cff;
+    --accent-2: #22d3ee;
+    --accent-soft: rgba(124, 108, 255, .14);
+    --green: #2ee6a8;
+    --yellow: #f6c453;
+    --red: #ff6b81;
+    --purple: #b7a6ff;
+    --gradient: linear-gradient(135deg, #7c6cff 0%, #22d3ee 100%);
+    --radius-lg: 18px;
+    --radius: 13px;
+    --radius-sm: 9px;
+    --shadow: 0 24px 70px -40px rgba(0, 0, 0, .95);
+    --font-sans: "Inter", "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, sans-serif;
+    --font-mono: "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+  }
+  * { scrollbar-width: thin; scrollbar-color: #29304a transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #29304a; border-radius: 99px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: #3a4366; background-clip: content-box; }
+  ::selection { background: rgba(124, 108, 255, .38); color: #fff; }
+  body {
+    background:
+      radial-gradient(900px 520px at 12% -8%, rgba(124, 108, 255, .17), transparent 62%),
+      radial-gradient(800px 500px at 100% 4%, rgba(34, 211, 238, .09), transparent 58%),
+      var(--bg);
+    background-attachment: fixed;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  h1, h2, h3, h4, h5, h6, strong, b { letter-spacing: -0.012em; }
+  code, .mono { font-family: var(--font-mono); }
+
+  #appVersion { color: var(--muted-2); opacity: .8; font-size: 10px; }
+  header {
+    min-height: 73px;
+    height: 73px;
+    padding: 12px 24px;
+    gap: 18px;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: flex-start;
+    background: rgba(7, 8, 14, .74);
+    border-bottom: 1px solid var(--border);
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .02);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .brand-logo {
+    width: 44px; height: 44px; border-radius: 14px; flex-shrink: 0;
+    display: grid; place-items: center;
+    background: radial-gradient(120% 120% at 20% 0%, rgba(124, 108, 255, .38), rgba(34, 211, 238, .1) 60%, transparent), rgba(255, 255, 255, .03);
+    border: 1px solid rgba(255, 255, 255, .13);
+    box-shadow: 0 10px 28px -14px rgba(124, 108, 255, .85), inset 0 1px 0 rgba(255, 255, 255, .16);
+  }
+  .brand-logo img { width: 29px; height: 29px; display: block; }
+  .brand-text { min-width: 0; }
+  .brand-text h1 { font-size: 17px; font-weight: 650; letter-spacing: -.03em; line-height: 1.15; display: block; color: var(--text); }
+  .brand-sub { display: flex; align-items: center; gap: 7px; margin-top: 2px; font-size: 11px; color: var(--muted-2); letter-spacing: .02em; white-space: nowrap; }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); transition: background .25s, box-shadow .25s; flex-shrink: 0; }
+  .header-actions { display: flex; align-items: center; gap: 8px; margin-left: 4px; }
+  .header-chat { text-decoration: none; }
+  .header-chat svg { width: 16px; height: 16px; }
+
+  .pills { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+  .pill {
+    font-size: 11.5px; font-weight: 500; padding: 5px 11px; border-radius: 999px;
+    border: 1px solid var(--border); background: rgba(255, 255, 255, .025); color: var(--muted);
+    display: inline-flex; align-items: center; gap: 6px; backdrop-filter: blur(8px);
+  }
+  .pill .s { width: 6px; height: 6px; border-radius: 50%; background: var(--muted-2); flex-shrink: 0; }
+  .pill.ok { color: var(--green); border-color: rgba(46, 230, 168, .28); background: rgba(46, 230, 168, .07); }
+  .pill.ok .s { background: var(--green); box-shadow: 0 0 7px var(--green); }
+  .pill.err { color: var(--red); border-color: rgba(255, 107, 129, .3); background: rgba(255, 107, 129, .07); }
+  .pill.err .s { background: var(--red); box-shadow: 0 0 7px var(--red); }
+  .pill.warn { color: var(--yellow); border-color: rgba(246, 196, 83, .28); background: rgba(246, 196, 83, .06); }
+  .pill.warn .s { background: var(--yellow); }
+
+  .app-layout { display: flex; min-height: calc(100vh - 73px); }
+  aside.sidebar {
+    width: 248px; flex-shrink: 0; padding: 16px 12px;
+    background: rgba(9, 11, 19, .62);
+    border-right: 1px solid var(--border);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    top: 73px; height: calc(100vh - 73px);
+  }
+  aside.sidebar .sidebar-section {
+    font-size: 9.5px; font-weight: 650; color: var(--muted-2);
+    text-transform: uppercase; letter-spacing: .14em;
+    padding: 16px 14px 8px;
+  }
+  aside.sidebar button {
+    display: flex; align-items: center; gap: 11px;
+    width: 100%; border: none; border-left: none; border-radius: 11px;
+    background: none; color: var(--muted); cursor: pointer;
+    padding: 8px 12px; margin: 2px 0; font-size: 13.5px; font-weight: 500;
+    font-family: inherit; text-align: left; position: relative;
+    transition: background .16s, color .16s, transform .16s;
+  }
+  aside.sidebar button .icon {
+    width: 30px; height: 30px; border-radius: 9px; flex-shrink: 0;
+    display: grid; place-items: center;
+    background: rgba(255, 255, 255, .028);
+    border: 1px solid transparent; color: var(--muted-2);
+    transition: background .16s, color .16s, border-color .16s;
+  }
+  aside.sidebar button .icon svg { width: 17px; height: 17px; display: block; }
+  aside.sidebar button:hover { background: rgba(255, 255, 255, .04); color: var(--text); }
+  aside.sidebar button:hover .icon { background: rgba(124, 108, 255, .12); border-color: rgba(124, 108, 255, .2); color: #c4bbff; }
+  aside.sidebar button.active {
+    background: linear-gradient(90deg, rgba(124, 108, 255, .16), rgba(124, 108, 255, .015));
+    color: var(--text);
+  }
+  aside.sidebar button.active::before {
+    content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 3px;
+    border-radius: 99px; background: var(--gradient); box-shadow: 0 0 14px rgba(124, 108, 255, .8);
+  }
+  aside.sidebar button.active .icon { background: rgba(124, 108, 255, .18); border-color: rgba(124, 108, 255, .3); color: #cdc6ff; }
+  aside.sidebar .sidebar-divider { height: 1px; background: linear-gradient(90deg, transparent, var(--border), transparent); margin: 14px 12px; }
+
+  main { max-width: 1240px; padding: 26px 28px 70px; }
+  section.tab.active { animation: tabIn .28s ease both; }
+  @keyframes tabIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 22px; flex-wrap: wrap; margin: 2px 0 22px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: 10px; font-weight: 650; letter-spacing: .16em; text-transform: uppercase;
+    color: #a79cff; margin-bottom: 8px;
+  }
+  .eyebrow::before { content: ""; width: 16px; height: 2px; border-radius: 99px; background: var(--gradient); }
+  .page-head h2 {
+    font-size: 32px; line-height: 1.05; font-weight: 700; letter-spacing: -.045em;
+    background: linear-gradient(125deg, #ffffff 10%, #b9c1da 90%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .page-sub { margin-top: 9px; max-width: 620px; font-size: 13px; line-height: 1.55; color: var(--muted); }
+  .page-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+
+  .card {
+    background: linear-gradient(180deg, rgba(255, 255, 255, .032), rgba(255, 255, 255, .009)), rgba(13, 16, 28, .88);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 20px;
+    box-shadow: var(--shadow);
+  }
+  .card h3 { font-size: 11.5px; color: var(--muted-2); text-transform: uppercase; letter-spacing: .09em; margin-bottom: 12px; font-weight: 600; }
+  .card .value { font-size: 15px; font-weight: 600; }
+  .card .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; flex-wrap: wrap; margin-bottom: 16px; }
+  .card-title { display: flex; align-items: flex-start; gap: 12px; min-width: 0; }
+  .card-title h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.015em; color: var(--text); text-transform: none; }
+  .card-sub { margin-top: 3px; font-size: 12px; line-height: 1.45; color: var(--muted); }
+  .section-icon {
+    width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+    display: grid; place-items: center; border: 1px solid var(--border);
+    background: rgba(255, 255, 255, .03); color: var(--muted);
+  }
+  .section-icon svg { width: 18px; height: 18px; }
+  .section-icon.violet { color: #c4bbff; background: rgba(124, 108, 255, .1); border-color: rgba(124, 108, 255, .24); }
+  .section-icon.cyan { color: #8be9f7; background: rgba(34, 211, 238, .08); border-color: rgba(34, 211, 238, .2); }
+  .section-icon.green { color: #8df2cf; background: rgba(46, 230, 168, .08); border-color: rgba(46, 230, 168, .2); }
+  .section-icon.purple { color: #d0c5ff; background: rgba(183, 166, 255, .09); border-color: rgba(183, 166, 255, .2); }
+  .section-icon.amber { color: #ffd98a; background: rgba(246, 196, 83, .08); border-color: rgba(246, 196, 83, .2); }
+  .section-icon.pink { color: #ffa8b8; background: rgba(255, 107, 129, .08); border-color: rgba(255, 107, 129, .2); }
+
+  .stats-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat-card {
+    position: relative; overflow: hidden; display: flex; gap: 12px; align-items: flex-start;
+    padding: 16px; border-radius: 15px; border: 1px solid var(--border);
+    background: linear-gradient(180deg, rgba(255, 255, 255, .035), rgba(255, 255, 255, .008)), rgba(13, 16, 28, .82);
+    box-shadow: 0 18px 44px -32px rgba(0, 0, 0, .95);
+    transition: transform .18s, border-color .18s, background .18s;
+  }
+  .stat-card:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+  .stat-card::after {
+    content: ""; position: absolute; inset: auto 14px 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(124, 108, 255, .45), transparent);
+    opacity: .5;
+  }
+  .stat-icon {
+    width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+    display: grid; place-items: center;
+    border: 1px solid var(--border); background: rgba(255, 255, 255, .035); color: var(--muted);
+  }
+  .stat-icon svg { width: 17px; height: 17px; }
+  .stat-icon.green { color: #8df2cf; background: rgba(46, 230, 168, .09); border-color: rgba(46, 230, 168, .2); }
+  .stat-icon.violet { color: #c4bbff; background: rgba(124, 108, 255, .11); border-color: rgba(124, 108, 255, .24); }
+  .stat-icon.cyan { color: #8be9f7; background: rgba(34, 211, 238, .08); border-color: rgba(34, 211, 238, .2); }
+  .stat-icon.amber { color: #ffd98a; background: rgba(246, 196, 83, .08); border-color: rgba(246, 196, 83, .2); }
+  .stat-icon.pink { color: #ffa8b8; background: rgba(255, 107, 129, .08); border-color: rgba(255, 107, 129, .2); }
+  .stat-body { min-width: 0; }
+  .stat-label { display: block; font-size: 10px; font-weight: 650; letter-spacing: .11em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 5px; white-space: nowrap; }
+  .stat-value { font-size: 15px; font-weight: 650; letter-spacing: -.02em; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .stat-sub { margin-top: 3px; font-size: 11px; line-height: 1.35; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+
+  .connect-grid, .bottom-grid { display: grid; gap: 16px; align-items: start; }
+  .connect-grid { grid-template-columns: minmax(0, 1.55fr) minmax(280px, .9fr); margin-bottom: 16px; }
+  .bottom-grid { grid-template-columns: minmax(0, 1.12fr) minmax(320px, .88fr); margin-top: 16px; }
+  .models-card, .free-hub { margin-top: 16px; }
+
+  button.btn, a.btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    background: var(--gradient); color: #fff; border: none; border-radius: 11px;
+    padding: 10px 15px; font-size: 13px; font-weight: 600; font-family: inherit;
+    letter-spacing: -.01em; cursor: pointer; text-decoration: none; white-space: nowrap;
+    box-shadow: 0 10px 26px -14px rgba(124, 108, 255, .95);
+    transition: transform .16s, box-shadow .16s, filter .16s, background .16s, border-color .16s, color .16s;
+  }
+  button.btn:hover, a.btn:hover { transform: translateY(-1px); filter: brightness(1.07); box-shadow: 0 14px 32px -14px rgba(124, 108, 255, 1); }
+  button.btn:active, a.btn:active { transform: translateY(0); }
+  button.btn:disabled { opacity: .5; cursor: not-allowed; transform: none; filter: none; }
+  button.btn svg, a.btn svg { width: 16px; height: 16px; flex-shrink: 0; }
+  button.btn.ghost, a.btn.ghost {
+    background: rgba(255, 255, 255, .032); border: 1px solid var(--border-strong);
+    color: var(--text); box-shadow: none; font-weight: 500;
+  }
+  button.btn.ghost:hover, a.btn.ghost:hover {
+    background: rgba(255, 255, 255, .065); border-color: rgba(124, 108, 255, .45);
+    color: #fff; filter: none;
+  }
+  button.btn.danger { background: transparent; border: 1px solid rgba(255, 107, 129, .35); color: var(--red); box-shadow: none; }
+  button.btn.danger:hover { background: rgba(255, 107, 129, .1); border-color: rgba(255, 107, 129, .6); }
+  button.btn.sm, a.btn.sm { padding: 7px 11px; font-size: 11.5px; border-radius: 9px; }
+  button.btn.sm svg, a.btn.sm svg { width: 14px; height: 14px; }
+
+  label.field { display: block; margin-bottom: 14px; }
+  label.field > span { display: block; font-size: 11.5px; font-weight: 500; color: var(--muted); margin-bottom: 7px; letter-spacing: .01em; }
+  label.field > span .field-hint { font-style: normal; color: var(--muted-2); font-weight: 400; }
+  input, select, textarea {
+    width: 100%; background: rgba(6, 8, 14, .72); border: 1px solid var(--border);
+    color: var(--text); border-radius: 10px; padding: 10px 12px; font-size: 13px;
+    font-family: inherit; transition: border-color .16s, box-shadow .16s, background .16s;
+  }
+  input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: rgba(124, 108, 255, .68);
+    box-shadow: 0 0 0 3px rgba(124, 108, 255, .13); background: rgba(6, 8, 14, .9);
+  }
+  input::placeholder, textarea::placeholder { color: var(--muted-2); }
+  select {
+    appearance: none; -webkit-appearance: none; padding-right: 36px;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%238e97af' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 12px center;
+  }
+  textarea { resize: vertical; min-height: 90px; font-family: var(--font-mono); }
+  input[type="checkbox"] { accent-color: var(--accent); }
+  .checkbox input { width: auto; }
+  .row { gap: 10px; }
+
+  .note { font-size: 12px; color: var(--muted); line-height: 1.55; margin-top: 10px; }
+  .note-inline { margin-top: 12px; }
+  code.inline { background: rgba(124, 108, 255, .1); border: 1px solid rgba(124, 108, 255, .18); padding: 2px 6px; border-radius: 5px; color: #c4bbff; font-size: 11.5px; }
+  .hint { border-color: var(--border-strong); color: var(--muted-2); }
+  .hint:hover { color: var(--text); border-color: var(--accent); background: rgba(124, 108, 255, .1); }
+
+  #providerList { display: flex; flex-direction: column; gap: 9px; }
+  .provider-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 13px; border-radius: 13px;
+    background: rgba(255, 255, 255, .022); border: 1px solid var(--border);
+    transition: border-color .18s, background .18s, transform .18s;
+  }
+  .provider-card:hover { border-color: rgba(124, 108, 255, .32); background: rgba(255, 255, 255, .038); transform: translateY(-1px); }
+  .provider-card.disabled { opacity: .55; }
+  .provider-card.disabled:hover { opacity: .8; }
+  .provider-avatar {
+    width: 40px; height: 40px; border-radius: 12px; flex-shrink: 0;
+    display: grid; place-items: center; font-size: 12px; font-weight: 700;
+    letter-spacing: -.02em; border: 1px solid var(--border);
+    background: rgba(255, 255, 255, .04); color: var(--muted);
+  }
+  .provider-avatar.pa-openai-compatible { color: #8df2cf; background: rgba(46, 230, 168, .08); border-color: rgba(46, 230, 168, .22); }
+  .provider-avatar.pa-gemini, .provider-avatar.pa-gemini-web { color: #8fc9ff; background: rgba(56, 189, 248, .09); border-color: rgba(56, 189, 248, .24); }
+  .provider-avatar.pa-anthropic { color: #ffc08a; background: rgba(251, 146, 60, .09); border-color: rgba(251, 146, 60, .24); }
+  .provider-avatar.pa-ollama { color: #cfd6e6; background: rgba(148, 163, 205, .1); border-color: rgba(148, 163, 205, .24); }
+  .provider-avatar.pa-deepseek { color: #93b4ff; background: rgba(96, 165, 250, .1); border-color: rgba(96, 165, 250, .24); }
+  .provider-avatar.pa-qwen { color: #c4bbff; background: rgba(124, 108, 255, .11); border-color: rgba(124, 108, 255, .26); }
+  .provider-info { flex: 1; min-width: 0; }
+  .provider-name-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .provider-name-row b { font-size: 13.5px; font-weight: 600; color: var(--text); }
+  .provider-meta { margin-top: 3px; font-size: 11.5px; color: var(--muted); word-break: break-all; }
+  .badge {
+    font-size: 10px; font-weight: 650; letter-spacing: .03em; padding: 2px 8px;
+    border-radius: 999px; border: 1px solid var(--border); background: rgba(255, 255, 255, .03);
+    color: var(--muted); white-space: nowrap;
+  }
+  .badge.primary { color: #c4bbff; border-color: rgba(124, 108, 255, .3); background: rgba(124, 108, 255, .1); }
+  .provider-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+  .provider-actions .btn { padding: 6px 9px; font-size: 11px; border-radius: 8px; }
+  .provider-empty {
+    padding: 22px 16px; text-align: center; border-radius: 13px;
+    border: 1px dashed var(--border-strong); background: rgba(255, 255, 255, .012);
+    font-size: 12.5px; color: var(--muted);
+  }
+  .switch { position: relative; display: inline-flex; align-items: center; cursor: pointer; flex-shrink: 0; }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .switch .track {
+    width: 36px; height: 21px; border-radius: 99px; position: relative;
+    background: rgba(255, 255, 255, .08); border: 1px solid var(--border); transition: background .18s, border-color .18s;
+  }
+  .switch .track::after {
+    content: ""; position: absolute; top: 2px; left: 2px;
+    width: 15px; height: 15px; border-radius: 50%;
+    background: #8e97af; transition: transform .18s, background .18s, box-shadow .18s;
+  }
+  .switch input:checked + .track { background: rgba(46, 230, 168, .14); border-color: rgba(46, 230, 168, .4); }
+  .switch input:checked + .track::after { transform: translateX(15px); background: var(--green); box-shadow: 0 0 9px rgba(46, 230, 168, .65); }
+
+  .editor-panel {
+    margin-top: 16px; padding: 17px; border-radius: 15px;
+    border: 1px solid rgba(124, 108, 255, .28);
+    background: linear-gradient(180deg, rgba(124, 108, 255, .055), rgba(255, 255, 255, .008)), rgba(9, 11, 19, .8);
+  }
+  .editor-head { margin-bottom: 16px; }
+  .editor-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 14px; }
+  .key-form { display: grid; grid-template-columns: minmax(130px, .9fr) minmax(170px, 1.3fr) auto auto; gap: 8px; align-items: center; }
+  .key-form .btn { padding: 9px 12px; font-size: 12px; }
+  .editor-actions { display: flex; gap: 9px; flex-wrap: wrap; padding-top: 2px; }
+
+  #modelsChips { gap: 7px; }
+  .model-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: rgba(255, 255, 255, .028); border: 1px solid var(--border);
+    border-radius: 9px; padding: 5px 6px 5px 10px; font-size: 12px;
+    transition: border-color .16s, background .16s, transform .16s;
+  }
+  .model-chip:hover { border-color: rgba(124, 108, 255, .35); background: rgba(255, 255, 255, .045); transform: translateY(-1px); }
+  .model-chip code { color: #c4bbff; font-size: 11.5px; }
+  .model-chip button {
+    background: rgba(255, 255, 255, .04); border: 1px solid transparent; cursor: pointer;
+    color: var(--muted); font-size: 11px; padding: 2px 6px; border-radius: 6px;
+    font-family: inherit; line-height: 1.2;
+  }
+  .model-chip button:hover { color: var(--accent); border-color: rgba(124, 108, 255, .3); background: rgba(124, 108, 255, .1); }
+  .model-chip .chip-cat {
+    font-size: 9.5px; font-weight: 650; color: #9f95ff;
+    background: rgba(124, 108, 255, .1); border: 1px solid rgba(124, 108, 255, .2);
+    border-radius: 999px; padding: 1px 7px; text-transform: capitalize;
+  }
+  .models-group-label { flex: 0 0 100%; width: 100%; font-size: 10px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: var(--muted-2); margin: 8px 0 2px; }
+
+  .steps-card .steps { margin-top: 2px; }
+  .steps li { padding: 7px 0 7px 42px; font-size: 12.8px; color: var(--muted); line-height: 1.55; }
+  .steps li b { color: var(--text); }
+  .steps li::before {
+    top: 7px; width: 25px; height: 25px;
+    background: rgba(124, 108, 255, .08); border: 1px solid rgba(124, 108, 255, .3); color: #c4bbff;
+    font-size: 11px;
+  }
+  .steps li code.cmd { font-size: 11.5px; color: #9f95ff; }
+  .steps-tip {
+    display: flex; gap: 8px; align-items: flex-start;
+    margin-top: 14px; padding: 10px 12px; border-radius: 10px;
+    background: rgba(34, 211, 238, .055); border: 1px solid rgba(34, 211, 238, .16);
+    font-size: 11.5px; line-height: 1.5; color: #9fb0c7;
+  }
+  .steps-tip svg { width: 15px; height: 15px; color: var(--accent-2); flex-shrink: 0; margin-top: 1px; }
+  .steps-tip b { color: var(--text); }
+
+  .free-hub { position: relative; overflow: hidden; }
+  .free-hub::before {
+    content: ""; position: absolute; inset: 0 0 auto; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(124, 108, 255, .7), rgba(34, 211, 238, .45), transparent);
+  }
+  .free-hub-head { align-items: center; }
+  .free-search { position: relative; flex-shrink: 0; }
+  .free-search svg {
+    position: absolute; left: 12px; top: 50%; transform: translateY(-50%);
+    width: 15px; height: 15px; color: var(--muted-2); pointer-events: none;
+  }
+  .free-search input { min-width: 240px; padding-left: 34px; border-radius: 999px; }
+  .free-filter { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 4px; }
+  .free-filter button {
+    background: rgba(255, 255, 255, .025); border: 1px solid var(--border); color: var(--muted);
+    border-radius: 999px; padding: 5px 11px; font-size: 11.5px; cursor: pointer;
+    font-family: inherit; transition: all .16s;
+  }
+  .free-filter button:hover { color: var(--text); border-color: var(--border-strong); }
+  .free-filter button.active {
+    color: #c4bbff; border-color: rgba(124, 108, 255, .4);
+    background: rgba(124, 108, 255, .12);
+  }
+  .free-group { margin-top: 18px; }
+  .free-group-title {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 10px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--muted-2); margin-bottom: 10px;
+  }
+  .free-group-title::after { content: ""; flex: 1; height: 1px; background: linear-gradient(90deg, var(--border), transparent); }
+  .free-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(255px, 1fr)); gap: 11px; }
+  .free-card {
+    display: flex; flex-direction: column; gap: 9px;
+    padding: 15px; border-radius: 14px;
+    background: rgba(255, 255, 255, .02); border: 1px solid var(--border);
+    transition: transform .18s, border-color .18s, background .18s, box-shadow .18s;
+  }
+  .free-card:hover {
+    transform: translateY(-2px); border-color: rgba(124, 108, 255, .34);
+    background: rgba(255, 255, 255, .038); box-shadow: 0 18px 42px -28px rgba(0, 0, 0, .9);
+  }
+  .free-top { display: flex; align-items: center; gap: 10px; }
+  .free-avatar {
+    width: 36px; height: 36px; border-radius: 11px; flex-shrink: 0;
+    display: grid; place-items: center; font-size: 11px; font-weight: 700;
+    border: 1px solid var(--border); background: rgba(255, 255, 255, .04); color: var(--muted);
+  }
+  .free-avatar.blue { color: #8fc9ff; background: rgba(56, 189, 248, .09); border-color: rgba(56, 189, 248, .24); }
+  .free-avatar.violet { color: #c4bbff; background: rgba(124, 108, 255, .11); border-color: rgba(124, 108, 255, .26); }
+  .free-avatar.green { color: #8df2cf; background: rgba(46, 230, 168, .08); border-color: rgba(46, 230, 168, .22); }
+  .free-avatar.orange { color: #ffc08a; background: rgba(251, 146, 60, .09); border-color: rgba(251, 146, 60, .24); }
+  .free-avatar.amber { color: #ffd98a; background: rgba(246, 196, 83, .08); border-color: rgba(246, 196, 83, .22); }
+  .free-avatar.pink { color: #ffa8b8; background: rgba(255, 107, 129, .08); border-color: rgba(255, 107, 129, .22); }
+  .free-avatar.cyan { color: #8be9f7; background: rgba(34, 211, 238, .08); border-color: rgba(34, 211, 238, .2); }
+  .free-avatar.gray { color: #cfd6e6; background: rgba(148, 163, 205, .1); border-color: rgba(148, 163, 205, .24); }
+  .free-title-wrap { min-width: 0; }
+  .free-name { font-size: 13px; font-weight: 600; letter-spacing: -.01em; color: var(--text); }
+  .free-tag { display: block; margin-top: 1px; font-size: 10.5px; color: var(--muted-2); }
+  .free-tag code { font-size: 10px; color: #c4bbff; background: rgba(124, 108, 255, .1); padding: 0 3px; border-radius: 3px; }
+  .free-desc { flex: 1; font-size: 11.8px; line-height: 1.5; color: var(--muted); }
+  .free-quota {
+    align-self: flex-start; font-size: 10px; font-weight: 600; letter-spacing: .01em;
+    color: #8df2cf; background: rgba(46, 230, 168, .06);
+    border: 1px solid rgba(46, 230, 168, .17); border-radius: 6px; padding: 3px 7px;
+  }
+  .free-actions {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin-top: 2px; padding-top: 9px; border-top: 1px solid var(--border);
+  }
+  .free-link { font-size: 11.5px; font-weight: 600; color: #a89dff; text-decoration: none; transition: color .15s; }
+  .free-link:hover { color: #d3ceff; }
+  .free-actions .btn { padding: 5px 9px; font-size: 10.5px; border-radius: 7px; }
+  .free-empty { padding: 26px 14px; text-align: center; font-size: 12.5px; color: var(--muted); border: 1px dashed var(--border-strong); border-radius: 12px; margin-top: 16px; }
+
+  .api-fields { display: grid; grid-template-columns: 1fr; gap: 0; }
+  .input-with-button { display: flex; gap: 7px; }
+  .input-with-button input { flex: 1; min-width: 0; }
+  .input-with-button .btn { flex-shrink: 0; }
+  .api-token-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: 2px 0 14px; }
+  .mini-title { font-size: 10px; font-weight: 650; letter-spacing: .12em; text-transform: uppercase; color: var(--muted-2); margin: 0 0 4px; }
+  #endpoints { display: flex; flex-direction: column; }
+  .endpoint { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .endpoint:last-child { border-bottom: none; }
+  .endpoint code { font-size: 11.5px; color: var(--text); }
+  .method {
+    font-size: 9px; font-weight: 750; letter-spacing: .06em; min-width: 46px;
+    text-align: center; padding: 3px 6px; border-radius: 6px;
+    background: rgba(255, 255, 255, .045); border: 1px solid var(--border); color: var(--muted);
+  }
+  .method.get { background: rgba(46, 230, 168, .09); color: var(--green); border-color: rgba(46, 230, 168, .2); }
+  .method.post { background: rgba(124, 108, 255, .13); color: #bfb6ff; border-color: rgba(124, 108, 255, .28); }
+  .method.delete { background: rgba(255, 107, 129, .09); color: var(--red); border-color: rgba(255, 107, 129, .2); }
+
+  .login-stack { display: flex; flex-direction: column; gap: 11px; }
+  .login-card { display: flex; flex-direction: column; gap: 12px; padding: 16px; }
+  .login-main { display: flex; align-items: flex-start; gap: 11px; }
+  .login-logo {
+    width: 38px; height: 38px; border-radius: 11px; flex-shrink: 0;
+    display: grid; place-items: center; font-size: 11px; font-weight: 750;
+    border: 1px solid var(--border); background: rgba(255, 255, 255, .04); color: var(--muted);
+  }
+  .login-logo.ds { color: #93b4ff; background: rgba(96, 165, 250, .1); border-color: rgba(96, 165, 250, .24); }
+  .login-logo.qwen { color: #c4bbff; background: rgba(124, 108, 255, .11); border-color: rgba(124, 108, 255, .26); }
+  .login-logo.gemini { color: #8fc9ff; background: rgba(56, 189, 248, .09); border-color: rgba(56, 189, 248, .24); }
+  .login-info { flex: 1; min-width: 0; }
+  .login-title { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .login-title h3 { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--text); text-transform: none; letter-spacing: -.01em; }
+  .login-status {
+    font-size: 9.5px; font-weight: 650; padding: 2px 7px; border-radius: 999px;
+    border: 1px solid var(--border); background: rgba(255, 255, 255, .03); color: var(--muted);
+  }
+  .login-status.ok { color: var(--green); border-color: rgba(46, 230, 168, .28); background: rgba(46, 230, 168, .07); }
+  .login-status.warn { color: var(--yellow); border-color: rgba(246, 196, 83, .28); background: rgba(246, 196, 83, .06); }
+  .login-status.err { color: var(--red); border-color: rgba(255, 107, 129, .28); background: rgba(255, 107, 129, .06); }
+  .login-desc { margin-top: 4px; font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+  .login-actions { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding-left: 49px; }
+  .login-vnc { padding-left: 49px; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+  .login-vnc a { color: #a89dff; }
+
+  .ub-card { background: rgba(14, 17, 28, .96); border-color: rgba(124, 108, 255, .4); border-radius: 16px; backdrop-filter: blur(16px); }
+  .ub-card strong { color: #c4bbff; }
+  .ub-card button { background: var(--gradient); border-radius: 9px; }
+
+  .filter button { background: rgba(255, 255, 255, .025); border-color: var(--border); border-radius: 8px; transition: all .15s; }
+  .filter button:hover { color: var(--text); border-color: var(--border-strong); }
+  .filter button.active { border-color: rgba(124, 108, 255, .45); color: #c4bbff; background: rgba(124, 108, 255, .1); }
+  .filter button.active.err { border-color: rgba(255, 107, 129, .4); color: var(--red); background: rgba(255, 107, 129, .07); }
+  .filter button.active.warn { border-color: rgba(246, 196, 83, .4); color: var(--yellow); background: rgba(246, 196, 83, .06); }
+  .settings-option { background: rgba(255, 255, 255, .025); border-radius: 13px; }
+  .model-eco-row { background: rgba(255, 255, 255, .022); border-radius: 10px; }
+  .output, .logs, pre.code { background: rgba(4, 6, 11, .78); border-radius: 13px; }
+  .spinner { border-color: rgba(255, 255, 255, .14); border-top-color: var(--accent); }
+
+  @media (max-width: 1180px) {
+    .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .connect-grid, .bottom-grid { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 900px) {
+    header { height: auto; min-height: 64px; padding: 10px 14px; gap: 10px; flex-wrap: wrap; }
+    .pills { order: 3; width: 100%; margin-left: 0; }
+    .header-actions { margin-left: auto; }
+    .app-layout { flex-direction: column; min-height: 0; }
+    aside.sidebar {
+      position: static; width: 100%; height: auto; top: auto;
+      flex-direction: row; align-items: center; gap: 4px;
+      padding: 8px 10px; overflow-x: auto; overflow-y: hidden;
+      border-right: none; border-bottom: 1px solid var(--border);
+    }
+    aside.sidebar .sidebar-section, aside.sidebar .sidebar-divider { display: none; }
+    aside.sidebar button { width: auto; white-space: nowrap; padding: 7px 10px; margin: 0; font-size: 12.5px; border-radius: 9px; }
+    aside.sidebar button.active::before { display: none; }
+    aside.sidebar button .icon { width: 26px; height: 26px; border-radius: 7px; }
+    aside.sidebar button .icon svg { width: 15px; height: 15px; }
+    main { max-width: none; padding: 20px 16px 56px; }
+    .page-head h2 { font-size: 28px; }
+  }
+  @media (max-width: 700px) {
+    .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .provider-card { flex-wrap: wrap; }
+    .provider-actions { width: 100%; justify-content: flex-end; }
+    .editor-grid { grid-template-columns: 1fr; }
+    .key-form { grid-template-columns: 1fr; }
+    .free-search { width: 100%; }
+    .free-search input { width: 100%; min-width: 0; }
+    .free-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+    .login-actions, .login-vnc { padding-left: 0; }
+  }
+  @media (max-width: 520px) {
+    .stats-grid { grid-template-columns: 1fr; }
+    .page-head { align-items: flex-start; }
+    .page-actions { width: 100%; }
+    .page-actions .btn { flex: 1; }
+    .brand-text h1 { font-size: 15px; }
+    .brand-sub { font-size: 10px; }
+    .header-chat { padding: 8px 11px; font-size: 12px; }
+    .free-actions { flex-wrap: wrap; }
+    .api-token-row { align-items: flex-start; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  }
+</style>
+<style>
+  /* ---------- Tema neutro (Conexão) ---------- */
+  :root {
+    --bg: #09090b;
+    --panel: #121215;
+    --panel-2: #0e0e11;
+    --panel-3: #18181b;
+    --border: #27272a;
+    --border-strong: #3f3f46;
+    --text: #fafafa;
+    --muted: #a1a1aa;
+    --muted-2: #71717a;
+    --accent: #10b981;
+    --accent-2: #3b82f6;
+    --accent-soft: rgba(16, 185, 129, .12);
+    --green: #10b981;
+    --yellow: #f59e0b;
+    --red: #ef4444;
+    --purple: #a1a1aa;
+    --gradient: #10b981;
+    --radius-lg: 14px;
+    --radius: 10px;
+    --radius-sm: 8px;
+    --shadow: none;
+  }
+  body { background: var(--bg); }
+  .app-content { min-width: 0; }
+  @media (max-width: 900px) {
+    main.app-content { width: 100%; max-width: 100%; margin: 0; }
+  }
+  ::selection { background: rgba(16, 185, 129, .3); color: #fff; }
+  * { scrollbar-color: #3f3f46 transparent; }
+  ::-webkit-scrollbar-thumb { background: #3f3f46; }
+  header {
+    background: rgba(9, 9, 11, .86);
+    box-shadow: none;
+  }
+  .brand-logo {
+    background: #121215;
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  .pill.ok .s, .pill.err .s { box-shadow: none; }
+  aside.sidebar button:hover .icon { background: #18181b; border-color: var(--border); color: var(--text); }
+  aside.sidebar button.active {
+    background: #18181b;
+    color: var(--text);
+  }
+  aside.sidebar button.active::before {
+    background: var(--accent);
+    box-shadow: none;
+  }
+  aside.sidebar button.active .icon { background: rgba(16, 185, 129, .12); border-color: rgba(16, 185, 129, .3); color: var(--accent); }
+  .page-head h2 {
+    background: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+    color: var(--text);
+    -webkit-text-fill-color: currentColor;
+  }
+  .eyebrow { color: var(--muted-2); }
+  .eyebrow::before { background: var(--border-strong); }
+  .card {
+    background: var(--panel);
+    border-color: var(--border);
+    box-shadow: none;
+  }
+  .section-icon, .section-icon.violet, .section-icon.cyan, .section-icon.green, .section-icon.purple, .section-icon.amber, .section-icon.pink {
+    color: var(--muted);
+    background: #18181b;
+    border-color: var(--border);
+  }
+  button.btn, a.btn {
+    background: var(--accent);
+    color: #04130d;
+    box-shadow: none;
+  }
+  button.btn:hover, a.btn:hover { background: #34d399; filter: none; box-shadow: none; }
+  button.btn.ghost, a.btn.ghost {
+    background: #18181b;
+    border-color: var(--border);
+    color: var(--text);
+  }
+  button.btn.ghost:hover, a.btn.ghost:hover {
+    background: #1f1f23;
+    border-color: var(--border-strong);
+    color: var(--text);
+    filter: none;
+  }
+  button.btn.danger { border-color: rgba(239, 68, 68, .3); color: var(--red); }
+  button.btn.ghost.danger { background: transparent; border-color: rgba(239, 68, 68, .3); color: var(--red); }
+  button.btn.ghost.danger:hover { background: rgba(239, 68, 68, .1); border-color: rgba(239, 68, 68, .5); color: #fca5a5; }
+  input, select, textarea { background: #0b0b0e; border-color: var(--border); }
+  input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
+  input:focus, select:focus, textarea:focus {
+    border-color: rgba(16, 185, 129, .6);
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, .12);
+    background: #0b0b0e;
+  }
+  code.inline { background: rgba(16, 185, 129, .1); border-color: rgba(16, 185, 129, .2); color: #6ee7b7; }
+  .badge.primary { color: var(--accent); border-color: rgba(16, 185, 129, .3); background: rgba(16, 185, 129, .1); }
+  .provider-card { background: #18181b; border-color: var(--border); }
+  .provider-card:hover { border-color: var(--border-strong); background: #1f1f23; }
+  .switch input:checked + .track { background: rgba(16, 185, 129, .18); border-color: rgba(16, 185, 129, .45); }
+  .switch input:checked + .track::after { background: var(--accent); box-shadow: none; }
+  .free-hub::before { display: none; }
+  .free-card { background: #18181b; }
+  .free-card:hover { border-color: var(--border-strong); background: #1f1f23; box-shadow: none; }
+  .free-filter button.active, .filter button.active {
+    color: var(--text);
+    border-color: var(--border-strong);
+    background: #27272a;
+  }
+  .method.get { color: #6ee7b7; border-color: rgba(16, 185, 129, .25); background: rgba(16, 185, 129, .1); }
+  .method.post { color: #93c5fd; border-color: rgba(59, 130, 246, .25); background: rgba(59, 130, 246, .1); }
+  .login-logo.ds, .login-logo.qwen, .login-logo.gemini, .provider-avatar.pa-openai-compatible,
+  .provider-avatar.pa-gemini, .provider-avatar.pa-gemini-web, .provider-avatar.pa-anthropic,
+  .provider-avatar.pa-ollama, .provider-avatar.pa-deepseek, .provider-avatar.pa-qwen {
+    color: var(--muted);
+    background: #27272a;
+    border-color: var(--border);
+  }
+  .login-vnc a, .free-link { color: var(--muted); }
+  .login-vnc a:hover, .free-link:hover { color: var(--text); }
+  .model-chip code, .free-tag code, .chip-cat { color: var(--muted); background: #27272a; border-color: var(--border); }
+  .ub-card { background: #18181b; border-color: var(--border); }
+  .ub-card button { background: var(--accent); color: #04130d; }
+  .output, .logs, pre.code { background: #0b0b0e; }
+  .model-eco-row, .settings-option { background: #18181b; }
+
+  /* ---------- Sub-abas ---------- */
+  .subtabs {
+    display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    margin: 0 0 20px;
+  }
+  .subtabs button {
+    position: relative; background: none; border: none; cursor: pointer;
+    font-family: inherit; font-size: 13px; font-weight: 500;
+    color: var(--muted); padding: 10px 12px; margin-bottom: -1px;
+    display: inline-flex; align-items: center; gap: 8px;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+  }
+  .subtabs button:hover { color: var(--text); }
+  .subtabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .subtabs .tab-count {
+    font-size: 10.5px; font-weight: 600; color: var(--muted-2);
+    background: #18181b; border: 1px solid var(--border);
+    border-radius: 999px; padding: 1px 7px; min-width: 20px; text-align: center;
+  }
+  .subtab-panel { display: flex; flex-direction: column; gap: 16px; }
+  .subtab-panel .models-card, .subtab-panel .free-hub { margin-top: 0; }
+
+  /* ---------- KPIs ---------- */
+  .kpi-grid {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px; margin: 0;
+  }
+  .kpi-card {
+    display: flex; flex-direction: column; gap: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 16px; min-width: 0;
+  }
+  .kpi-label {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted-2);
+  }
+  .kpi-value { font-size: 19px; font-weight: 650; letter-spacing: -.02em; color: var(--text); line-height: 1.2; }
+  .kpi-inline { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .kpi-code {
+    font-family: var(--font-mono); font-size: 11.5px; color: var(--muted);
+    background: #0b0b0e; border: 1px solid var(--border); border-radius: 7px;
+    padding: 7px 9px; min-width: 0; flex: 1;
+  }
+  .kpi-inline input#apiKey {
+    font-family: var(--font-mono); font-size: 11.5px; padding: 7px 9px;
+    border-radius: 7px; flex: 1; min-width: 0;
+  }
+  .kpi-foot { font-size: 11.5px; color: var(--muted-2); line-height: 1.4; }
+  .kpi-sep { margin: 0 4px; }
+  #stQueue { font-size: 16px; }
+  .kpi-value.ok { color: var(--accent); }
+  .kpi-value.warn { color: var(--yellow); }
+  .kpi-value.err { color: var(--red); }
+
+  /* ---------- Visão geral ---------- */
+  .overview-grid {
+    display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+    gap: 16px; align-items: start;
+  }
+  .overview-grid > * { min-width: 0; }
+  .endpoints-card .card-head { margin-bottom: 8px; }
+  .endpoint { min-width: 0; }
+  .endpoint code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .endpoint-desc { color: var(--muted-2); font-size: 11.5px; white-space: nowrap; }
+  .endpoint-note { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--border); font-size: 11.5px; color: var(--muted-2); }
+  .endpoint-note code { color: var(--muted); }
+  .sessions-panel { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .panel-title {
+    font-size: 11px; font-weight: 600; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted-2); padding: 0 2px;
+  }
+  .sessions-panel .login-card { padding: 14px; }
+  .sessions-panel .login-card h3 { font-size: 13px; }
+  .sessions-panel .login-actions { padding-left: 0; }
+
+  /* ---------- Contas & chaves ---------- */
+  .panel-head {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 18px; flex-wrap: wrap;
+  }
+  .panel-head h2 { font-size: 24px; font-weight: 650; letter-spacing: -.03em; margin: 4px 0 0; }
+  .panel-sub { margin-top: 6px; font-size: 13px; line-height: 1.5; color: var(--muted); max-width: 620px; }
+  .accounts-summary { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .summary-pill {
+    font-size: 11.5px; color: var(--muted);
+    background: #18181b; border: 1px solid var(--border);
+    border-radius: 999px; padding: 5px 11px;
+  }
+  .summary-pill b { color: var(--text); font-weight: 600; }
+  .summary-pill.ok b { color: var(--accent); }
+  .summary-pill.warn b { color: var(--yellow); }
+  .summary-pill.muted b { color: var(--muted-2); }
+  .accounts-card { padding: 0; overflow: hidden; }
+  .accounts-head, .account-row {
+    display: grid;
+    grid-template-columns: minmax(170px, 1.25fr) minmax(150px, 1fr) 142px 128px 118px;
+    align-items: center; gap: 12px;
+  }
+  .accounts-head {
+    padding: 10px 18px; border-bottom: 1px solid var(--border);
+    font-size: 10px; font-weight: 600; letter-spacing: .09em;
+    text-transform: uppercase; color: var(--muted-2);
+  }
+  .account-row {
+    padding: 12px 18px; border-bottom: 1px solid var(--border);
+    transition: background .15s;
+  }
+  .account-row:last-child { border-bottom: none; }
+  .account-row:hover { background: #18181b; }
+  .account-row.is-paused { opacity: .6; }
+  .account-row.is-empty { background: transparent; }
+  .account-provider { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .provider-avatar.sm { width: 30px; height: 30px; border-radius: 8px; font-size: 10px; }
+  .account-provider-text { min-width: 0; display: flex; flex-direction: column; }
+  .account-provider-text b { font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .account-provider-text span { font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .account-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .account-info b { font-size: 12.5px; font-weight: 500; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .account-info code { font-size: 10.5px; color: var(--muted-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .account-none { font-size: 12px; color: var(--muted-2); }
+  .account-status-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .status-badge {
+    display: inline-flex; align-items: center; gap: 5px; align-self: flex-start;
+    font-size: 10.5px; font-weight: 500; border-radius: 999px; padding: 3px 8px;
+    border: 1px solid var(--border); background: #18181b; color: var(--muted);
+    white-space: nowrap;
+  }
+  .status-badge .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--muted-2); flex-shrink: 0; }
+  .status-badge.used { color: #6ee7b7; border-color: rgba(16, 185, 129, .28); background: rgba(16, 185, 129, .1); }
+  .status-badge.used .dot { background: var(--accent); }
+  .status-badge.limited { color: #fcd34d; border-color: rgba(245, 158, 11, .28); background: rgba(245, 158, 11, .1); }
+  .status-badge.limited .dot { background: var(--yellow); }
+  .status-badge.paused { color: var(--muted-2); }
+  .status-badge.idle { color: var(--muted); }
+  .account-count { font-size: 10px; color: var(--muted-2); padding-left: 2px; }
+  .account-last { display: flex; flex-direction: column; gap: 1px; font-size: 12px; min-width: 0; }
+  .account-last b { font-weight: 500; color: var(--text); }
+  .account-last span { font-size: 10.5px; color: var(--muted-2); }
+  .account-never { font-size: 11px; color: var(--muted-2); }
+  .account-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+  .icon-btn {
+    display: inline-grid; place-items: center; width: 32px; height: 32px;
+    background: #18181b; border: 1px solid var(--border); border-radius: 8px;
+    color: var(--muted); cursor: pointer; padding: 0; flex-shrink: 0;
+    transition: background .15s, border-color .15s, color .15s;
+  }
+  .icon-btn svg { width: 15px; height: 15px; }
+  .icon-btn:hover { background: #1f1f23; border-color: var(--border-strong); color: var(--text); }
+  .icon-btn.sm { width: 28px; height: 28px; border-radius: 7px; }
+  .icon-btn.sm svg { width: 14px; height: 14px; }
+  .icon-btn.danger:hover { color: #fca5a5; border-color: rgba(239, 68, 68, .4); background: rgba(239, 68, 68, .1); }
+  .accounts-empty { padding: 30px 18px; text-align: center; font-size: 12.5px; color: var(--muted); }
+  .align-right { text-align: right; }
+  .providers-manager { margin-top: 0; }
+  .providers-manager .card-head { margin-bottom: 12px; }
+
+  /* ---------- Modais ---------- */
+  .modal {
+    position: fixed; inset: 0; z-index: 200;
+    display: flex; align-items: flex-start; justify-content: center;
+    padding: 40px 20px; overflow-y: auto;
+    background: rgba(0, 0, 0, .7);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+  }
+  .modal-card {
+    width: min(680px, 100%);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 22px;
+    box-shadow: 0 24px 60px -20px rgba(0, 0, 0, .8);
+    animation: modalIn .18s ease both;
+  }
+  .modal-card.modal-sm { width: min(440px, 100%); }
+  @keyframes modalIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .modal-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 18px; }
+  .modal-head h3 { font-size: 17px; font-weight: 650; letter-spacing: -.02em; color: var(--text); margin: 0; }
+  .modal-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .form-feedback { min-height: 18px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #pvKeysList { margin-bottom: 10px; }
+  .key-form { display: grid; grid-template-columns: minmax(130px, .9fr) minmax(160px, 1.3fr) auto auto; gap: 8px; align-items: center; }
+  .key-form input { font-size: 12.5px; padding: 8px 10px; }
+  .key-form .btn { padding: 8px 11px; font-size: 11.5px; }
+
+  /* ---------- Catálogo de modelos ---------- */
+  .models-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .model-search { position: relative; flex-shrink: 0; }
+  .model-search svg {
+    position: absolute; left: 11px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; color: var(--muted-2); pointer-events: none;
+  }
+  .model-search input { min-width: 220px; padding: 8px 12px 8px 32px; border-radius: 8px; font-size: 12.5px; }
+  .models-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
+  .model-card {
+    display: flex; flex-direction: column; gap: 10px; min-width: 0;
+    background: #0e0e11; border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; transition: border-color .15s, background .15s;
+  }
+  .model-card:hover { border-color: var(--border-strong); background: #121215; }
+  .model-card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+  .model-card-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .model-card code {
+    font-size: 11.5px; color: var(--text); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .model-alias {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 9.5px; color: var(--muted-2); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .model-provider {
+    font-size: 9.5px; font-weight: 600; letter-spacing: .02em;
+    border-radius: 999px; padding: 2px 7px; white-space: nowrap;
+    border: 1px solid var(--border); background: #18181b; color: var(--muted);
+    max-width: 110px; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0;
+  }
+  .model-provider.mp-google { color: #93c5fd; border-color: rgba(59, 130, 246, .25); background: rgba(59, 130, 246, .1); }
+  .model-provider.mp-deepseek { color: #a5b4fc; border-color: rgba(99, 102, 241, .25); background: rgba(99, 102, 241, .1); }
+  .model-provider.mp-qwen { color: #6ee7b7; border-color: rgba(16, 185, 129, .25); background: rgba(16, 185, 129, .1); }
+  .model-provider.mp-local { color: #cbd5e1; }
+  .model-provider.mp-anthropic { color: #fdba74; border-color: rgba(251, 146, 60, .25); background: rgba(251, 146, 60, .1); }
+  .model-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .model-health { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--muted); }
+  .model-health.muted { color: var(--muted-2); }
+  .model-copy {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    font-family: inherit; font-size: 10.5px; padding: 3px 8px; border-radius: 6px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .model-copy:hover { color: var(--text); border-color: var(--border-strong); background: #18181b; }
+  .models-empty { padding: 26px 14px; text-align: center; font-size: 12.5px; color: var(--muted-2); border: 1px dashed var(--border); border-radius: 10px; }
+
+  @media (max-width: 1100px) {
+    .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .overview-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 860px) {
+    .accounts-head { display: none; }
+    .account-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px; }
+    .account-provider { grid-column: 1; }
+    .account-status-cell { grid-column: 2; align-items: flex-end; }
+    .account-info { grid-column: 1; }
+    .account-last { grid-column: 2; align-items: flex-end; text-align: right; }
+    .account-actions { grid-column: 1 / -1; justify-content: flex-end; padding-top: 4px; }
+    .account-row.is-empty .account-last { display: none; }
+  }
+  @media (max-width: 640px) {
+    .kpi-grid { grid-template-columns: 1fr; }
+    .subtabs { overflow-x: auto; flex-wrap: nowrap; }
+    .subtabs button { white-space: nowrap; font-size: 12px; padding: 9px 8px; gap: 5px; }
+    .subtabs .tab-count { padding: 1px 5px; }
+    .models-toolbar { align-items: stretch; flex-direction: column; }
+    .model-search, .model-search input { width: 100%; min-width: 0; }
+    .models-grid { grid-template-columns: 1fr; }
+    .modal { padding: 16px 12px; align-items: flex-end; }
+    .modal-card { padding: 18px; max-height: 92vh; }
+    .editor-grid { grid-template-columns: 1fr; }
+    .key-form { grid-template-columns: 1fr; }
+    .account-provider-text b, .account-info b { font-size: 12px; }
+    .endpoint-desc { display: none; }
+    .endpoint { gap: 8px; }
+  }
 </style>
 </head>
 <body>
 
 <header>
-  <h1><span class="dot" id="serverDot"></span> DeepsProxy Dashboard</h1>
+  <div class="brand">
+    <div class="brand-logo"><img src="/favicon.svg" alt="" /></div>
+    <div class="brand-text">
+      <h1>DeepsProxy</h1>
+      <div class="brand-sub"><span class="status-dot" id="serverDot"></span> Console do proxy de IA</div>
+    </div>
+  </div>
   <div class="pills" id="pills"></div>
-  <a href="/chat" class="btn" style="margin-left:10px; text-decoration:none;" title="Abrir chat em página separada">Chat</a>
+  <div class="header-actions">
+    <a href="/chat" class="btn header-chat" title="Abrir chat em página separada">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.8L3 21l1.9-5.1A8.4 8.4 0 1 1 21 11.5Z"/></svg>
+      Abrir chat
+    </a>
+  </div>
 </header>
 
 <div id="updateBanner" hidden>
@@ -512,200 +1503,784 @@
 <div class="app-layout">
 <aside class="sidebar" id="sidebar">
   <div class="sidebar-section">Principal</div>
-  <button class="active" data-tab="connect"><span class="icon">&#9673;</span> Conexão</button>
-  <button data-tab="chat"><span class="icon">&#9993;</span> Chat</button>
-  <button data-tab="apps"><span class="icon">&#9881;</span> Apps (Gateway)</button>
-  <button data-tab="test"><span class="icon">&#9654;</span> Testar API</button>
-  <button data-tab="auto-router"><span class="icon">&#9889;</span> Auto Router</button>
+  <button class="active" data-tab="connect">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 7V3m6 4V3M7 7h10v3a5 5 0 0 1-10 0V7Zm5 8v6"/></svg></span>
+    Conexão
+  </button>
+  <button data-tab="chat">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.9 8.9 0 0 1-3.8-.8L3 21l1.9-5.1A8.4 8.4 0 1 1 21 11.5Z"/></svg></span>
+    Chat
+  </button>
+  <button data-tab="apps">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg></span>
+    Apps (Gateway)
+  </button>
+  <button data-tab="test">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="m10 8.5 6 3.5-6 3.5v-7Z"/></svg></span>
+    Testar API
+  </button>
+  <button data-tab="auto-router">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 9.5-11.5H13l1-8.5Z"/></svg></span>
+    Auto Router
+  </button>
   <div class="sidebar-divider"></div>
   <div class="sidebar-section">Sistema</div>
-  <button data-tab="settings"><span class="icon">&#9881;</span> Configurações</button>
-  <button data-tab="local-models"><span class="icon">&#9729;</span> Modelos Locais</button>
-  <button data-tab="examples"><span class="icon">&#10697;</span> Exemplos</button>
-  <button data-tab="guide"><span class="icon">&#128214;</span> Instruções</button>
-  <button data-tab="logs"><span class="icon">&#9776;</span> Logs</button>
+  <button data-tab="settings">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h10m4 0h2M4 17h2m4 0h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg></span>
+    Configurações
+  </button>
+  <button data-tab="local-models">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4.5 4.5 0 0 1-.4-9A6 6 0 0 1 18.3 11 3.5 3.5 0 0 1 18 18H7Z"/><path d="M12 13v5m0 0-2-2m2 2 2-2"/></svg></span>
+    Modelos Locais
+  </button>
+  <button data-tab="examples">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 9-3 3 3 3m8-6 3 3-3 3M13.5 5l-3 14"/></svg></span>
+    Exemplos
+  </button>
+  <button data-tab="guide">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v16H6.5A2.5 2.5 0 0 0 4 21.5v-16Z"/><path d="M4 18.5A2.5 2.5 0 0 1 6.5 16H20"/></svg></span>
+    Instruções
+  </button>
+  <button data-tab="logs">
+    <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg></span>
+    Logs
+  </button>
 </aside>
 
 <main class="app-content">
 
   <!-- ============ CONEXÃO ============ -->
   <section class="tab active" id="tab-connect">
-    <div class="grid cols-4">
-      <div class="card">
-        <h3>Servidor</h3>
-        <div class="value" id="stServer">—</div>
-        <div class="sub" id="stPort">—</div>
+    <div class="page-head">
+      <div>
+        <span class="eyebrow">Painel de controle</span>
+        <h2>Conexão</h2>
+        <p class="page-sub">Gerencie provedores, contas e modelos do proxy. Tudo o que a sua IDE precisa em um só lugar.</p>
       </div>
-      <div class="card">
-        <h3>Provedor</h3>
-        <div class="value" id="stProvider">—</div>
-        <div class="sub" id="stProviderSub">—</div>
-      </div>
-      <div class="card">
-        <h3>Backend</h3>
-        <div class="value" id="stBackend">—</div>
-        <div class="sub" id="stBackendSub">—</div>
-      </div>
-      <div class="card">
-        <h3>API Key</h3>
-        <div class="value" id="stApiKey">—</div>
-        <div class="sub">Autenticação da API</div>
-      </div>
-      <div class="card">
-        <h3>Fila de requisições</h3>
-        <div class="value" id="stQueue" style="font-size:20px;">—</div>
-        <div class="sub" id="stQueueSub">—</div>
+      <div class="page-actions">
+        <button class="btn ghost" id="btnRefresh" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/></svg>
+          Verificar conexão
+        </button>
+        <button class="btn" id="btnAddProviderHero" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+          Novo provedor
+        </button>
       </div>
     </div>
 
-    <div class="grid" style="margin-top:14px; grid-template-columns: 1fr 1fr;">
-      <div class="card">
-        <h3>Provedores</h3>
-        <div id="providerList"></div>
-        <div class="row" style="margin-top:10px;">
-          <button class="btn" id="btnAddProvider" type="button">+ Novo provedor</button>
-          <span class="note" style="margin:0;">Salvo em cookies do navegador</span>
-        </div>
+    <div class="subtabs" role="tablist" aria-label="Seções de conexão">
+      <button class="active" type="button" role="tab" aria-selected="true" data-connect-tab="overview">Visão geral</button>
+      <button type="button" role="tab" aria-selected="false" data-connect-tab="accounts">
+        Contas e chaves
+        <span class="tab-count" id="providerCountBadge">0</span>
+      </button>
+      <button type="button" role="tab" aria-selected="false" data-connect-tab="models">Catálogo e modelos</button>
+    </div>
 
-        <div id="providerEditor" class="hidden" style="margin-top:14px; border-top:1px solid var(--border); padding-top:14px;">
-          <h3 id="editorTitle">Novo provedor</h3>
-          <label class="field">
-            <span>Nome</span>
-            <input id="pvName" placeholder="Ex.: Ollama local, OpenAI, Groq..." />
-          </label>
-          <label class="field">
-            <span>Tipo</span>
-            <select id="pvType">
-              <option value="openai-compatible">OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...)</option>
-              <option value="gemini">Gemini (Google — REST nativo)</option>
-              <option value="anthropic">Anthropic (Claude — REST nativo)</option>
-              <option value="ollama">Ollama (local)</option>
-              <option value="deepseek">DeepSeek (via Playwright)</option>
-              <option value="qwen">Qwen (via Playwright)</option>
-              <option value="gemini-web">Gemini (via Playwright — gemini.google.com)</option>
-            </select>
-          </label>
+    <div class="subtab-panel" id="connect-overview">
+    <div class="kpi-grid">
+      <div class="kpi-card">
+        <span class="kpi-label">Base URL</span>
+        <div class="kpi-inline">
+          <input id="baseUrl" class="kpi-code" readonly aria-label="Base URL do proxy" />
+          <button class="icon-btn" id="btnCopyBaseUrl" type="button" title="Copiar Base URL" aria-label="Copiar Base URL">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+        <div class="kpi-foot"><span id="stServer">—</span><span class="kpi-sep">·</span><span id="stPort">—</span></div>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">API Key</span>
+        <div class="kpi-value" id="stApiKey">—</div>
+        <div class="kpi-inline">
+          <input id="apiKey" type="password" autocomplete="off" placeholder="API_KEY do .env (opcional)" aria-label="API Key do cliente" />
+          <button class="icon-btn" id="btnCopyToken" type="button" title="Copiar token do servidor" aria-label="Copiar token do servidor">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Contas cadastradas</span>
+        <div class="kpi-value" id="ovKeys">—</div>
+        <div class="kpi-foot"><span id="ovProviders">—</span> provedores</div>
+      </div>
+      <div class="kpi-card">
+        <span class="kpi-label">Fila de requisições</span>
+        <div class="kpi-value" id="stQueue">—</div>
+        <div class="kpi-foot" id="stQueueSub">—</div>
+      </div>
+    </div>
+
+    <div class="overview-grid">
+      <div class="card endpoints-card">
+        <div class="card-head">
+          <div class="card-title">
+            <div>
+              <h3>Endpoints</h3>
+              <div class="card-sub">Copie a URL completa para usar no cliente ou IDE.</div>
+            </div>
+          </div>
+        </div>
+        <div id="endpoints"></div>
+        <div class="endpoint-note">
+          Envie <code>Authorization: Bearer &lt;sua-chave&gt;</code> para autenticar.
+        </div>
+      </div>
+
+      <div class="sessions-panel">
+        <div class="panel-title">Sessões web</div>
+        <div class="login-stack">
+          <div class="card login-card" id="loginCard">
+            <div class="login-main">
+              <div class="login-logo ds">DS</div>
+              <div class="login-info">
+                <div class="login-title"><h3>DeepSeek Web</h3><span class="login-status">Verificando</span></div>
+                <p class="login-desc" id="loginHint">A sessão do navegador é necessária para o chat funcionar.</p>
+              </div>
+            </div>
+            <div class="login-actions">
+              <a class="btn ghost sm" href="https://chat.deepseek.com" target="_blank" rel="noopener">Abrir site</a>
+              <button class="btn sm" id="btnLoginStart">Renovar sessão</button>
+              <button class="btn ghost sm" id="btnLoginFinish" style="display:none;">Concluir login</button>
+            </div>
+            <div id="vncRow" class="hidden login-vnc">
+              Em servidor remoto, o navegador abre numa "tela virtual".
+              <a id="vncLink" href="#" target="_blank" rel="noopener">Abrir login remoto (VNC)</a>
+            </div>
+          </div>
+
+          <div class="card login-card" id="qwenLoginCard">
+            <div class="login-main">
+              <div class="login-logo qwen">Q</div>
+              <div class="login-info">
+                <div class="login-title"><h3>Qwen Web</h3><span class="login-status">Verificando</span></div>
+                <p class="login-desc" id="qwenLoginHint">A sessão do navegador (chat.qwen.ai) é necessária para o chat com modelos Qwen.</p>
+              </div>
+            </div>
+            <div class="login-actions">
+              <a class="btn ghost sm" href="https://chat.qwen.ai" target="_blank" rel="noopener">Abrir site</a>
+              <button class="btn sm" id="btnQwenLoginStart">Renovar sessão</button>
+              <button class="btn ghost sm" id="btnQwenLoginFinish" style="display:none;">Concluir login</button>
+            </div>
+          </div>
+
+          <div class="card login-card" id="geminiLoginCard">
+            <div class="login-main">
+              <div class="login-logo gemini">G</div>
+              <div class="login-info">
+                <div class="login-title"><h3>Gemini Web</h3><span class="login-status">Verificando</span></div>
+                <p class="login-desc" id="geminiLoginHint">A sessão do navegador (gemini.google.com) é necessária para o chat com modelos Gemini.</p>
+              </div>
+            </div>
+            <div class="login-actions">
+              <a class="btn ghost sm" href="https://gemini.google.com" target="_blank" rel="noopener">Abrir site</a>
+              <button class="btn sm" id="btnGeminiLoginStart">Renovar sessão</button>
+              <button class="btn ghost sm" id="btnGeminiLoginFinish" style="display:none;">Concluir login</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    </div>
+
+    <div class="subtab-panel hidden" id="connect-accounts">
+      <div class="panel-head">
+        <div>
+          <span class="eyebrow">Contas e chaves</span>
+          <h2>Gestão de contas</h2>
+          <p class="panel-sub">Várias contas do mesmo provedor, cada uma com sua chave, status e histórico de uso.</p>
+        </div>
+        <div class="page-actions">
+          <button class="btn" id="btnAddAccount" type="button">Adicionar nova chave</button>
+          <button class="btn ghost" id="btnAddProvider" type="button">Novo provedor</button>
+        </div>
+      </div>
+
+      <div class="accounts-summary" id="accountsSummary">Carregando contas...</div>
+
+      <div class="card accounts-card">
+        <div class="accounts-head" aria-hidden="true">
+          <span>Provedor</span>
+          <span>Conta</span>
+          <span>Status</span>
+          <span>Última utilização</span>
+          <span class="align-right">Ações</span>
+        </div>
+        <div id="accountsTable"></div>
+      </div>
+
+      <div class="card providers-manager">
+        <div class="card-head">
+          <div class="card-title">
+            <div>
+              <h3>Provedores configurados</h3>
+              <div class="card-sub">Ative, edite ou remova provedores. As chaves ficam na tabela acima.</div>
+            </div>
+          </div>
+        </div>
+        <div id="providerList"></div>
+        <div class="note note-inline">As configurações ficam salvas no servidor e no cookie do navegador.</div>
+      </div>
+
+      <div id="providerEditor" class="hidden modal" role="dialog" aria-modal="true" aria-labelledby="editorTitle">
+        <div class="modal-card">
+          <div class="modal-head">
+            <div>
+              <h3 id="editorTitle">Novo provedor</h3>
+              <div class="card-sub">Preencha os dados e valide antes de salvar.</div>
+            </div>
+            <button class="icon-btn" id="btnCloseProviderModal" type="button" aria-label="Fechar" title="Fechar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <div class="editor-grid">
+            <label class="field">
+              <span>Nome</span>
+              <input id="pvName" placeholder="Ex.: Ollama local, OpenAI, Groq..." />
+            </label>
+            <label class="field">
+              <span>Tipo</span>
+              <select id="pvType">
+                <option value="openai-compatible">OpenAI-compatível</option>
+                <option value="gemini">Gemini (REST nativo)</option>
+                <option value="anthropic">Anthropic (REST nativo)</option>
+                <option value="ollama">Ollama (local)</option>
+                <option value="deepseek">DeepSeek (Playwright)</option>
+                <option value="qwen">Qwen (Playwright)</option>
+                <option value="gemini-web">Gemini Web (Playwright)</option>
+              </select>
+            </label>
+          </div>
+
           <div id="pvOpenAiFields">
             <label class="field">
               <span id="pvBaseUrlLabel">Base URL</span>
               <input id="pvBaseUrl" placeholder="http://localhost:1234/v1" />
             </label>
             <label class="field">
-              <span>Modelo (opcional — vazio usa o modelo da requisição)</span>
+              <span>Modelo <em class="field-hint">(opcional — vazio usa o modelo da requisição)</em></span>
               <div class="row">
                 <input id="pvModel" list="pvModelList" style="flex:1;" placeholder="(automático) — digite ou escolha um modelo" />
                 <datalist id="pvModelList"></datalist>
                 <button class="btn ghost" id="btnLoadModels" type="button">Carregar modelos</button>
               </div>
             </label>
-            <label class="field">
+            <div class="field">
               <span id="pvApiKeyLabel">Gerenciamento de Chaves / Contas</span>
-              <div id="pvKeysList" style="margin-bottom:10px;"></div>
-              <div class="row" style="flex-wrap:wrap; gap:6px;">
-                <input id="pvKeyLabel" type="text" placeholder="Identificador (ex: Conta Google 1)" style="flex:1;min-width:150px;" />
-                <input id="pvKeyValue" type="password" autocomplete="off" placeholder="API Key" style="flex:2;min-width:200px;" />
-                <button class="btn ghost" id="btnAddKey" type="button">+ Adicionar Chave</button>
+              <div id="pvKeysList"></div>
+              <div class="key-form">
+                <input id="pvKeyLabel" type="text" placeholder="Identificador (ex: Conta Google 1)" />
+                <input id="pvKeyValue" type="password" autocomplete="off" placeholder="API Key" />
+                <button class="btn ghost" id="btnAddKey" type="button">+ Adicionar</button>
                 <button class="btn ghost" id="btnClearKeyForm" type="button" title="Limpar os campos acima e sair da edição">Limpar</button>
               </div>
-            </label>
-            <div id="pvTypeHint" class="note" style="margin:0 0 10px;"></div>
+            </div>
+            <div id="pvTypeHint" class="note" style="margin:0 0 12px;"></div>
           </div>
-          <div class="row">
+
+          <div class="modal-actions">
             <button class="btn" id="btnSaveProvider" type="button">Salvar provedor</button>
             <button class="btn ghost" id="btnTestProvider" type="button">Testar conexão</button>
             <button class="btn ghost" id="btnCancelProvider" type="button">Cancelar</button>
           </div>
-          <div id="pvFeedback" class="note"></div>
+          <div id="pvFeedback" class="form-feedback"></div>
         </div>
       </div>
 
-      <div class="card">
-        <h3>Como conectar</h3>
-        <ol class="steps" id="connectSteps"></ol>
-        <button class="btn ghost" id="btnRefresh" style="margin-top:12px;">↻ Verificar conexão</button>
+      <div id="keyModal" class="hidden modal" role="dialog" aria-modal="true" aria-labelledby="keyModalTitle">
+        <div class="modal-card modal-sm">
+          <div class="modal-head">
+            <div>
+              <h3 id="keyModalTitle">Adicionar nova chave</h3>
+              <div class="card-sub">Use uma conta por chave para rotacionar automaticamente.</div>
+            </div>
+            <button class="icon-btn" id="btnKeyModalClose" type="button" aria-label="Fechar" title="Fechar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+            </button>
+          </div>
+          <label class="field">
+            <span>Provedor</span>
+            <select id="kmProvider"></select>
+          </label>
+          <label class="field">
+            <span>Identificador da conta</span>
+            <input id="kmLabel" type="text" placeholder="Ex.: Google pessoal, Google trabalho" />
+          </label>
+          <label class="field">
+            <span>API Key</span>
+            <input id="kmKey" type="password" autocomplete="off" placeholder="Cole a chave" />
+          </label>
+          <div class="modal-actions">
+            <button class="btn" id="btnKeyModalSave" type="button">Adicionar chave</button>
+            <button class="btn ghost" id="btnKeyModalCancel" type="button">Cancelar</button>
+          </div>
+          <div id="kmFeedback" class="form-feedback"></div>
+        </div>
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;">
-      <div class="row" style="justify-content:space-between; align-items:center; gap:10px;">
-        <h3 style="margin:0;">Modelos disponíveis</h3>
+    <div class="subtab-panel hidden" id="connect-models">
+    <div class="card models-card">
+      <div class="card-head">
+        <div class="card-title">
+          <div>
+            <h3>Catálogo de modelos</h3>
+            <div class="card-sub">Copie o alias exato para usar no campo <code class="inline">model</code>.</div>
+          </div>
+        </div>
         <div class="row" style="gap:8px;">
-          <button class="btn ghost" id="btnLoadAllModels" type="button" title="Força nova busca de modelos em todos os provedores ativos de uma vez">↻ Carregar todos</button>
-          <button class="btn ghost" id="btnCopyAllModels" type="button" title="Copia todos os nomes de modelo (separados por vírgula)">Copiar todos</button>
+          <button class="btn ghost sm" id="btnLoadAllModels" type="button" title="Força nova busca de modelos em todos os provedores ativos de uma vez">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+            Carregar todos
+          </button>
+          <button class="btn ghost sm" id="btnCopyAllModels" type="button" title="Copia todos os nomes de modelo (separados por vírgula)">Copiar todos</button>
         </div>
       </div>
-      <div id="modelsChips" class="row wrap" style="margin-top:10px;"></div>
-      <div class="note" style="margin-top:8px;">
-        Clique em <code class="inline">⧉</code> para copiar o nome exato de um modelo e usar na API
-        (campo <code class="inline">model</code> de <code class="inline">/v1/chat/completions</code>).
-        Use <b>Procurar modelos</b> na aba <b>Testar API</b> para atualizar a lista.
+      <div class="models-toolbar">
+        <div class="filter" id="modelFilter">
+          <button class="active" type="button" data-model-filter="all">Todos</button>
+          <button type="button" data-model-filter="google">Google</button>
+          <button type="button" data-model-filter="deepseek">DeepSeek</button>
+          <button type="button" data-model-filter="qwen">Qwen</button>
+          <button type="button" data-model-filter="local">Local</button>
+        </div>
+        <div class="model-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="modelSearch" type="search" placeholder="Buscar modelo..." autocomplete="off" />
+        </div>
+      </div>
+      <div id="modelsChips" class="models-grid"></div>
+      <div class="models-empty hidden" id="modelsEmpty">Nenhum modelo encontrado para este filtro.</div>
+      <div class="note">
+        Use os atalhos de cópia para levar o nome do modelo direto ao seu cliente.
+        A busca de modelos também pode ser refeita na aba <b>Testar API</b>.
       </div>
     </div>
 
-    <div class="card" style="margin-top:14px;">
-      <h3>Conexão da API</h3>
-      <div class="row" style="align-items:flex-end;">
-        <label class="field" style="flex:1;">
-          <span>Base URL</span>
-          <input id="baseUrl" readonly />
-        </label>
-        <label class="field" style="flex:1;">
-          <span>API Key (opcional se <code class="inline">API_KEY</code> não estiver configurada no .env)</span>
-          <input id="apiKey" placeholder="Cole sua API_KEY aqui..." autocomplete="off" />
-        </label>
-        <button class="btn ghost" id="btnCopyToken" type="button" style="margin-bottom:1px;" title="Copia o token de autenticação do servidor (API_KEY do .env)">⧉ Copiar token</button>
-      </div>
-      <h3 style="margin-top:6px;">Endpoints</h3>
-      <div id="endpoints"></div>
-    </div>
-
-    <div class="card" style="margin-top:14px;" id="loginCard">
-      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div style="min-width:220px;">
-          <h3 style="margin:0;">Login na DeepSeek</h3>
-          <div class="sub" id="loginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
-            A sessão do navegador é necessária para o chat funcionar.
+    <div class="card free-hub" id="freeProvidersCard">
+      <div class="card-head free-hub-head">
+        <div class="card-title">
+          <span class="section-icon green">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg>
+          </span>
+          <div>
+            <h3>Provedores com cota gratuita</h3>
+            <div class="card-sub">Links oficiais para criar conta e chave, com atalho para configurar no proxy.</div>
           </div>
         </div>
-        <div class="row">
-          <button class="btn" id="btnLoginStart">Fazer login</button>
-          <button class="btn ghost" id="btnLoginFinish" style="display:none;">Concluir login</button>
+        <div class="free-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="freeProviderSearch" type="search" placeholder="Buscar provedor..." autocomplete="off" />
         </div>
       </div>
-      <div id="vncRow" class="hidden" style="margin-top:8px; font-size:12.5px;">
-        Em servidor remoto, o navegador abre numa "tela virtual".
-        <a id="vncLink" href="#" target="_blank" rel="noopener">Abrir login remoto (VNC)</a>
+
+      <div class="free-filter" id="freeProviderFilter">
+        <button class="active" data-free-filter="all" type="button">Todos</button>
+        <button data-free-filter="browser" type="button">Navegador grátis</button>
+        <button data-free-filter="api" type="button">API com cota</button>
+        <button data-free-filter="local" type="button">Local</button>
       </div>
+
+      <div class="free-group" data-free-group>
+        <div class="free-group-title">Já integrados — grátis pelo navegador</div>
+        <div class="free-grid">
+          <article class="free-card" data-cat="browser" data-name="DeepSeek web navegador">
+            <div class="free-top">
+              <div class="free-avatar blue">DS</div>
+              <div class="free-title-wrap">
+                <div class="free-name">DeepSeek</div>
+                <span class="free-tag">chat.deepseek.com</span>
+              </div>
+            </div>
+            <p class="free-desc">Chat gratuito pelo navegador, já integrado ao proxy com login por sessão.</p>
+            <span class="free-quota">Grátis via navegador</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://chat.deepseek.com" target="_blank" rel="noopener">Abrir site ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="deepseek" data-quick-name="DeepSeek">Usar no proxy</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="browser" data-name="Qwen web navegador">
+            <div class="free-top">
+              <div class="free-avatar violet">Q</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Qwen</div>
+                <span class="free-tag">chat.qwen.ai</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos Qwen gratuitos pelo navegador, com sessão persistente e pool de abas.</p>
+            <span class="free-quota">Grátis via navegador</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://chat.qwen.ai" target="_blank" rel="noopener">Abrir site ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="qwen" data-quick-name="Qwen">Usar no proxy</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="browser" data-name="Gemini Web navegador Google">
+            <div class="free-top">
+              <div class="free-avatar cyan">G</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Gemini Web</div>
+                <span class="free-tag">gemini.google.com</span>
+              </div>
+            </div>
+            <p class="free-desc">Gemini gratuito direto do site, sem API key, usando a sessão do navegador.</p>
+            <span class="free-quota">Grátis via navegador</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://gemini.google.com" target="_blank" rel="noopener">Abrir site ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="gemini-web" data-quick-name="Gemini Web">Usar no proxy</button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="free-group" data-free-group>
+        <div class="free-group-title">APIs com cota gratuita</div>
+        <div class="free-grid">
+          <article class="free-card" data-cat="api" data-name="Google AI Studio Gemini API">
+            <div class="free-top">
+              <div class="free-avatar blue">G</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Google AI Studio</div>
+                <span class="free-tag">Gemini API · sem cartão</span>
+              </div>
+            </div>
+            <p class="free-desc">Gemini Flash, Flash-Lite, 2.5 Pro e Gemma com cota gratuita por projeto.</p>
+            <span class="free-quota">Cota diária grátis</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="gemini" data-quick-name="Google AI Studio" data-quick-url="https://generativelanguage.googleapis.com/v1beta">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Groq">
+            <div class="free-top">
+              <div class="free-avatar orange">GR</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Groq</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos abertos com inferência muito rápida e limites generosos.</p>
+            <span class="free-quota">~1.000 req/dia · 200K tokens/dia</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://console.groq.com/keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Groq" data-quick-url="https://api.groq.com/openai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="OpenRouter free">
+            <div class="free-top">
+              <div class="free-avatar violet">OR</div>
+              <div class="free-title-wrap">
+                <div class="free-name">OpenRouter</div>
+                <span class="free-tag">Modelos <code>:free</code></span>
+              </div>
+            </div>
+            <p class="free-desc">Um endpoint para dezenas de modelos gratuitos, com fallback entre provedores.</p>
+            <span class="free-quota">50 req/dia · 1.000 após US$ 10</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://openrouter.ai/keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="OpenRouter" data-quick-url="https://openrouter.ai/api/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Cloudflare Workers AI">
+            <div class="free-top">
+              <div class="free-avatar amber">CF</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Cloudflare Workers AI</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Llama, Qwen, Gemma e outros modelos gratuitos. Use o ID da conta na URL.</p>
+            <span class="free-quota">10.000 Neurons/dia</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Cloudflare Workers AI" data-quick-url="https://api.cloudflare.com/client/v4/accounts/SEU_ACCOUNT_ID/ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Mistral AI">
+            <div class="free-top">
+              <div class="free-avatar orange">M</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Mistral AI</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Plano gratuito para experimentação, sem cartão de crédito.</p>
+            <span class="free-quota">Limites no console</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://console.mistral.ai/api-keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Mistral AI" data-quick-url="https://api.mistral.ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Cohere trial">
+            <div class="free-top">
+              <div class="free-avatar pink">C</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Cohere</div>
+                <span class="free-tag">Chave de teste</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos Command para avaliação, com API de compatibilidade OpenAI.</p>
+            <span class="free-quota">1.000 chamadas/mês</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://dashboard.cohere.com/api-keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Cohere" data-quick-url="https://api.cohere.ai/compatibility/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="SambaNova Cloud">
+            <div class="free-top">
+              <div class="free-avatar green">SN</div>
+              <div class="free-title-wrap">
+                <div class="free-name">SambaNova</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">DeepSeek, Llama e gpt-oss em hardware próprio da SambaNova.</p>
+            <span class="free-quota">20 req/dia · 200K tokens/dia</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://cloud.sambanova.ai/apis" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="SambaNova" data-quick-url="https://api.sambanova.ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="NVIDIA NIM">
+            <div class="free-top">
+              <div class="free-avatar green">NV</div>
+              <div class="free-title-wrap">
+                <div class="free-name">NVIDIA NIM</div>
+                <span class="free-tag">build.nvidia.com</span>
+              </div>
+            </div>
+            <p class="free-desc">Endpoints NIM para prototipagem, com modelos abertos de ponta.</p>
+            <span class="free-quota">Créditos de teste</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://build.nvidia.com/settings/api-keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="NVIDIA NIM" data-quick-url="https://integrate.api.nvidia.com/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Z.AI Zhipu GLM">
+            <div class="free-top">
+              <div class="free-avatar violet">Z</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Z.AI (GLM)</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos GLM Flash gratuitos, com versões para texto, código e visão.</p>
+            <span class="free-quota">Flash sem custo</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://z.ai/manage-apikey/apikey-list" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Z.AI" data-quick-url="https://api.z.ai/api/paas/v4">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Alibaba Model Studio Qwen API">
+            <div class="free-top">
+              <div class="free-avatar violet">QW</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Alibaba Model Studio</div>
+                <span class="free-tag">API oficial do Qwen</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos Qwen via DashScope, com modo de compatibilidade OpenAI.</p>
+            <span class="free-quota">1M tokens por modelo</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://modelstudio.console.alibabacloud.com/" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Alibaba Model Studio" data-quick-url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="DeepInfra">
+            <div class="free-top">
+              <div class="free-avatar cyan">DI</div>
+              <div class="free-title-wrap">
+                <div class="free-name">DeepInfra</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos abertos como DeepSeek e Qwen com créditos iniciais.</p>
+            <span class="free-quota">Créditos de teste</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://deepinfra.com/dash/api_keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="DeepInfra" data-quick-url="https://api.deepinfra.com/v1/openai">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Scaleway Generative APIs">
+            <div class="free-top">
+              <div class="free-avatar violet">SC</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Scaleway</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">APIs generativas serverless com cota gratuita inicial.</p>
+            <span class="free-quota">1M tokens grátis</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://console.scaleway.com/generative-api/models" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Scaleway" data-quick-url="https://api.scaleway.ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Hugging Face Inference Providers">
+            <div class="free-top">
+              <div class="free-avatar amber">HF</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Hugging Face</div>
+                <span class="free-tag">Inference Providers</span>
+              </div>
+            </div>
+            <p class="free-desc">Roteador para dezenas de provedores, com crédito mensal gratuito.</p>
+            <span class="free-quota">US$ 0,10/mês (PRO: US$ 2)</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://huggingface.co/settings/tokens" target="_blank" rel="noopener">Criar token ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Hugging Face" data-quick-url="https://router.huggingface.co/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="OVHcloud AI Endpoints">
+            <div class="free-top">
+              <div class="free-avatar blue">OVH</div>
+              <div class="free-title-wrap">
+                <div class="free-name">OVHcloud AI Endpoints</div>
+                <span class="free-tag">Modelos gratuitos</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos abertos com endpoints gratuitos e foco em soberania de dados.</p>
+            <span class="free-quota">10 modelos grátis</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://www.ovhcloud.com/en/public-cloud/ai-endpoints/" target="_blank" rel="noopener">Ver planos ↗</a>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Requesty gateway free">
+            <div class="free-top">
+              <div class="free-avatar green">RX</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Requesty</div>
+                <span class="free-tag">Gateway com modelos <code>:free</code></span>
+              </div>
+            </div>
+            <p class="free-desc">Roteamento, cache e modelos gratuitos em um único endpoint compatível.</p>
+            <span class="free-quota">200 req/dia</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://app.requesty.ai/api-keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Requesty" data-quick-url="https://router.requesty.ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="OpenCode Zen free">
+            <div class="free-top">
+              <div class="free-avatar cyan">OC</div>
+              <div class="free-title-wrap">
+                <div class="free-name">OpenCode Zen</div>
+                <span class="free-tag">Gateway OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Modelos gratuitos promocionais, sem cartão de crédito.</p>
+            <span class="free-quota">Modelos em promoção</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://opencode.ai/zen" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="OpenCode Zen" data-quick-url="https://opencode.ai/zen/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Pollinations AI keyless">
+            <div class="free-top">
+              <div class="free-avatar pink">PL</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Pollinations</div>
+                <span class="free-tag">Sem API key</span>
+              </div>
+            </div>
+            <p class="free-desc">API de texto gratuita, sem cadastro, em formato compatível com OpenAI.</p>
+            <span class="free-quota">Grátis (melhor esforço)</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://pollinations.ai" target="_blank" rel="noopener">Abrir site ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Pollinations" data-quick-url="https://text.pollinations.ai/openai">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Cerebras trial">
+            <div class="free-top">
+              <div class="free-avatar orange">CB</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Cerebras</div>
+                <span class="free-tag">Créditos de teste</span>
+              </div>
+            </div>
+            <p class="free-desc">Inferência em wafer-scale com créditos iniciais. Requer cartão para ativar.</p>
+            <span class="free-quota">US$ 5 por 30 dias</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://cloud.cerebras.ai" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="Cerebras" data-quick-url="https://api.cerebras.ai/v1">Configurar</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="Google Vertex AI credits">
+            <div class="free-top">
+              <div class="free-avatar blue">GV</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Google Vertex AI</div>
+                <span class="free-tag">Google Cloud</span>
+              </div>
+            </div>
+            <p class="free-desc">Créditos iniciais do Google Cloud para usar Gemini e outros modelos.</p>
+            <span class="free-quota">US$ 300 por 90 dias</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://console.cloud.google.com/vertex-ai" target="_blank" rel="noopener">Ver créditos ↗</a>
+            </div>
+          </article>
+          <article class="free-card" data-cat="api" data-name="DeepSeek API credits">
+            <div class="free-top">
+              <div class="free-avatar blue">DS</div>
+              <div class="free-title-wrap">
+                <div class="free-name">DeepSeek API</div>
+                <span class="free-tag">OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Créditos de boas-vindas para testar a API oficial (quando disponíveis).</p>
+            <span class="free-quota">Crédito único de teste</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener">Criar chave ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="DeepSeek API" data-quick-url="https://api.deepseek.com/v1">Configurar</button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="free-group" data-free-group>
+        <div class="free-group-title">Rodando no seu PC</div>
+        <div class="free-grid">
+          <article class="free-card" data-cat="local" data-name="Ollama local">
+            <div class="free-top">
+              <div class="free-avatar gray">OL</div>
+              <div class="free-title-wrap">
+                <div class="free-name">Ollama</div>
+                <span class="free-tag">local · grátis</span>
+              </div>
+            </div>
+            <p class="free-desc">Rode modelos abertos na sua máquina, sem limite de cota e sem enviar dados.</p>
+            <span class="free-quota">Hardware local</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://ollama.com/download" target="_blank" rel="noopener">Baixar ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="ollama" data-quick-name="Ollama local" data-quick-url="http://localhost:11434">Usar no proxy</button>
+            </div>
+          </article>
+          <article class="free-card" data-cat="local" data-name="LM Studio local">
+            <div class="free-top">
+              <div class="free-avatar gray">LM</div>
+              <div class="free-title-wrap">
+                <div class="free-name">LM Studio</div>
+                <span class="free-tag">local · OpenAI-compatível</span>
+              </div>
+            </div>
+            <p class="free-desc">Interface desktop para baixar e servir modelos locais com endpoint OpenAI.</p>
+            <span class="free-quota">Hardware local</span>
+            <div class="free-actions">
+              <a class="free-link" href="https://lmstudio.ai" target="_blank" rel="noopener">Baixar ↗</a>
+              <button class="btn ghost sm free-add" type="button" data-quick-type="openai-compatible" data-quick-name="LM Studio" data-quick-url="http://localhost:1234/v1">Usar no proxy</button>
+            </div>
+          </article>
+        </div>
+      </div>
+
+      <div class="free-empty hidden" id="freeProvidersEmpty">Nenhum provedor encontrado para essa busca.</div>
+      <p class="note" style="margin:14px 0 0;">
+        Cotas e limites mudam com o tempo — confira sempre a página oficial de cada provedor.
+        O botão <b>Configurar</b> abre o formulário com a Base URL já preenchida; você só adiciona a chave.
+      </p>
     </div>
 
-    <div class="card" style="margin-top:14px;" id="qwenLoginCard">
-      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div style="min-width:220px;">
-          <h3 style="margin:0;">Login no Qwen</h3>
-          <div class="sub" id="qwenLoginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
-            A sessão do navegador (chat.qwen.ai) é necessária para o chat com modelos Qwen.
-          </div>
-        </div>
-        <div class="row">
-          <button class="btn" id="btnQwenLoginStart">Fazer login</button>
-          <button class="btn ghost" id="btnQwenLoginFinish" style="display:none;">Concluir login</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="card" style="margin-top:14px;" id="geminiLoginCard">
-      <div class="row" style="justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
-        <div style="min-width:220px;">
-          <h3 style="margin:0;">Login no Gemini (Web)</h3>
-          <div class="sub" id="geminiLoginHint" style="margin-top:6px; font-size:12.5px; color:var(--muted);">
-            A sessão do navegador (gemini.google.com) é necessária para o chat com modelos Gemini.
-          </div>
-        </div>
-        <div class="row">
-          <button class="btn" id="btnGeminiLoginStart">Fazer login</button>
-          <button class="btn ghost" id="btnGeminiLoginFinish" style="display:none;">Concluir login</button>
-        </div>
-      </div>
     </div>
   </section>
 
@@ -933,6 +2508,30 @@
           </label>
           <span class="hint" title="Deduplicação: remove mensagens idênticas consecutivas (mesma role + mesmo conteúdo exato). Geralmente é erro de digitação ou reenvio acidental. Risco muito baixo — só remove cópias EXATAS seguidas, nunca repete turnos diferentes.">?</span>
         </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="whitespaceHygiene" /> Higiene de whitespace (sem perda)
+          </label>
+          <span class="hint" title="Higiene de whitespace: remove espaços no final das linhas, colapsa 3+ quebras de linha em 2 e descarta system messages IDÊNTICOS duplicados. 100% lossless (não altera o significado) — baixa economia mas zero risco. Portado do freellmapi.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="compactJson" /> Compactar tabelas JSON repetidas
+          </label>
+          <span class="hint" title="Compactação JSON: quando vários tool results consecutivos trazem a MESMA estrutura de tabela JSON, a segunda cópia em diante é codificada como [[json-table:compact]] — reduzindo linhas e colunas. Lossless (recuperável se o modelo pedir). Portado do freellmapi.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="filterToolNoise" /> Filtrar ruído de ferramentas
+          </label>
+          <span class="hint" title="Filtro de ruído: remove linhas de lixo típicas de output de ferramentas (git status/log, progressos de teste, sequências ANSI...) preservando erros e código. LOSSY — pode descartar detalhe que você queira ler no contexto. Desativado por padrão; recomendado só quando o contexto estoura por causa de tool spam.">?</span>
+        </div>
+        <div class="eco-row">
+          <label class="checkbox">
+            <input type="checkbox" data-eco="ageOldTurns" /> Condensar turnos antigos
+          </label>
+          <span class="hint" title="Condensação de turnos: além do limite, turnos antigos de user/assistant (antes de X turnos) são reduzidos a um digest de intenção (+ valores/patches protegidos), em vez de só cortados. LOSSY — afina a QUALIDADE do resumo em troca de perder detalhes exatos. Portado do freellmapi.">?</span>
+        </div>
       </div>
 
       <div class="row" style="margin-top:12px; align-items:flex-end; gap:12px; flex-wrap:wrap;">
@@ -1085,6 +2684,29 @@
       </div>
       <div class="output hidden" id="testOutput"></div>
       <div class="usage hidden" id="testUsage"></div>
+    </div>
+
+    <div class="card" style="margin-top:14px;">
+      <div class="row" style="justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h3 style="margin:0;">Status dos Modelos</h3>
+        <div class="row" style="gap:8px; flex-wrap:wrap;">
+          <div class="filter" id="modelHealthFilter">
+            <button data-filter="all" class="active" type="button">Todos</button>
+            <button data-filter="working" type="button">Funcionando</button>
+            <button data-filter="broken" type="button">Com problema</button>
+            <button data-filter="untested" type="button">Não testados</button>
+          </div>
+          <button class="btn ghost" id="btnTestAllModels" type="button" title="Testa todos os modelos habilitados de uma vez (via /api/models/health/test-all)">▶ Testar todos</button>
+          <button class="btn ghost" id="btnRefreshHealth" type="button" title="Recarrega o status de saúde de todos os modelos (GET /api/models/health)">↻ Atualizar</button>
+        </div>
+      </div>
+      <div class="row" style="gap:8px; margin:10px 0; flex-wrap:wrap;" id="healthSummary"></div>
+      <div id="modelHealthList"></div>
+      <div class="note" style="margin-top:8px;">
+        Lista todos os modelos dos provedores habilitados com o status de saúde
+        (<code class="inline">working</code> = funcionando, <code class="inline">broken</code> = com problema).
+        O ponto ao lado de cada modelo na aba <b>Conexão</b> também indica o status.
+      </div>
     </div>
   </section>
 
@@ -1685,6 +3307,93 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             <br><b>Impacto:</b> muito baixo — só remove cópias EXATAS seguidas.
           </p>
         </div>
+
+        <!-- whitespaceHygiene: BÁSICO (lossless, portado do freellmapi) -->
+        <div class="settings-option" data-setting="whitespaceHygiene" style="border-left:3px solid var(--green);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setWhitespaceHygiene" />
+              <b>Higiene de whitespace (sem perda)</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">baixo risco</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Remove espaços no fim das linhas, colapsa quebras triplas e tira
+            system messages idênticos duplicados.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Remoção de trailing spaces, 3+ quebras de linha → 2, e descarte de
+            system messages com conteúdo EXATO repetido. 100% lossless.
+            <br><b>Impacto:</b> economia pequena, zero risco. Ligado por padrão.
+          </p>
+        </div>
+
+        <!-- compactJson: BÁSICO (lossless, portado do freellmapi) -->
+        <div class="settings-option" data-setting="compactJson" style="border-left:3px solid var(--green);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setCompactJson" />
+              <b>Compactar tabelas JSON repetidas</b>
+            </label>
+            <span class="pill" style="color:var(--green);border-color:#1f4d38;">baixo risco</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Codifica tool results com a mesma estrutura JSON como tabela
+            compacta em vez de JSON expandido.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Detecta estruturas de tabela repetidas em mensagens de ferramenta
+            (>= 8 linhas) e codifica as cópias seguintes como [[json-table]].
+            Recuperável pelo modelo se preciso. Lossless.
+            <br><b>Impacto:</b> alto em fluxos de ferramentas com JSON grande.
+          </p>
+        </div>
+
+        <!-- filterToolNoise: AVANÇADO (lossy, portado do freellmapi) -->
+        <div class="settings-option" data-setting="filterToolNoise" data-advanced="true" style="border-left:3px solid var(--yellow);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setFilterToolNoise" />
+              <b>Filtrar ruído de ferramentas</b>
+            </label>
+            <span class="pill" style="color:var(--yellow);border-color:#5c4a1f;">lossy</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Remove linhas de lixo de tool output (git log, progressos, ANSI)
+            preservando erros e código.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Regras de redação: saídas de git (status/log/diff), progressos de
+            teste, sequências ANSI e mensagens de colapso de linha. Preserva
+            mensagens de ERRO e blocos de código. Limitado a 12.000 caracteres
+            por resultado.
+            <br><b>Impacto:</b> ajuda só quando tool spam estoura o contexto.
+            Desligado por padrão.
+          </p>
+        </div>
+
+        <!-- ageOldTurns: AVANÇADO (lossy, portado do freellmapi) -->
+        <div class="settings-option" data-setting="ageOldTurns" data-advanced="true" style="border-left:3px solid var(--yellow);padding-left:12px;">
+          <div class="settings-option-header">
+            <label class="checkbox">
+              <input type="checkbox" id="setAgeOldTurns" />
+              <b>Condensar turnos antigos</b>
+            </label>
+            <span class="pill" style="color:var(--yellow);border-color:#5c4a1f;">lossy</span>
+          </div>
+          <p class="settings-option-desc settings-desc-simple">
+            Reduz turnos antigos a um digest de intenção (+ valores protegidos)
+            em vez de só cortá-los.
+          </p>
+          <p class="settings-option-desc settings-desc-detail hidden">
+            Além dos últimos 3 turnos, mensagens antigas de user/assistant viram
+            um resumo de intenção com leade de 240 caracteres; valores e patches
+            são protegidos da redução. Atenua a perda de contexto do truncamento
+            em troca de perder os detalhes exatos.
+            <br><b>Impacto:</b> melhora continuidade em conversas longas.
+            Desligado por padrão.
+          </p>
+        </div>
       </div>
 
       <div class="row" style="margin-top:16px; align-items:center; gap:12px; flex-wrap:wrap;">
@@ -1899,6 +3608,23 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     });
   });
 
+  // ---------- Sub-abas da Conexão ----------
+  function showConnectTab(name) {
+    const target = name || "overview";
+    document.querySelectorAll("[data-connect-tab]").forEach((btn) => {
+      const active = btn.dataset.connectTab === target;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+    });
+    document.querySelectorAll("#tab-connect .subtab-panel").forEach((panel) => {
+      panel.classList.toggle("hidden", panel.id !== "connect-" + target);
+    });
+  }
+  document.querySelectorAll("[data-connect-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => showConnectTab(btn.dataset.connectTab));
+  });
+  showConnectTab("overview");
+
   // ---------- Status ----------
   let status = { port: 3005 };
   let lastModelIds = null;
@@ -1920,47 +3646,6 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
 
       $("#stServer").textContent = status.server === "online" ? "Online" : "Offline";
       $("#stPort").textContent = "porta " + port + " · up " + fmtUptime(status.uptime);
-
-      // ---- Provedor (principal) ----
-      const providerName = isLocal
-        ? (providerInfo.name || "OpenAI-compatível")
-        : (providerInfo.name || (providerInfo.type === "qwen" ? "Qwen" : providerInfo.type === "gemini-web" ? "Gemini" : "DeepSeek"));
-      $("#stProvider").textContent = providerName;
-      $("#stProvider").style.color = isLocal ? "var(--purple)" : "var(--accent)";
-      const extraActive =
-        status.enabledCount && status.enabledCount > 1
-          ? " + " + (status.enabledCount - 1) + " ativo(s)"
-          : "";
-      $("#stProviderSub").textContent = isLocal
-        ? (providerInfo.baseUrl || "—") + extraActive
-        : (providerInfo.type === "qwen"
-            ? "Playwright + chat.qwen.ai"
-            : providerInfo.type === "gemini-web"
-              ? "Playwright + gemini.google.com"
-              : "Playwright + chat.deepseek.com") + extraActive;
-
-      // ---- Backend ----
-      if (isLocal) {
-        const bk = status.backend || {};
-        $("#stBackend").textContent = bk.ok ? "Conectado" : "Offline";
-        $("#stBackend").style.color = bk.ok ? "var(--green)" : "var(--red)";
-        const modelTxt =
-          providerInfo.model ||
-          (status.models && status.models[0] && (status.models[0].id || status.models[0])) ||
-          "";
-        $("#stBackendSub").textContent = bk.ok
-          ? modelTxt ? "Modelo: " + modelTxt : (status.models || []).length + " modelo(s) disponível(eis)"
-          : bk.baseUrl || "—";
-      } else {
-        const browserKey = providerInfo.type === "qwen" ? "qwen" : providerInfo.type === "gemini-web" ? "geminiWeb" : null;
-        const pw = browserKey ? (status[browserKey] && status[browserKey].playwright) || {} : (status.playwright || {});
-        const login = browserKey ? (status[browserKey] && status[browserKey].login) || {} : (status.login || {});
-        $("#stBackend").textContent = pw.initialized ? (login.loggedIn ? "Logado" : "Sessão aberta") : "Não inicializado";
-        $("#stBackend").style.color = pw.initialized ? (login.loggedIn ? "var(--green)" : "var(--yellow)") : "var(--red)";
-        $("#stBackendSub").textContent = login.cookieCount
-          ? login.cookieCount + " cookie(s) da sessão"
-          : "Nenhuma sessão salva";
-      }
 
       // ---- Fila de requisições ----
       const qPool = (status.qwen && status.qwen.pool) || { capacity: 0, active: 0, waiting: 0 };
@@ -1989,8 +3674,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       const btnLoginFinish = $("#btnLoginFinish");
       const loginCard = $("#loginCard");
       const qLoginHint = $("#qwenLoginHint");
-      const btnQLoginStart = $("#btnQLoginStart");
-      const btnQLoginFinish = $("#btnQLoginFinish");
+      const btnQLoginStart = $("#btnQwenLoginStart");
+      const btnQLoginFinish = $("#btnQwenLoginFinish");
       const qLoginCard = $("#qwenLoginCard");
       const gLoginHint = $("#geminiLoginHint");
       const btnGLoginStart = $("#btnGeminiLoginStart");
@@ -2103,42 +3788,16 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         renderModelChips(statusModels);
       }
 
+      // ---- Saúde dos modelos (aba Conexão) ----
+      loadModelHealth();
+
       renderPills(status);
       renderEndpoints(port);
       renderExamples();
-      renderConnectSteps(providerInfo.type);
     } catch (e) {
       serverDot.style.background = "var(--red)";
       serverDot.style.boxShadow = "0 0 8px var(--red)";
     }
-  }
-
-  function renderConnectSteps(type) {
-    const steps = $("#connectSteps");
-    const stepsHtml = !type || type === "openai-compatible"
-      ? [
-          "Adicione um provedor OpenAI-compatível (Ollama, LM Studio, OpenAI, Groq...) com o botão <b>+ Novo provedor</b>.",
-          "Preencha a <b>Base URL</b> (opcionalmente o modelo e a API Key) e clique em <b>Salvar provedor</b>. Use <b>Testar conexão</b> para validar.",
-          "O provedor fica salvo em <b>cookies</b> e já fica ativo para o chat e para a API (veja a aba <b>Exemplos</b>).",
-        ]
-      : type === "qwen"
-      ? [
-          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.qwen.ai</code> e clique em <b>Concluir login</b>.",
-          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
-          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
-        ]
-      : type === "gemini-web"
-      ? [
-          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">gemini.google.com</code> e clique em <b>Concluir login</b>.",
-          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
-          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
-        ]
-      : [
-          "Se ainda não fez login, use o botão <b>Fazer login</b> abaixo, autentique em <code class=\"inline\">chat.deepseek.com</code> e clique em <b>Concluir login</b>.",
-          "O servidor fica acessível pelo <b>Base URL</b> da API abaixo.",
-          "Use o <b>Base URL</b> com qualquer cliente compatível com a API da OpenAI (curl, Python, Node.js, OpenAI SDK). Veja a aba <b>Exemplos</b>.",
-        ];
-    steps.innerHTML = stepsHtml.map((s) => "<li>" + s + "</li>").join("");
   }
 
   function fmtUptime(s) {
@@ -2229,8 +3888,40 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     }
   }
 
-  // Card "Modelos disponíveis": chip por modelo com botão de copiar o nome.
-  // Os modelos do proxy (Gemini Web, navegador) ficam num bloco separado.
+  // Catálogo de modelos: card por modelo, com badge do provedor e copiar alias.
+  let modelFilterValue = "all";
+
+  function modelProviderOf(m) {
+    const id = String(m.id || "").toLowerCase();
+    const cat = String(m.category_label || "").toLowerCase();
+    const type = String(m.providerType || m.provider || "").toLowerCase();
+    const owner = String(m.owned_by || "").trim();
+    const o = owner.toLowerCase();
+    if (type === "gemini" || o === "gemini" || o === "google" || id.includes("gemini") || cat.includes("gemini")) return { key: "google", label: "Google" };
+    if (type === "deepseek" || o === "deepseek" || id.includes("deepseek") || cat.includes("deepseek")) return { key: "deepseek", label: "DeepSeek" };
+    if (type === "qwen" || o === "qwen" || o.includes("alibaba") || id.includes("qwen") || cat.includes("qwen")) return { key: "qwen", label: "Qwen" };
+    if (type === "ollama" || id.includes("ollama") || cat.includes("local")) return { key: "local", label: "Local" };
+    if (o === "deepsproxy") return { key: "api", label: "Roteador" };
+    if (o === "openai" || id.includes("gpt") || /^o\d/.test(id)) return { key: "openai", label: "OpenAI" };
+    if (id.includes("claude")) return { key: "anthropic", label: "Anthropic" };
+    if (owner) return { key: "api", label: owner };
+    return { key: "api", label: "API" };
+  }
+
+  function applyModelFilter() {
+    const query = ($("#modelSearch")?.value || "").trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll("#modelsChips .model-card").forEach((card) => {
+      const matchFilter = modelFilterValue === "all" || card.dataset.provider === modelFilterValue;
+      const matchQuery = !query || (card.dataset.name || "").includes(query);
+      const show = matchFilter && matchQuery;
+      card.classList.toggle("hidden", !show);
+      if (show) visible++;
+    });
+    const empty = $("#modelsEmpty");
+    if (empty) empty.classList.toggle("hidden", visible > 0);
+  }
+
   function renderModelChips(ids) {
     const chips = $("#modelsChips");
     if (!chips) return;
@@ -2238,46 +3929,250 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     const list = (ids && ids.length ? ids : ["deepseek-thinking", "deepseek-no-thinking"]).map((m) =>
       typeof m === "string" ? { id: m, label: m } : m
     );
-    const proxyModels = list.filter((m) => m.category_label === "Web (proxy)");
-    const others = list.filter((m) => m.category_label !== "Web (proxy)");
-    const renderGroup = (label, models) => {
-      if (!models.length) return;
-      if (label) {
-        const h = document.createElement("div");
-        h.className = "models-group-label";
-        h.textContent = label;
-        chips.appendChild(h);
+    list.forEach((m) => {
+      const prov = modelProviderOf(m);
+      const card = document.createElement("article");
+      card.className = "model-card";
+      card.dataset.provider = prov.key;
+      card.dataset.name = String((m.label || m.id || "") + " " + m.id).toLowerCase();
+
+      const top = document.createElement("div");
+      top.className = "model-card-top";
+      const name = document.createElement("div");
+      name.className = "model-card-name";
+      const code = document.createElement("code");
+      code.textContent = m.label || m.id;
+      code.title = m.id;
+      name.appendChild(code);
+      if (m.label && m.label !== m.id) {
+        const alias = document.createElement("span");
+        alias.className = "model-alias";
+        alias.textContent = m.id;
+        alias.title = m.id;
+        name.appendChild(alias);
       }
-      models.forEach((m) => {
-        const chip = document.createElement("span");
-        chip.className = "model-chip";
-        const code = document.createElement("code");
-        code.textContent = m.label || m.id;
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.title = "Copiar nome do modelo";
-        btn.setAttribute("aria-label", "Copiar nome do modelo " + m.id);
-        btn.textContent = "\u29c9";
-        btn.addEventListener("click", () => copyText(m.id, btn));
-        chip.appendChild(code);
-        chip.appendChild(btn);
-        if (m.category_label) {
-          const cat = document.createElement("span");
-          cat.className = "chip-cat";
-          cat.textContent = m.category_label;
-          chip.insertBefore(cat, btn);
-        }
-        chips.appendChild(chip);
-      });
-    };
-    renderGroup("Gemini (Web) — do proxy (navegador, sem API key)", proxyModels);
-    renderGroup("", others);
+      const badge = document.createElement("span");
+      badge.className = "model-provider mp-" + prov.key;
+      badge.textContent = prov.label;
+      top.appendChild(name);
+      top.appendChild(badge);
+
+      const foot = document.createElement("div");
+      foot.className = "model-card-foot";
+      const h = healthOf(m.id);
+      const health = document.createElement("span");
+      health.className = "model-health";
+      if (h && h.status && h.status !== "untested") {
+        const dot = document.createElement("span");
+        dot.className = "mh-dot " + h.status;
+        health.appendChild(dot);
+        health.appendChild(document.createTextNode(h.status === "working" ? "Saudável" : h.status === "broken" ? "Falhando" : "Testando"));
+      } else {
+        health.classList.add("muted");
+        health.textContent = "Não testado";
+      }
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "model-copy";
+      btn.title = "Copiar alias do modelo";
+      btn.setAttribute("aria-label", "Copiar alias do modelo " + m.id);
+      btn.textContent = "Copiar alias";
+      btn.addEventListener("click", () => copyText(m.id, btn, "Copiado!"));
+      foot.appendChild(health);
+      foot.appendChild(btn);
+
+      card.appendChild(top);
+      card.appendChild(foot);
+      chips.appendChild(card);
+    });
+    applyModelFilter();
   }
 
   $("#btnCopyAllModels").addEventListener("click", () => {
     const ids = (status.models || []).map((m) => (typeof m === "string" ? m : m.id || m));
     const btn = $("#btnCopyAllModels");
     copyText(ids.join(", "), btn, "Todos copiados!");
+  });
+
+  const modelSearchInput = $("#modelSearch");
+  if (modelSearchInput) modelSearchInput.addEventListener("input", applyModelFilter);
+  document.querySelectorAll("#modelFilter button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      modelFilterValue = btn.dataset.modelFilter || "all";
+      document.querySelectorAll("#modelFilter button").forEach((b) => b.classList.toggle("active", b === btn));
+      applyModelFilter();
+    });
+  });
+
+  // ---------- Saúde dos modelos (aba Conexão) ----------
+  // Consome os endpoints do backend:
+  //   GET  /api/models/health       -> lista modelos + health { status, lastTested, error, latencyMs }
+  //   POST /api/models/health/test  -> testa um modelo ({ model })
+  //   POST /api/models/health/test-all -> testa todos os habilitados
+  let modelHealthList = [];
+  let modelHealthFilter = "all";
+
+  /** Busca o health de um modelo no cache local (por id). */
+  function healthOf(id) {
+    const it = modelHealthList.find((m) => m.id === id);
+    return it ? it.health : null;
+  }
+
+  async function loadModelHealth() {
+    try {
+      const res = await fetch("/api/models/health");
+      if (!res.ok) return;
+      modelHealthList = await res.json();
+      renderModelHealth();
+      // Atualiza os pontos de status nos chips do card "Modelos disponíveis".
+      if (lastModelIds) renderModelChips(status.models || []);
+    } catch (e) {
+      console.error("Erro ao carregar saúde dos modelos:", e);
+    }
+  }
+
+  function renderModelHealth() {
+    const wrap = $("#modelHealthList");
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    const counts = { working: 0, broken: 0, testing: 0, untested: 0 };
+    for (const m of modelHealthList) {
+      const st = (m.health && m.health.status) || "untested";
+      counts[st] = (counts[st] || 0) + 1;
+    }
+    const sum = $("#healthSummary");
+    if (sum) {
+      sum.innerHTML = "";
+      const mk = (label, cls, n) => {
+        const s = document.createElement("span");
+        s.className = "mh-summary " + cls;
+        s.textContent = n + " " + label;
+        sum.appendChild(s);
+      };
+      mk("funcionando", "working", counts.working);
+      mk("com problema", "broken", counts.broken);
+      mk("testando", "testing", counts.testing);
+      mk("não testados", "untested", counts.untested);
+    }
+    const filtered = modelHealthList.filter((m) => {
+      const st = (m.health && m.health.status) || "untested";
+      if (modelHealthFilter === "all") return true;
+      return st === modelHealthFilter;
+    });
+    if (!filtered.length) {
+      const empty = document.createElement("div");
+      empty.className = "note";
+      empty.style.padding = "12px 0";
+      empty.textContent = modelHealthList.length
+        ? "Nenhum modelo neste filtro."
+        : "Nenhum modelo habilitado. Ative um provedor acima.";
+      wrap.appendChild(empty);
+      return;
+    }
+    const labelOf = { working: "Funcionando", broken: "Com problema", testing: "Testando", untested: "Não testado" };
+    filtered.forEach((m) => {
+      const h = m.health || { status: "untested" };
+      const row = document.createElement("div");
+      row.className = "mh-row";
+      const dot = document.createElement("span");
+      dot.className = "mh-dot " + h.status;
+      row.appendChild(dot);
+      const id = document.createElement("span");
+      id.className = "mh-id";
+      id.textContent = m.id;
+      id.title = m.id;
+      row.appendChild(id);
+      const badge = document.createElement("span");
+      badge.className = "mh-badge " + h.status;
+      badge.textContent = labelOf[h.status] || h.status;
+      row.appendChild(badge);
+      const meta = document.createElement("span");
+      meta.className = "mh-meta";
+      const bits = [];
+      if (m.owned_by) bits.push(m.owned_by);
+      if (h.latencyMs != null) bits.push(h.latencyMs + " ms");
+      if (h.lastTested) bits.push("testado às " + new Date(h.lastTested).toLocaleTimeString("pt-BR"));
+      if (h.providerId) bits.push("via " + h.providerId);
+      meta.textContent = bits.join(" · ");
+      row.appendChild(meta);
+      if (h.error) {
+        const err = document.createElement("span");
+        err.className = "mh-err";
+        err.textContent = h.error;
+        err.title = h.error;
+        row.appendChild(err);
+      }
+      const spacer = document.createElement("span");
+      spacer.className = "spacer";
+      row.appendChild(spacer);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn ghost mh-test";
+      btn.textContent = "Testar";
+      btn.addEventListener("click", () => testModelHealth(m.id, btn));
+      row.appendChild(btn);
+      wrap.appendChild(row);
+    });
+  }
+
+  async function testModelHealth(modelId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = "Testando..."; }
+    try {
+      const res = await fetch("/api/models/health/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: modelId }),
+      });
+      const data = await res.json();
+      if (data && data.health) {
+        const it = modelHealthList.find((m) => m.id === modelId);
+        if (it) it.health = data.health;
+        else modelHealthList.push({ id: modelId, health: data.health });
+      }
+    } catch (e) {
+      console.error("Erro ao testar modelo:", e);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Testar"; }
+      renderModelHealth();
+      if (lastModelIds) renderModelChips(status.models || []);
+    }
+  }
+
+  $("#btnTestAllModels").addEventListener("click", async () => {
+    const btn = $("#btnTestAllModels");
+    if (btn.disabled) return;
+    const original = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Testando...';
+    try {
+      const res = await fetch("/api/models/health/test-all", { method: "POST" });
+      const data = await res.json();
+      if (data && data.health) {
+        modelHealthList = Object.entries(data.health).map(([id, health]) => {
+          const existing = modelHealthList.find((m) => m.id === id);
+          return { id, owned_by: existing ? existing.owned_by : undefined, health };
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao testar todos os modelos:", e);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = original;
+      renderModelHealth();
+      if (lastModelIds) renderModelChips(status.models || []);
+    }
+  });
+
+  $("#btnRefreshHealth").addEventListener("click", loadModelHealth);
+
+  $("#modelHealthFilter").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-filter]");
+    if (!b) return;
+    modelHealthFilter = b.dataset.filter;
+    for (const x of $("#modelHealthFilter").querySelectorAll("button")) {
+      x.classList.toggle("active", x === b);
+    }
+    renderModelHealth();
   });
 
   // "Copiar token": copia o token de autenticação do servidor (API_KEY do .env),
@@ -2374,7 +4269,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       }
       fb.textContent = "Alteração da chave salva.";
     } else {
-      editingKeys.push({ id: _newKeyClientId(), label, key, status: 'active', resetAt: null });
+      editingKeys.push({ id: _newKeyClientId(), label, key, status: 'active', resetAt: null, lastUsedAt: null, useCount: 0, lastResult: null });
       fb.textContent = "Chave adicionada.";
     }
     resetKeyForm();
@@ -2387,7 +4282,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     if (!list) return;
     list.innerHTML = '';
     if (!editingKeys.length) {
-      list.innerHTML = '<div class="sub" style="font-size:12px;color:var(--muted);margin-bottom:8px;">Nenhuma chave cadastrada. Adicione acima.</div>';
+      list.innerHTML = '<div class="sub" style="font-size:12px;color:var(--muted);margin-bottom:8px;">Nenhuma chave cadastrada. Use o formulário abaixo.</div>';
       return;
     }
     editingKeys.forEach((k) => {
@@ -2451,45 +4346,180 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     "gemini-web": { label: "Gemini (Web)", sub: () => "gemini.google.com via Playwright", baseUrlPh: "", baseUrlLabel: "Base URL", apiKeyLabel: "Chaves / Contas (opcional)", hint: "Modelos: gemini-2.5-flash, gemini-3-flash, etc. O chat usa a sessão do navegador (gemini.google.com) — sem API key." },
   };
 
+  const PROVIDER_AVATAR = {
+    "openai-compatible": "AI",
+    gemini: "G",
+    anthropic: "A",
+    ollama: "OL",
+    deepseek: "DS",
+    qwen: "Q",
+    "gemini-web": "G",
+  };
+
+  function providerKeys(p) {
+    return p && Array.isArray(p.apiKeys) ? p.apiKeys : [];
+  }
+
+  function keyState(k) {
+    if (k.status === "disabled") return { cls: "paused", label: "Pausada" };
+    if (k.status === "rate_limited") return { cls: "limited", label: k.resetAt ? "Em cooldown" : "Rate limited" };
+    if (k.lastUsedAt || (k.useCount || 0) > 0) return { cls: "used", label: "Ativa e usada" };
+    return { cls: "idle", label: "Ociosa / não usada" };
+  }
+
+  function fmtLastUsed(iso) {
+    if (!iso) return '<span class="account-never">Nunca usada</span>';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '<span class="account-never">Nunca usada</span>';
+    const diff = Math.max(0, Date.now() - d.getTime());
+    const min = Math.floor(diff / 60000);
+    const rel =
+      min < 1 ? "agora" :
+      min < 60 ? "há " + min + " min" :
+      min < 1440 ? "há " + Math.floor(min / 60) + " h" :
+      "há " + Math.floor(min / 1440) + " d";
+    const abs = d.toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+    return "<b>" + rel + "</b><span>" + abs + "</span>";
+  }
+
+  function updateProviderCounts() {
+    let keys = [];
+    providers.forEach((p) => { keys = keys.concat(providerKeys(p)); });
+    const used = keys.filter((k) => k.lastUsedAt || (k.useCount || 0) > 0).length;
+    const cooldown = keys.filter((k) => k.status === "rate_limited").length;
+    const paused = keys.filter((k) => k.status === "disabled").length;
+    const ovKeys = $("#ovKeys");
+    if (ovKeys) ovKeys.textContent = String(keys.length);
+    const ovProviders = $("#ovProviders");
+    if (ovProviders) ovProviders.textContent = String(providers.length);
+    const badge = $("#providerCountBadge");
+    if (badge) badge.textContent = String(keys.length);
+    const summary = $("#accountsSummary");
+    if (summary) {
+      summary.innerHTML =
+        '<span class="summary-pill"><b>' + providers.length + '</b> provedores</span>' +
+        '<span class="summary-pill"><b>' + keys.length + '</b> chaves</span>' +
+        '<span class="summary-pill ok"><b>' + used + '</b> utilizadas</span>' +
+        '<span class="summary-pill' + (cooldown ? " warn" : "") + '"><b>' + cooldown + '</b> em cooldown</span>' +
+        (paused ? '<span class="summary-pill muted"><b>' + paused + '</b> pausadas</span>' : "");
+    }
+  }
+
+  function renderAccountsTable() {
+    const wrap = $("#accountsTable");
+    if (!wrap) return;
+    if (!providers.length) {
+      wrap.innerHTML = '<div class="accounts-empty">Nenhum provedor cadastrado. Clique em <b>Novo provedor</b> para começar.</div>';
+      return;
+    }
+    const rows = [];
+    providers.forEach((p) => {
+      const meta = TYPE_META[p.type] || TYPE_META["openai-compatible"];
+      const avatar = PROVIDER_AVATAR[p.type] || "AI";
+      const keys = providerKeys(p);
+      const providerCell =
+        '<div class="account-provider">' +
+          '<div class="provider-avatar sm pa-' + escapeHtml(p.type) + '">' + avatar + '</div>' +
+          '<div class="account-provider-text">' +
+            '<b>' + escapeHtml(p.name) + '</b>' +
+            '<span>' + escapeHtml(meta.label) + (p.id === activeProviderId ? " · principal" : "") + '</span>' +
+          '</div>' +
+        '</div>';
+      if (!keys.length) {
+        const isWeb = p.type === "deepseek" || p.type === "qwen" || p.type === "gemini-web";
+        rows.push(
+          '<div class="account-row is-empty">' +
+            providerCell +
+            '<div class="account-info"><span class="account-none">' + (isWeb ? "Usa a sessão do navegador" : "Nenhuma chave cadastrada") + '</span></div>' +
+            '<div><span class="status-badge idle"><span class="dot"></span>' + (isWeb ? "Sessão web" : "Sem chave") + '</span></div>' +
+            '<div class="account-last account-never">—</div>' +
+            '<div class="account-actions">' +
+              '<button class="icon-btn sm" type="button" data-account-act="add" data-provider-id="' + p.id + '" title="Adicionar chave" aria-label="Adicionar chave">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>' +
+              '</button>' +
+            '</div>' +
+          '</div>'
+        );
+        return;
+      }
+      keys.forEach((k) => {
+        const st = keyState(k);
+        rows.push(
+          '<div class="account-row' + (k.status === "disabled" ? " is-paused" : "") + '">' +
+            providerCell +
+            '<div class="account-info">' +
+              '<b>' + escapeHtml(k.label || "Conta") + '</b>' +
+              '<code title="' + escapeHtml(k.key || "") + '">' + escapeHtml(_maskKey(k.key || "")) + '</code>' +
+            '</div>' +
+            '<div class="account-status-cell">' +
+              '<span class="status-badge ' + st.cls + '"><span class="dot"></span>' + st.label + '</span>' +
+              '<span class="account-count">' + (k.useCount || 0) + ' uso(s)</span>' +
+            '</div>' +
+            '<div class="account-last">' + fmtLastUsed(k.lastUsedAt) + '</div>' +
+            '<div class="account-actions">' +
+              '<button class="icon-btn sm" type="button" data-account-act="edit" data-provider-id="' + p.id + '" data-key-id="' + k.id + '" title="Editar chave" aria-label="Editar chave">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></svg>' +
+              '</button>' +
+              '<button class="icon-btn sm" type="button" data-account-act="toggle" data-provider-id="' + p.id + '" data-key-id="' + k.id + '" title="' + (k.status === "disabled" ? "Reativar chave" : "Pausar chave") + '" aria-label="' + (k.status === "disabled" ? "Reativar chave" : "Pausar chave") + '">' +
+                (k.status === "disabled"
+                  ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg>'
+                  : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg>') +
+              '</button>' +
+              '<button class="icon-btn sm danger" type="button" data-account-act="remove" data-provider-id="' + p.id + '" data-key-id="' + k.id + '" title="Remover chave" aria-label="Remover chave">' +
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3m-8 0 1 13h8l1-13"/></svg>' +
+              '</button>' +
+            '</div>' +
+          '</div>'
+        );
+      });
+    });
+    wrap.innerHTML = rows.join("");
+  }
+
   function renderProviderList() {
+    updateProviderCounts();
+    renderAccountsTable();
     const list = $("#providerList");
+    if (!list) return;
     if (!providers.length) {
       list.innerHTML =
-        '<div class="note" style="margin:0;">Nenhum provedor salvo ainda. Clique em <b>+ Novo provedor</b> para adicionar (Gemini, Anthropic, Ollama, OpenAI...).</div>';
+        '<div class="provider-empty">Nenhum provedor salvo ainda. Clique em <b>Novo provedor</b> ou escolha um provedor com cota gratuita no catálogo.</div>';
       return;
     }
     list.innerHTML = "";
     providers.forEach((p) => {
       const row = document.createElement("div");
-      row.className =
-        "provider-row" +
-        (p.enabled === false ? " disabled" : "") +
-        (p.id === activeProviderId ? " active" : "");
+      row.className = "provider-card" + (p.enabled === false ? " disabled" : "");
       const meta = TYPE_META[p.type] || TYPE_META["openai-compatible"];
       const typeBadge = meta.label;
-      const sub = meta.sub(p) || "";
+      const keys = providerKeys(p);
+      const sub = (meta.sub(p) || "") + (keys.length ? " · " + keys.length + " chave(s)" : p.type === "deepseek" || p.type === "qwen" || p.type === "gemini-web" ? " · sessão web" : "");
+      const avatar = PROVIDER_AVATAR[p.type] || "AI";
       row.innerHTML =
-        '<label class="checkbox" title="Ligar/desligar este provedor">' +
-          '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' /> Ativo' +
-        '</label>' +
-        '<div style="flex:1;min-width:0;">' +
-          '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
-            '<b style="font-size:14px;">' + escapeHtml(p.name) + '</b>' +
-            '<span class="pill" style="font-size:11px;padding:2px 8px;">' + typeBadge + '</span>' +
-            (p.id === activeProviderId ? '<span class="pill ok" style="font-size:11px;padding:2px 8px;"><span class="s"></span>principal</span>' : '') +
+        '<div class="provider-avatar pa-' + escapeHtml(p.type) + '">' + avatar + '</div>' +
+        '<div class="provider-info">' +
+          '<div class="provider-name-row">' +
+            '<b>' + escapeHtml(p.name) + '</b>' +
+            '<span class="badge">' + escapeHtml(typeBadge) + '</span>' +
+            (p.id === activeProviderId ? '<span class="badge primary">Principal</span>' : '') +
           '</div>' +
-          '<div class="sub" style="font-size:12px;color:var(--muted);margin-top:3px;word-break:break-all;">' + escapeHtml(sub) + '</div>' +
+          '<div class="provider-meta">' + escapeHtml(sub) + '</div>' +
         '</div>' +
-        '<div class="row" style="flex-shrink:0;">' +
-          (p.id !== activeProviderId ? '<button class="btn ghost" data-act="primary" data-id="' + p.id + '">★ Principal</button>' : '') +
-          '<button class="btn ghost" data-act="edit" data-id="' + p.id + '">Editar</button>' +
-          '<button class="btn ghost danger" data-act="remove" data-id="' + p.id + '">Excluir</button>' +
+        '<div class="provider-actions">' +
+          '<label class="switch" title="Ligar/desligar este provedor">' +
+            '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' aria-label="Ativar provedor" />' +
+            '<span class="track"></span>' +
+          '</label>' +
+          (p.id !== activeProviderId ? '<button class="btn ghost sm" data-act="primary" data-id="' + p.id + '">Definir principal</button>' : '') +
+          '<button class="btn ghost sm" data-act="edit" data-id="' + p.id + '">Editar</button>' +
+          '<button class="btn ghost sm danger" data-act="remove" data-id="' + p.id + '">Excluir</button>' +
         '</div>';
       list.appendChild(row);
     });
   }
 
   function openEditor(id) {
+    showConnectTab("accounts");
     editingId = id || null;
     resetKeyForm();
     const p = editingId ? providers.find((x) => x.id === editingId) : null;
@@ -2508,17 +4538,20 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         key: k.key || '',
         status: k.status || 'active',
         resetAt: k.resetAt || null,
+        lastUsedAt: k.lastUsedAt || null,
+        useCount: k.useCount || 0,
+        lastResult: k.lastResult || null,
       }));
     } else if (p && p.apiKey) {
       // Migração frontend: campo legado
-      editingKeys = [{ id: _newKeyClientId(), label: 'Conta Principal', key: p.apiKey, status: 'active', resetAt: null }];
+      editingKeys = [{ id: _newKeyClientId(), label: 'Conta Principal', key: p.apiKey, status: 'active', resetAt: null, lastUsedAt: null, useCount: 0, lastResult: null }];
     } else {
       editingKeys = [];
     }
     renderEditingKeys();
     toggleEditorType();
     $("#providerEditor").classList.remove("hidden");
-    $("#providerEditor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+    setTimeout(() => $("#pvName").focus(), 80);
   }
 
   function closeEditor() {
@@ -2554,9 +4587,140 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     return data;
   }
 
+  function openKeyModal(providerId) {
+    showConnectTab("accounts");
+    if (!providers.length) {
+      openEditor(null);
+      return;
+    }
+    const sel = $("#kmProvider");
+    sel.innerHTML = providers
+      .map((p) => '<option value="' + p.id + '">' + escapeHtml(p.name) + "</option>")
+      .join("");
+    sel.value = providerId || activeProviderId || providers[0].id;
+    $("#kmLabel").value = "";
+    $("#kmKey").value = "";
+    $("#kmFeedback").textContent = "";
+    $("#keyModal").classList.remove("hidden");
+    setTimeout(() => $("#kmLabel").focus(), 80);
+  }
+
+  function closeKeyModal() {
+    $("#keyModal").classList.add("hidden");
+  }
+
   $("#btnAddProvider").addEventListener("click", () => openEditor(null));
+  const btnAddProviderHero = $("#btnAddProviderHero");
+  if (btnAddProviderHero) btnAddProviderHero.addEventListener("click", () => openEditor(null));
+  $("#btnAddAccount").addEventListener("click", () => openKeyModal(null));
   $("#btnCancelProvider").addEventListener("click", closeEditor);
+  $("#btnCloseProviderModal").addEventListener("click", closeEditor);
+  $("#btnKeyModalCancel").addEventListener("click", closeKeyModal);
+  $("#btnKeyModalClose").addEventListener("click", closeKeyModal);
+  $("#providerEditor").addEventListener("click", (e) => {
+    if (e.target === $("#providerEditor")) closeEditor();
+  });
+  $("#keyModal").addEventListener("click", (e) => {
+    if (e.target === $("#keyModal")) closeKeyModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!$("#keyModal").classList.contains("hidden")) closeKeyModal();
+    else if (!$("#providerEditor").classList.contains("hidden")) closeEditor();
+  });
+
+  $("#btnKeyModalSave").addEventListener("click", async () => {
+    const fb = $("#kmFeedback");
+    const p = providers.find((x) => x.id === $("#kmProvider").value);
+    const key = $("#kmKey").value.trim();
+    if (!p) { fb.textContent = "Selecione um provedor."; return; }
+    if (!key) { fb.textContent = "Informe a API Key."; return; }
+    const label = $("#kmLabel").value.trim() || ("Conta " + (providerKeys(p).length + 1));
+    const before = providerKeys(p).slice();
+    p.apiKeys = providerKeys(p).concat([{
+      id: _newKeyClientId(),
+      label,
+      key,
+      status: "active",
+      resetAt: null,
+      lastUsedAt: null,
+      useCount: 0,
+      lastResult: null,
+    }]);
+    try {
+      const data = await saveProviders();
+      activeProviderId = data.active;
+      closeKeyModal();
+      renderProviderList();
+      loadStatus();
+    } catch (err) {
+      p.apiKeys = before;
+      fb.textContent = "Erro ao salvar: " + err.message;
+    }
+  });
+
   $("#pvType").addEventListener("change", toggleEditorType);
+
+  document.querySelectorAll(".free-add").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      openEditor(null);
+      $("#pvName").value = btn.dataset.quickName || "";
+      $("#pvType").value = btn.dataset.quickType || "openai-compatible";
+      $("#pvBaseUrl").value = btn.dataset.quickUrl || "";
+      $("#pvModel").value = "";
+      toggleEditorType();
+      $("#pvFeedback").textContent = "Complete os dados e clique em Salvar provedor.";
+      setTimeout(() => $("#pvName").focus(), 120);
+    });
+  });
+
+  let freeFilter = "all";
+  function applyFreeFilter() {
+    const query = ($("#freeProviderSearch")?.value || "").trim().toLowerCase();
+    let visible = 0;
+    document.querySelectorAll(".free-card").forEach((card) => {
+      const matchFilter = freeFilter === "all" || card.dataset.cat === freeFilter;
+      const haystack = ((card.dataset.name || "") + " " + card.textContent).toLowerCase();
+      const matchQuery = !query || haystack.includes(query);
+      const show = matchFilter && matchQuery;
+      card.classList.toggle("hidden", !show);
+      if (show) visible++;
+    });
+    document.querySelectorAll("[data-free-group]").forEach((group) => {
+      const hasVisible = Array.from(group.querySelectorAll(".free-card")).some(
+        (card) => !card.classList.contains("hidden")
+      );
+      group.classList.toggle("hidden", !hasVisible);
+    });
+    const empty = $("#freeProvidersEmpty");
+    if (empty) empty.classList.toggle("hidden", visible > 0);
+  }
+  const freeProviderSearch = $("#freeProviderSearch");
+  if (freeProviderSearch) freeProviderSearch.addEventListener("input", applyFreeFilter);
+  document.querySelectorAll("#freeProviderFilter button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      freeFilter = btn.dataset.freeFilter || "all";
+      document.querySelectorAll("#freeProviderFilter button").forEach((b) => {
+        b.classList.toggle("active", b === btn);
+      });
+      applyFreeFilter();
+    });
+  });
+  applyFreeFilter();
+
+  const btnCopyBaseUrl = $("#btnCopyBaseUrl");
+  if (btnCopyBaseUrl) {
+    btnCopyBaseUrl.addEventListener("click", () => {
+      copyText($("#baseUrl").value, btnCopyBaseUrl, "Copiado!");
+    });
+  }
+
+  $("#endpoints").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-endpoint]");
+    if (!btn) return;
+    const base = location.origin || "http://localhost:" + ($("#stPort")?.textContent || "3005");
+    copyText(base + btn.dataset.endpoint, btn, "Copiado!");
+  });
 
   // Adicionar nova chave / salvar alteração + limpar o formulário de chaves.
   $("#btnAddKey").addEventListener("click", saveDraftKey);
@@ -2591,6 +4755,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     const btn = e.target.closest("button[data-act]");
     if (!btn) return;
     const id = btn.dataset.id;
+    const snapshot = providers.slice();
+    const prevActive = activeProviderId;
     try {
       if (btn.dataset.act === "primary") {
         const data = await saveProviders(id);
@@ -2609,6 +4775,10 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         loadStatus();
       }
     } catch (err) {
+      providers.length = 0;
+      providers.push(...snapshot);
+      activeProviderId = prevActive;
+      renderProviderList();
       alert("Erro: " + err.message);
     }
   });
@@ -2637,6 +4807,46 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
     }
   });
 
+  $("#accountsTable").addEventListener("click", async (e) => {
+    const btn = e.target.closest("button[data-account-act]");
+    if (!btn) return;
+    const p = providers.find((x) => x.id === btn.dataset.providerId);
+    if (!p) return;
+    const action = btn.dataset.accountAct;
+    if (action === "add") {
+      openKeyModal(p.id);
+      return;
+    }
+    const keyId = btn.dataset.keyId;
+    const idx = providerKeys(p).findIndex((k) => k.id === keyId);
+    if (idx === -1) return;
+    if (action === "edit") {
+      openEditor(p.id);
+      setTimeout(() => enterEditKey(keyId), 60);
+      return;
+    }
+    const keyBackup = p.apiKeys.map((k) => ({ ...k }));
+    if (action === "remove") {
+      const k = p.apiKeys[idx];
+      if (!confirm('Remover a chave "' + (k.label || "Conta") + '" do provedor "' + p.name + '"?')) return;
+      p.apiKeys.splice(idx, 1);
+    } else if (action === "toggle") {
+      const k = p.apiKeys[idx];
+      k.status = k.status === "disabled" ? "active" : "disabled";
+      k.resetAt = null;
+    }
+    try {
+      const data = await saveProviders();
+      activeProviderId = data.active;
+      renderProviderList();
+      loadStatus();
+    } catch (err) {
+      p.apiKeys = keyBackup;
+      renderProviderList();
+      alert("Erro: " + err.message);
+    }
+  });
+
   $("#btnSaveProvider").addEventListener("click", async () => {
     const fb = $("#pvFeedback");
     const type = $("#pvType").value;
@@ -2657,10 +4867,20 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       name,
       type,
       baseUrl: isBrowser ? "" : $("#pvBaseUrl").value.trim(),
-      apiKeys: editingKeys.map((k) => ({ id: k.id, label: k.label, key: k.key, status: k.status, resetAt: k.resetAt })),
+      apiKeys: editingKeys.map((k) => ({
+        id: k.id,
+        label: k.label,
+        key: k.key,
+        status: k.status,
+        resetAt: k.resetAt,
+        lastUsedAt: k.lastUsedAt || null,
+        useCount: k.useCount || 0,
+        lastResult: k.lastResult || null,
+      })),
       model: $("#pvModel").value.trim(),
       enabled: existing ? existing.enabled : true,
     };
+    const snapshot = providers.slice();
     const existingIndex = providers.findIndex((p) => p.id === provider.id);
     if (existingIndex !== -1) providers[existingIndex] = provider;
     else providers.push(provider);
@@ -2677,6 +4897,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       renderProviderList();
       loadStatus();
     } catch (e) {
+      providers.length = 0;
+      providers.push(...snapshot);
       fb.textContent = "Erro ao salvar: " + e.message;
     }
   });
@@ -2767,7 +4989,6 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
   }
 
   function renderEndpoints(port) {
-    const base = location.origin || "http://localhost:" + port;
     $("#endpoints").innerHTML = [
       { m: "GET", p: "/health", d: "Health check" },
       { m: "GET", p: "/v1/models", d: "Lista de modelos" },
@@ -2778,7 +4999,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       .map(
         (e) =>
           `<div class="endpoint"><span class="method ${e.m.toLowerCase()}">${e.m}</span>` +
-          `<code>${e.p}</code><span style="flex:1"></span><span style="color:var(--muted);font-size:12px;">${e.d}</span></div>`
+          `<code>${e.p}</code><span style="flex:1"></span><span class="endpoint-desc">${e.d}</span>` +
+          `<button class="btn ghost sm" type="button" data-endpoint="${e.p}" title="Copiar URL completa">Copiar</button></div>`
       )
       .join("");
   }
@@ -2790,6 +5012,11 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
   function setLoginCard(card, hintEl, btnStart, btnFinish, login, siteName, site) {
     if (!card || !hintEl || !btnStart || !btnFinish) return;
     const inProgress = !!login.inProgress;
+    const statusEl = card.querySelector(".login-status");
+    if (statusEl) {
+      statusEl.className = "login-status " + (inProgress ? "warn" : login.loggedIn ? "ok" : "err");
+      statusEl.textContent = inProgress ? "Aguardando" : login.loggedIn ? "Conectado" : "Desconectado";
+    }
     if (inProgress) {
       hintEl.textContent = "Navegador aberto. Faça login em " + site + " e clique em \"Concluir login\".";
       btnStart.style.display = "none";
@@ -3306,7 +5533,7 @@ for await (const chunk of stream) {
   // Se o usuário mexeu no painel mas ainda não salvou, o poll de status não
   // pode sobrescrever a edição em andamento (senão o checkbox "desmarca sozinho").
   let economyDirty = false;
-  const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
+  const ECO_FIELDS = ["cachePrefix", "truncateHistory", "summarizeHistory", "stripReasoning", "truncateToolOutput", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive", "whitespaceHygiene", "compactJson", "filterToolNoise", "ageOldTurns"];
 
   function renderEconomy() {
     if (economyDirty) return;
@@ -3543,6 +5770,7 @@ for await (const chunk of stream) {
     if (sel) {
       const current = sel.value && catalogModels.some((m) => m.id === sel.value) ? sel.value : "";
       sel.innerHTML = groupedModelOptions(current);
+      if (!sel.value && sel.options.length) sel.selectedIndex = 0;
     }
     const dl = $("#appModelList");
     if (dl) {
@@ -3668,8 +5896,8 @@ for await (const chunk of stream) {
       $("#appKeyBox").classList.remove("hidden");
       fb.textContent = "Aplicação \"" + data.app.name + "\" criada com sucesso.";
       $("#appName").value = "";
-      $("#appModel").value = "";
       $("#appModelCustom").value = "";
+      if ($("#appModel").options.length) $("#appModel").selectedIndex = 0;
       apps = [data.app].concat(apps);
       renderAppList();
     } catch (e) {
@@ -3742,6 +5970,10 @@ for await (const chunk of stream) {
     tokenEstimation: false,
     smartTruncation: false,
     dedupConsecutive: false,
+    whitespaceHygiene: true,
+    compactJson: true,
+    filterToolNoise: false,
+    ageOldTurns: false,
   };
 
   // ======== AI Config Wizard Modal ========
@@ -4229,7 +6461,7 @@ for await (const chunk of stream) {
     },
   };
 
-  const ECO_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
+  const ECO_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive", "whitespaceHygiene", "compactJson", "filterToolNoise", "ageOldTurns"];
 
   // ---- Global settings ----
   function loadSettings() {
@@ -4256,6 +6488,10 @@ for await (const chunk of stream) {
       setTokenEstimation: "tokenEstimation",
       setSmartTruncation: "smartTruncation",
       setDedupConsecutive: "dedupConsecutive",
+      setWhitespaceHygiene: "whitespaceHygiene",
+      setCompactJson: "compactJson",
+      setFilterToolNoise: "filterToolNoise",
+      setAgeOldTurns: "ageOldTurns",
     };
     Object.entries(map).forEach(([elId, key]) => {
       const el = document.getElementById(elId);
@@ -4308,6 +6544,10 @@ for await (const chunk of stream) {
     tokenEstimation:    { tokens: 0,    quality: "nenhum", desc: "Apenas log, sem efeito" },
     smartTruncation:    { tokens: 2500, quality: "medio",  desc: "Preserva o mais importante" },
     dedupConsecutive:   { tokens: 500,  quality: "baixo",  desc: "Remove apenas duplicatas exatas" },
+    whitespaceHygiene:  { tokens: 150,  quality: "nenhum", desc: "Lossless — espaços e quebras" },
+    compactJson:        { tokens: 900,  quality: "nenhum", desc: "Lossless — tabelas JSON repetidas" },
+    filterToolNoise:    { tokens: 1500, quality: "baixo",  desc: "Lossy — remove ruído de tools" },
+    ageOldTurns:        { tokens: 1200, quality: "medio",  desc: "Lossy — condensa turnos antigos" },
   };
 
   function updateImpactBar() {
@@ -4366,6 +6606,10 @@ for await (const chunk of stream) {
       tokenEstimation: !!$("#setTokenEstimation")?.checked,
       smartTruncation: !!$("#setSmartTruncation")?.checked,
       dedupConsecutive: !!$("#setDedupConsecutive")?.checked,
+      whitespaceHygiene: !!$("#setWhitespaceHygiene")?.checked,
+      compactJson: !!$("#setCompactJson")?.checked,
+      filterToolNoise: !!$("#setFilterToolNoise")?.checked,
+      ageOldTurns: !!$("#setAgeOldTurns")?.checked,
     };
   }
 
@@ -4407,7 +6651,7 @@ for await (const chunk of stream) {
 
   // ---- Presets ----
   const PRESETS_KEY = "deepsproxy_presets";
-  const ECO_ALL_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive"];
+  const ECO_ALL_KEYS = ["truncateHistory", "summarizeHistory", "truncateToolOutput", "stripReasoning", "cachePrefix", "responseCache", "tokenEstimation", "smartTruncation", "dedupConsecutive", "whitespaceHygiene", "compactJson", "filterToolNoise", "ageOldTurns"];
 
   // Presets pré-configurados
   const BUILTIN_PRESETS = {
@@ -4415,21 +6659,25 @@ for await (const chunk of stream) {
       truncateHistory: false, summarizeHistory: false, truncateToolOutput: false,
       stripReasoning: false, cachePrefix: true, responseCache: false,
       tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+      whitespaceHygiene: true, compactJson: true, filterToolNoise: false, ageOldTurns: false,
     },
     "Código": {
       truncateHistory: false, summarizeHistory: false, truncateToolOutput: true,
       stripReasoning: true, cachePrefix: true, responseCache: false,
       tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+      whitespaceHygiene: true, compactJson: true, filterToolNoise: false, ageOldTurns: false,
     },
     "Criativo": {
       truncateHistory: false, summarizeHistory: false, truncateToolOutput: false,
       stripReasoning: false, cachePrefix: false, responseCache: false,
       tokenEstimation: false, smartTruncation: false, dedupConsecutive: false,
+      whitespaceHygiene: true, compactJson: false, filterToolNoise: false, ageOldTurns: false,
     },
     "Econômico": {
       truncateHistory: true, summarizeHistory: true, truncateToolOutput: true,
       stripReasoning: true, cachePrefix: true, responseCache: true,
       tokenEstimation: false, smartTruncation: true, dedupConsecutive: true,
+      whitespaceHygiene: true, compactJson: true, filterToolNoise: true, ageOldTurns: true,
     },
   };
 
@@ -4514,6 +6762,10 @@ for await (const chunk of stream) {
         tokenEstimation: "Estimar tokens",
         smartTruncation: "Smart truncation",
         dedupConsecutive: "Dedup consecutivas",
+        whitespaceHygiene: "Higiene whitespace",
+        compactJson: "Compactar JSON",
+        filterToolNoise: "Filtrar ruído tools",
+        ageOldTurns: "Condensar turnos",
       };
       return `<label class="checkbox" style="font-size:12px;">
         <input type="checkbox" data-preset-key="${key}" ${current[key] ? "checked" : ""} />

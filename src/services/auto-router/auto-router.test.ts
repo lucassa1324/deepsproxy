@@ -9,8 +9,9 @@ import assert from 'node:assert/strict';
 import { classifyTask } from './task-classifier.ts';
 import { selectBestModel } from './model-selector.ts';
 import { routeRequest, clearDecisionCache, updateAutoRouterConfig, getAutoRouterStatus, getAutoRouterConfig, getPreviousAutoModel, rememberAutoModel, clearConversationMemory, buildAutoFailoverChain } from './router.ts';
-import { registerModel, setModelAvailability, isModelDown, recordModelFailure, recordModelSuccess, resetModelHealth, getModelHealthState, inferCapabilities, getModelMetadata, recordModelRequest, recordModelLatency, recordModelOutcome, getModelMetrics, getModelMetricsFor, resetModelMetrics } from './model-metadata.ts';
-import type { ModelMetadata, AutoRouterConfig } from './types.ts';
+import { registerModel, setModelAvailability, isModelDown, recordModelFailure, recordModelSuccess, resetModelHealth, getModelHealthState, inferCapabilities, getModelMetadata, recordModelRequest, recordModelLatency, recordModelOutcome, getModelMetrics, getModelMetricsFor, resetModelMetrics, classifyFailure, isProviderDown, recordProviderFailure, recordProviderSuccess, resetProviderHealth } from './model-metadata.ts';
+import { resetQuotaTracker, getQuotaHeadroom, recordQuotaUsage, recordQuotaExhaustion } from '../quota-tracker.ts';
+import type { ModelMetadata, AutoRouterConfig, ScoringContext } from './types.ts';
 
 // ── Modelos de teste (mesmos IDs do registry global para override) ──────
 
@@ -801,3 +802,158 @@ describe('Complexity Gate (flash vs pro)', () => {
     assert.equal(result.selectedModelId, 'gemini-flash-test', 'trivial → flash é suficiente');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Scoring aprendido (reliability / latência / exploração / cota)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Learned Scoring', () => {
+  beforeEach(() => {
+    resetModelMetrics();
+    resetModelHealth();
+    resetProviderHealth();
+    resetQuotaTracker();
+    clearDecisionCache();
+  });
+
+  // Dois modelos IDÊNTICOS exceto o id — para isolar o efeito dos sinais.
+  function twinModels(overrides: Partial<ModelMetadata> = {}): ModelMetadata[] {
+    const base = {
+      capabilities: { reasoning: 7, coding: 7, math: 7, writing: 7, vision: 0, general: 7 },
+      cost: { input: 1.0, output: 2.0 },
+      speed: 7,
+      contextLength: 128000,
+      isFree: false,
+      isAvailable: true,
+      tags: [] as string[],
+      providerId: 'p',
+    };
+    return [
+      { id: 'twin-a', name: 'Twin A', ...base, ...overrides },
+      { id: 'twin-b', name: 'Twin B', ...base, ...overrides },
+    ];
+  }
+
+  const CLS = { categories: { coding: 7 } as any, complexity: 0.5, description: 'x' };
+
+  function metricsCtx(): ScoringContext {
+    return {
+      reliability: (id) => {
+        const m = getModelMetricsFor(id);
+        return m ? { successRate: m.successRate, requests: m.requests, avgLatencyMs: m.avgLatencyMs } : undefined;
+      },
+    };
+  }
+
+  it('sem métricas, o scoring é neutro (escolha determinística entre gêmeos)', () => {
+    const r = selectBestModel(twinModels(), CLS, makeConfig(), undefined, metricsCtx());
+    assert.ok(r.selectedModelId, 'deve escolher um modelo');
+    // Empate perfeito → preserva o primeiro da lista (twin-a).
+    assert.equal(r.selectedModelId, 'twin-a');
+  });
+
+  it('reliability: modelo com histórico melhor vence o gêmeo', () => {
+    for (let i = 0; i < 5; i++) {
+      recordModelRequest('twin-a');
+      recordModelOutcome('twin-a', true);
+    }
+    for (let i = 0; i < 5; i++) {
+      recordModelRequest('twin-b');
+      recordModelOutcome('twin-b', false, 'HTTP 500');
+    }
+    const r = selectBestModel(twinModels(), CLS, makeConfig(), undefined, metricsCtx());
+    assert.equal(r.selectedModelId, 'twin-a', 'histórico confiável deve vencer');
+  });
+
+  it('latência real: gêmeo mais rápido medido vence', () => {
+    for (let i = 0; i < 5; i++) {
+      recordModelRequest('twin-a');
+      recordModelOutcome('twin-a', true);
+      recordModelLatency('twin-a', 300);
+      recordModelRequest('twin-b');
+      recordModelOutcome('twin-b', true);
+      recordModelLatency('twin-b', 8000);
+    }
+    const r = selectBestModel(twinModels(), CLS, makeConfig(), undefined, metricsCtx());
+    assert.equal(r.selectedModelId, 'twin-a', 'menor latência medida deve vencer');
+  });
+
+  it('L2.5 headroom de contexto: modelo pequeno é descartado para prompt grande', () => {
+    const models: ModelMetadata[] = [
+      { id: 'ctx-big', name: 'Big', providerId: 'p', capabilities: { reasoning: 7, coding: 7, math: 7, writing: 7, vision: 0, general: 7 }, cost: { input: 1, output: 2 }, speed: 7, contextLength: 128000, isFree: false, isAvailable: true, tags: [] },
+      { id: 'ctx-small', name: 'Small', providerId: 'p', capabilities: { reasoning: 7, coding: 7, math: 7, writing: 7, vision: 0, general: 7 }, cost: { input: 1, output: 2 }, speed: 7, contextLength: 1000, isFree: false, isAvailable: true, tags: [] },
+    ];
+    const ctx: ScoringContext = { estimatedTokens: 5000 };
+    const r = selectBestModel(models, CLS, makeConfig(), undefined, ctx);
+    assert.equal(r.selectedModelId, 'ctx-big', 'janela pequena não cabe o prompt');
+  });
+
+  it('L1.3 headroom de cota: modelo esgotado é preterido', () => {
+    recordQuotaExhaustion('twin-b', 60_000);
+    const ctx: ScoringContext = { quotaHeadroom: (id) => getQuotaHeadroom(id) };
+    const r = selectBestModel(twinModels(), CLS, makeConfig(), undefined, ctx);
+    assert.equal(r.selectedModelId, 'twin-a', 'modelo sem cota deve vencer o esgotado');
+    assert.equal(getQuotaHeadroom('twin-b'), 0, 'esgotado → headroom 0');
+  });
+
+  it('exploração: modelo pouco testado ganha empurrão; muito testado não', () => {
+    // twin-b já tem amostra (mediana, com falhas); twin-a nunca foi usado.
+    recordModelRequest('twin-b');
+    recordModelOutcome('twin-b', true);
+    recordModelRequest('twin-b');
+    recordModelOutcome('twin-b', false, 'HTTP 500');
+    recordModelRequest('twin-b');
+    recordModelOutcome('twin-b', false, 'HTTP 500');
+    const ctx: ScoringContext = {
+      reliability: (id) => {
+        const m = getModelMetricsFor(id);
+        return m ? { successRate: m.successRate, requests: m.requests, avgLatencyMs: m.avgLatencyMs } : undefined;
+      },
+    };
+    // twin-a: reliability neutra (0.5) + bônus de exploração (+0.02).
+    // twin-b: reliability aprendida abaixo de neutra → cai. O não testado vence.
+    const r = selectBestModel(twinModels(), CLS, makeConfig(), undefined, ctx);
+    assert.equal(r.selectedModelId, 'twin-a', 'modelo não testado deve ter chance');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════
+// TESTES: Circuit breaker por provedor + classificação de falhas (L2.6/L3.8)
+// ══════════════════════════════════════════════════════════════════════════
+
+describe('Provider Breaker & Failure Classification', () => {
+  beforeEach(() => resetProviderHealth());
+
+  it('classifica falhas por classe', () => {
+    assert.equal(classifyFailure(429), 'quota');
+    assert.equal(classifyFailure(undefined, 'HTTP 429'), 'quota');
+    assert.equal(classifyFailure(undefined, 'insufficient_quota'), 'quota');
+    assert.equal(classifyFailure(500), 'transient');
+    assert.equal(classifyFailure(undefined, 'timeout ao conectar'), 'transient');
+    assert.equal(classifyFailure(400), 'fatal');
+    assert.equal(classifyFailure(undefined), 'transient');
+  });
+
+  it('cooldown de cota é maior que o de erro transitório', () => {
+    resetModelHealth();
+    const now = Date.now();
+    recordModelFailure('m-trans', 500, 'HTTP 500');
+    const trans = getModelHealthState().find((h) => h.modelId === 'm-trans')!.downUntil - now;
+    recordModelFailure('m-quota', 429, 'HTTP 429');
+    const quota = getModelHealthState().find((h) => h.modelId === 'm-quota')!.downUntil - now;
+    assert.ok(quota > trans, `cooldown de cota (${quota}) deve ser maior que transitório (${trans})`);
+  });
+
+  it('breaker de provedor abre só após o limiar (3) e fecha no sucesso', () => {
+    const p = 'provider-x';
+    assert.equal(isProviderDown(p), false);
+    recordProviderFailure(p, 500, 'HTTP 500');
+    recordProviderFailure(p, 500, 'HTTP 500');
+    assert.equal(isProviderDown(p), false, 'ainda abaixo do limiar');
+    recordProviderFailure(p, 500, 'HTTP 500');
+    assert.equal(isProviderDown(p), true, 'abre ao atingir o limiar');
+    recordProviderSuccess(p);
+    assert.equal(isProviderDown(p), false, 'sucesso fecha o breaker');
+  });
+});
+

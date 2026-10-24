@@ -13,6 +13,7 @@ import type {
   CostPolicy,
   RoutingDecision,
   AutoRouterConfig,
+  ScoringContext,
 } from './types.ts';
 
 // ── Pesos da fórmula de scoring ─────────────────────────────────────────
@@ -32,6 +33,15 @@ const POLICY_WEIGHTS: Record<CostPolicy, ScoreWeights> = {
   'paid-only': { capability: 0.50, cost: 0.20, speed: 0.15, availability: 0.15 },
 };
 
+// ── Ajustes aprendidos (L1.1/L1.2/L2.4) ─────────────────────────────────
+// Só entram quando há amostra suficiente; sem métricas o sinal é NEUTRO e o
+// scoring permanece idêntico ao determinístico (preserva ordem e testes).
+
+const RELIABILITY_WEIGHT = 0.15; // deslocamento máximo ±0.075
+const MIN_SAMPLES = 3;           // requests mínimos p/ confiar numa métrica
+const EXPLORE_BONUS = 0.02;      // chance (determinística) p/ modelos pouco testados
+const LAPLACE_ALPHA = 2;         // suavização de Laplace (prior = 0.5)
+
 // ── Função principal de seleção ─────────────────────────────────────────
 
 /**
@@ -46,7 +56,8 @@ export function selectBestModel(
   candidates: ModelMetadata[],
   classification: TaskClassification,
   config: AutoRouterConfig,
-  previousModelId?: string
+  previousModelId?: string,
+  ctx?: ScoringContext
 ): RoutingDecision {
   const weights = POLICY_WEIGHTS[config.costPolicy];
 
@@ -85,7 +96,7 @@ export function selectBestModel(
   // 2. Calcular score para cada modelo
   const gate = config.complexityGate ?? 0.6;
   const scored: ModelScore[] = eligible.map((model) =>
-    scoreModel(model, classification, weights, config.minCapabilityThreshold, gate)
+    scoreModel(model, classification, weights, config.minCapabilityThreshold, gate, ctx)
   );
 
   // 3. Ordenar por score (maior = melhor)
@@ -130,7 +141,8 @@ function scoreModel(
   classification: TaskClassification,
   weights: ScoreWeights,
   minThreshold: number,
-  complexityGate: number
+  complexityGate: number,
+  ctx?: ScoringContext
 ): ModelScore {
   const cap = classification.categories;
   const complexity = classification.complexity;
@@ -183,30 +195,78 @@ function scoreModel(
     }
   }
 
+  // L2.5 — Headroom de contexto: se o prompt estimado não cabe na janela do
+  // modelo, ele é praticamente descartado (evita 400/truncamento no meio da
+  // conversa). Perto do limite, penalidade leve.
+  if (ctx?.estimatedTokens && model.contextLength > 0) {
+    const need = ctx.estimatedTokens;
+    if (model.contextLength < need * 1.15) {
+      capabilityScore *= 0.05;
+    } else if (model.contextLength < need * 2) {
+      capabilityScore *= 0.85;
+    }
+  }
+
   // Cost penalty: normalizado (0 = gratuito, 1 = muito caro)
   // Usar custo combinado (input + output) ponderado
   const totalCost = model.cost.input + model.cost.output * 2; // Output pesa mais
   const costPenalty = Math.min(1, totalCost / 50); // 50 USD = custo máximo normalizado
 
-  // Speed bonus: 0-1
-  const speedBonus = model.speed / 10;
+  // L2.4 — Speed: usa a latência REAL observada quando há amostra; sem
+  // medição cai no `speed` estático (mantém saída determinística nos testes).
+  let speedSignal = model.speed / 10;
+  let sample = ctx?.reliability?.(model.id);
+  if (sample && sample.requests >= MIN_SAMPLES && sample.avgLatencyMs > 0) {
+    // 1s → ~1.0; 20s → ~0.4; 60s+ → ~0 (escala log).
+    const measured = Math.max(
+      0,
+      Math.min(1, 1 - Math.log10(Math.max(1, sample.avgLatencyMs / 1000)) / Math.log10(60))
+    );
+    speedSignal = 0.5 * (model.speed / 10) + 0.5 * measured;
+  }
 
   // Availability
   const availability = model.isAvailable ? 1 : 0;
 
-  // Score final
+  // L1.1 — Reliability: aprende com o histórico (taxa de sucesso com
+  // suavização de Laplace). Neutro (0.5) quando não há amostra suficiente.
+  let reliabilityScore = 0.5;
+  if (sample && sample.requests >= MIN_SAMPLES) {
+    const successes = sample.successRate * sample.requests;
+    reliabilityScore = (successes + LAPLACE_ALPHA) / (sample.requests + LAPLACE_ALPHA * 2);
+  }
+
+  // L1.2 — Exploração determinística: modelos pouco testados ganham um empurrão
+  // fixo (não-RNG, para manter a decisão reproduzível) até acumularem amostra.
+  const exploreBonus = !sample || sample.requests < MIN_SAMPLES ? EXPLORE_BONUS : 0;
+
+  // L1.3 — Headroom de cota: multiplicador 0.4-1.0. Sem informação, 1.0 (neutro).
+  let quotaHeadroom = 1;
+  const headroom = ctx?.quotaHeadroom?.(model.id);
+  if (typeof headroom === 'number' && Number.isFinite(headroom)) {
+    quotaHeadroom = Math.max(0, Math.min(1, headroom));
+  }
+  const quotaFactor = 0.4 + 0.6 * quotaHeadroom;
+
+  // Score final (multiplicado pelo fator de cota)
   const score =
-    capabilityScore * weights.capability
-    + (1 - costPenalty) * weights.cost
-    + speedBonus * weights.speed
-    + availability * weights.availability;
+    (
+      capabilityScore * weights.capability
+      + (1 - costPenalty) * weights.cost
+      + speedSignal * weights.speed
+      + availability * weights.availability
+      + (reliabilityScore - 0.5) * RELIABILITY_WEIGHT
+      + exploreBonus
+    ) * quotaFactor;
 
   return {
     modelId: model.id,
     score: Math.round(score * 1000) / 1000,
     capabilityScore: Math.round(capabilityScore * 1000) / 1000,
     costPenalty: Math.round(costPenalty * 1000) / 1000,
-    speedBonus: Math.round(speedBonus * 1000) / 1000,
+    speedBonus: Math.round(speedSignal * 1000) / 1000,
+    reliabilityScore: Math.round(reliabilityScore * 1000) / 1000,
+    quotaHeadroom: Math.round(quotaHeadroom * 1000) / 1000,
     reason: '',
   };
 }

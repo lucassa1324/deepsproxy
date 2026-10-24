@@ -68,7 +68,17 @@ import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { applyPhase1Optimizations, cacheSystemPrompt, getCachedPrompt, optimizedFetch } from '../services/optimizations.ts';
-import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome } from '../services/auto-router/index.ts';
+import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome, classifyFailure, recordProviderFailure, recordProviderSuccess } from '../services/auto-router/index.ts';
+import { recordQuotaUsage, recordQuotaTokens, recordQuotaExhaustion } from '../services/quota-tracker.ts';
+import { routedViaValue } from '../utils/header-value.ts';
+import {
+  deriveSessionKey,
+  getContextHandoffMode,
+  recordIncomingMessages,
+  maybeInjectContextHandoff,
+  recordSuccessfulModel,
+} from '../services/context-handoff.ts';
+import { isFusionModel, runFusionChat } from '../services/fusion.ts';
 
 interface DeepSeekAccumulated {
   reasoning: string;
@@ -669,11 +679,20 @@ function reportAutoOutcome(autoRouted: string | undefined, ok: boolean, extra?: 
   if (!autoRouted) return;
   // Métricas observacionais: contagem de sucesso/falha e último erro.
   recordModelOutcome(autoRouted, ok, ok ? undefined : extra);
+  const providerId = getModelMetadata(autoRouted)?.providerId || '';
   // Circuit breaker: sucesso fecha o circuito, falha abre com backoff.
   if (ok) {
     recordModelSuccess(autoRouted);
+    recordProviderSuccess(providerId);
+    // Orçamento de cota: conta 1 request (tokens somados quando disponíveis).
+    recordQuotaUsage(autoRouted);
   } else {
-    recordModelFailure(autoRouted, undefined, extra);
+    // Classifica a falha (L3.8): cota tem cooldown maior e dispara a troca
+    // automática de modelo (headroom 0 → roteador evita, failover assume).
+    const kind = classifyFailure(undefined, extra);
+    recordModelFailure(autoRouted, undefined, extra, kind);
+    recordProviderFailure(providerId, undefined, extra, kind);
+    if (kind === 'quota') recordQuotaExhaustion(autoRouted, 0);
   }
 }
 
@@ -691,7 +710,8 @@ async function attemptFailoverChain(
   enabled: Provider[],
   primary: Provider,
   chain: string[],
-  maybeStoreCache: (res: Response, modelId?: string) => Promise<Response>
+  maybeStoreCache: (res: Response, modelId?: string, onSuccess?: () => void) => Promise<Response>,
+  onSuccess?: (modelId: string) => void
 ): Promise<Response | null> {
   const tried: string[] = [];
   let lastRes: Response | null = null;
@@ -735,8 +755,11 @@ async function attemptFailoverChain(
       const stored = await maybeStoreCache(res, modelId);
       lastRes = stored;
       if (stored.status < 400) {
+        c.header('X-Routed-Via', routedViaValue(t.name, modelId));
+        c.header('X-FreeLLM-Cache', 'MISS');
         c.header('X-AutoRouter-FinalModel', modelId);
         if (tried.length > 1) c.header('X-AutoRouter-Failover', String(tried.length - 1));
+        onSuccess?.(modelId);
         console.log(`[auto-router] failover: "${modelId}" respondeu OK na ${tried.length}ª tentativa`);
         return stored;
       }
@@ -800,6 +823,16 @@ export async function chatCompletions(c: Context) {
     body.model = normalizeModelId(body.model);
     const isStream = body.stream ?? false;
     const economy: TokenEconomySettings = getTokenEconomy();
+
+    // Sticky sessions / handoff: chave estável derivada do header X-Session-ID
+    // (ou, na ausência, das mensagens) e registro da conversa recebida para
+    // permitir o resumo de contexto na troca de modelo.
+    const sessionKey = deriveSessionKey(c.req.header('X-Session-ID'), body.messages as any[]);
+    recordIncomingMessages(sessionKey, body.messages as any[]);
+    const handoffMode = getContextHandoffMode();
+    let activeProviderName: string | undefined;
+    const successModelKey = (modelId?: string) => `${activeProviderName ?? 'unknown'}/${modelId ?? body.model}`;
+    const rememberSuccess = (modelId?: string) => recordSuccessfulModel({ sessionKey, modelKey: successModelKey(modelId) });
 
     // Sanitização de prompt do Gateway Puro: injeta a diretiva ANTI-LAZY &
     // AGENTIC EXECUTION no INÍCIO do system message de TODAS as requisições
@@ -895,6 +928,13 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       }
     }
 
+    // ── Fusion multi-modelo: modelo virtual "fusion[:m1,m2,m3]" que roda a
+    // banca em paralelo e sintetiza a resposta. Roda DEPOIS da injeção do
+    // modelo da aplicação (gateway) e ANTES do auto router (modelo "auto").
+    if (isFusionModel(body.model)) {
+      return await runFusionChat(c, body, registry, enabled, primary);
+    }
+
     // ── Auto Router: quando modelo="auto" ou "auto-free", seleciona o melhor
     // modelo (vale para o cliente direto e para apps do gateway com modelo auto).
     const isAutoMode = body.model === 'auto' || body.model === 'auto-free';
@@ -958,6 +998,25 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       }
     }
 
+    // Handoff de contexto (sticky sessions): quando a conversa veio de outro
+    // modelo desta sessão, injeta um system message com o resumo do trabalho
+    // anterior ANTES da passada de economia/preferências.
+    activeProviderName = target?.name;
+    if (handoffMode !== 'off') {
+      const injected = maybeInjectContextHandoff({
+        mode: handoffMode,
+        sessionKey,
+        messages: body.messages as any[],
+        selectedModelKey: successModelKey(body.model),
+      });
+      if (injected.injected) {
+        console.log(
+          `[handoff] contexto injetado p/ ${target?.name}/${body.model} (${injected.injectedTokens} tokens est.)`
+        );
+        body = { ...body, messages: injected.messages as any[] };
+      }
+    }
+
     // Modo economia de tokens: aplica as transformações configuradas ANTES de
     // encaminhar ao provedor (truncar/resumir histórico, remover raciocínio,
     // limitar saída de tools, marcar cache de prefixo).
@@ -1007,31 +1066,41 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     if (cacheKey) {
       const hit = responseCacheGet(cacheKey);
       if (hit) {
+        c.header('X-FreeLLM-Cache', 'HIT');
+        c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+        rememberSuccess(autoRouted);
         console.log(`[economy] cache HIT ${cacheKey.slice(0, 10)}… (${hit.body.choices?.[0]?.message?.content?.length ?? 0} chars)`);
         return c.json(hit.body, hit.status as any);
       }
     }
 
-    const maybeStoreCache = async (res: Response, modelId?: string): Promise<Response> => {
+    const maybeStoreCache = async (res: Response, modelId?: string, onSuccess?: () => void): Promise<Response> => {
       // modelId é o modelo desta tentativa (no failover cada tentativa usa um
       // modelo diferente; fora dele usa o autoRouted original).
       const m = modelId ?? autoRouted;
+      const okRes = res.status < 400;
       if (cacheKey && res.status === 200) {
         try {
           const json = await res.clone().json();
           if (hasMeaningfulContent(json)) {
             responseCacheSet(cacheKey, res.status, json);
             reportAutoOutcome(m, true);
+            // Uso de tokens (best-effort): alimenta a auto-detecção de cota.
+            const total = json?.usage?.total_tokens;
+            if (m && typeof total === 'number' && total > 0) recordQuotaTokens(m, total);
+            onSuccess?.();
           } else {
             console.log(`[economy] resposta vazia NÃO cacheada ${cacheKey.slice(0, 10)}…`);
             reportAutoOutcome(m, false, 'resposta vazia');
           }
         } catch {
           // stream ou corpo não-JSON: não cacheia
-          reportAutoOutcome(m, res.status < 400);
+          reportAutoOutcome(m, okRes);
+          if (okRes) onSuccess?.();
         }
       } else {
-        reportAutoOutcome(m, res.status < 400, res.status >= 400 ? `HTTP ${res.status}` : undefined);
+        reportAutoOutcome(m, okRes, okRes ? undefined : `HTTP ${res.status}`);
+        if (okRes) onSuccess?.();
       }
       return res;
     };
@@ -1041,7 +1110,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     // próximo melhor modelo da cadeia antes de devolver erro ao cliente. Cada
     // tentativa alimenta o circuit breaker e as métricas do modelo tentado.
     if (autoFailoverChain.length > 1) {
-      const failoverRes = await attemptFailoverChain(c, body, registry, enabled, primary, autoFailoverChain, maybeStoreCache);
+      const failoverRes = await attemptFailoverChain(c, body, registry, enabled, primary, autoFailoverChain, maybeStoreCache, rememberSuccess);
       if (failoverRes) return failoverRes;
     }
 
@@ -1058,22 +1127,28 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     body = applyPromptCaching(body, target);
 
     if (isQwenProvider(target)) {
+      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
-        const res = await maybeStoreCache(await qwenChatCompletions(c, body));
+        const res = await maybeStoreCache(await qwenChatCompletions(c, body), autoRouted, () => rememberSuccess(autoRouted));
         return applyAntiLazyLoop(c, res, body, target);
       });
     }
 
     if (isGeminiWebProvider(target)) {
+      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
-        const res = await maybeStoreCache(await geminiChatCompletions(c, body));
+        const res = await maybeStoreCache(await geminiChatCompletions(c, body), autoRouted, () => rememberSuccess(autoRouted));
         return applyAntiLazyLoop(c, res, body, target);
       });
     }
 
     if (!isDeepseekProvider(target)) {
+      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
-        const res = await maybeStoreCache(await forwardChatCompletions(c, body, target));
+        const res = await maybeStoreCache(await forwardChatCompletions(c, body, target), autoRouted, () => rememberSuccess(autoRouted));
         return applyAntiLazyLoop(c, res, body, target);
       });
     }
@@ -1123,9 +1198,12 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     if (!isStream) {
       const t0 = Date.now();
       if (autoRouted) recordModelRequest(autoRouted);
+      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       const res = await handleDeepSeekNonStreaming(c, body, finalPrompt, isThinkingModel, isNewSession, refFileIds, visionOpts);
       if (autoRouted) recordModelLatency(autoRouted, Date.now() - t0);
       reportAutoOutcome(autoRouted, res.status < 400, res.status >= 400 ? `HTTP ${res.status}` : undefined);
+      if (res.status < 400) rememberSuccess(autoRouted);
       return res;
     }
 
@@ -1154,6 +1232,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     c.header('Content-Type', 'text/event-stream');
     c.header('Cache-Control', 'no-cache');
     c.header('Connection', 'keep-alive');
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
 
     const completionId = 'chatcmpl-' + uuidv4();
 
@@ -1462,6 +1541,9 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       await streamWriter.write('data: [DONE]\n\n');
 
       stopKeepAlive();
+
+      // Stream concluído com sucesso: registra o modelo como bom para o handoff.
+      rememberSuccess();
 
       console.log(
         `[chat] done model=${body.model} ${Date.now() - startedAt}ms tokens=${completionTokens + promptTokens} finish=${finalFinishReason}`

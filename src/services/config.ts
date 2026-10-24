@@ -42,6 +42,12 @@ export interface AccountKey {
   status: 'active' | 'rate_limited' | 'disabled';
   /** ISO string: quando o rate limit expira (se `rate_limited`). */
   resetAt?: string | null;
+  /** ISO string da última vez que a chave foi usada numa chamada real. */
+  lastUsedAt?: string | null;
+  /** Quantas chamadas já foram feitas com esta chave. */
+  useCount?: number;
+  /** Resultado da última tentativa que usou a chave. */
+  lastResult?: 'success' | 'quota' | 'error' | null;
 }
 
 export interface Provider {
@@ -82,22 +88,33 @@ export function normalizeAccountKeys(provider: Pick<Provider, 'apiKey' | 'apiKey
     if (!raw || typeof raw !== 'object') continue;
     const key = String(raw.key || '');
     if (!key) continue;
+    const useCount = Number(raw.useCount);
+    const lastResult =
+      raw.lastResult === 'success' || raw.lastResult === 'quota' || raw.lastResult === 'error'
+        ? raw.lastResult
+        : null;
     out.push({
       id: raw.id ? String(raw.id) : newAccountKeyId(),
       label: String(raw.label || `Conta ${out.length + 1}`).trim(),
       key,
       status: raw.status === 'rate_limited' || raw.status === 'disabled' ? raw.status : 'active',
       resetAt: raw.resetAt != null ? String(raw.resetAt) : null,
+      lastUsedAt: raw.lastUsedAt != null ? String(raw.lastUsedAt) : null,
+      useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0,
+      lastResult,
     });
   }
   // Migração: registro antigo com `apiKey: string` vira a primeira conta.
   if (out.length === 0 && typeof provider.apiKey === 'string' && provider.apiKey) {
     out.push({
-      id: newAccountKeyId(),
+      id: 'legacy',
       label: 'Conta Principal',
       key: provider.apiKey,
       status: 'active',
       resetAt: null,
+      lastUsedAt: null,
+      useCount: 0,
+      lastResult: null,
     });
   }
   return out;
@@ -268,12 +285,70 @@ function syncRuntimeStatusToRegistry(
   saveRegistryToDisk(reg);
 }
 
+let usageSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleUsageSave(): void {
+  if (usageSaveTimer) return;
+  usageSaveTimer = setTimeout(() => {
+    usageSaveTimer = null;
+    if (memoryRegistry) saveRegistryToDisk(memoryRegistry);
+  }, 2000);
+  if (typeof (usageSaveTimer as any).unref === 'function') (usageSaveTimer as any).unref();
+}
+
+/**
+ * Registra que uma chave foi efetivamente tentada numa chamada. Mantém o
+ * histórico no registro em memória/disco (gravação com debounce) para o
+ * dashboard mostrar "última utilização" e contagem por conta.
+ */
+export function recordKeyUse(
+  providerId: string,
+  keyId: string,
+  result: 'success' | 'quota' | 'error'
+): void {
+  if (!providerId || !keyId) return;
+  if (!memoryRegistry) memoryRegistry = loadRegistryFromDisk();
+  const reg = memoryRegistry;
+  if (!reg) return;
+  const provider = reg.providers.find((p) => p.id === providerId);
+  if (!provider) return;
+  const keys = normalizeAccountKeys(provider);
+  const idx = keys.findIndex((k) => k.id === keyId);
+  if (idx === -1) return;
+  const prev = keys[idx];
+  keys[idx] = {
+    ...prev,
+    lastUsedAt: new Date().toISOString(),
+    useCount: (prev.useCount || 0) + 1,
+    lastResult: result,
+  };
+  provider.apiKeys = keys;
+  scheduleUsageSave();
+}
+
 /** Aplica o estado runtime nas chaves do provider (para exibição no dashboard). */
 export function syncProviderKeyStatuses(provider: Provider): Provider {
+  const memProvider = memoryRegistry?.providers.find((p) => p.id === provider.id);
   const keys = normalizeAccountKeys(provider).map((k) => {
+    const memKey = memProvider?.apiKeys?.find((x) => x.id === k.id);
+    let merged = k;
+    if (memKey) {
+      const memLast = memKey.lastUsedAt ? new Date(memKey.lastUsedAt).getTime() : 0;
+      const ownLast = k.lastUsedAt ? new Date(k.lastUsedAt).getTime() : 0;
+      merged = {
+        ...merged,
+        lastUsedAt: memLast >= ownLast ? (memKey.lastUsedAt ?? merged.lastUsedAt) : merged.lastUsedAt,
+        useCount: Math.max(memKey.useCount || 0, merged.useCount || 0),
+        lastResult: memKey.lastResult ?? merged.lastResult,
+      };
+    }
     const rt = keyStatusStore.get(keyStateKey(provider.id, k.id));
-    if (!rt) return k;
-    return { ...k, status: rt.status, resetAt: rt.resetAt ? new Date(rt.resetAt).toISOString() : null };
+    if (!rt) return merged;
+    return {
+      ...merged,
+      status: rt.status,
+      resetAt: rt.resetAt ? new Date(rt.resetAt).toISOString() : null,
+    };
   });
   return { ...provider, apiKeys: keys };
 }

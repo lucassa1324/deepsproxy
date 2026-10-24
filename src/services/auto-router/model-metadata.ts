@@ -446,21 +446,53 @@ const healthMap = new Map<string, ModelHealth>();
 const COOLDOWN_BASE_MS = 30_000;
 const COOLDOWN_MAX_MS = 10 * 60_000;
 
+// ── Classificação de falhas (L3.8) ───────────────────────────────────────
+// Distingue "cota esgotada" (recuperação lenta) de erros transitórios
+// (rede/5xx) e fatais (4xx). O cooldown base muda por classe; o backoff
+// exponencial continua igual. Sem status/reason, assume transitório — mantém
+// o comportamento histórico (base 30s) e os testes existentes.
+
+export type FailureKind = 'quota' | 'transient' | 'fatal';
+
+/** Classifica uma falha a partir do status HTTP e/ou da mensagem. */
+export function classifyFailure(status?: number, reason?: string): FailureKind {
+  const r = (reason || '').toLowerCase();
+  if (status === 429) return 'quota';
+  if (/\b429\b/.test(r)) return 'quota';
+  if (/quota|rate.?limit|resource_exhausted|insufficient|exceeded/.test(r)) return 'quota';
+  if (status && status >= 500) return 'transient';
+  if (status === 408 || status === 409 || status === 425) return 'transient';
+  if (/timeout|timed out|econnreset|econnrefused|enotfound|network|fetch failed|socket|aborted/.test(r)) {
+    return 'transient';
+  }
+  if (status && status >= 400) return 'fatal';
+  return 'transient';
+}
+
+const COOLDOWN_BASE_BY_KIND: Record<FailureKind, number> = {
+  transient: COOLDOWN_BASE_MS,        // 30s
+  quota: COOLDOWN_BASE_MS * 2,        // 60s (cota recupera mais devagar)
+  fatal: COOLDOWN_BASE_MS,            // 30s
+};
+
 /** True quando o modelo está fora do roteamento (circuit breaker aberto). */
 export function isModelDown(modelId: string, now: number = Date.now()): boolean {
   const h = healthMap.get(modelId);
   return !!h && now < h.downUntil;
 }
 
-/** Registra uma falha: abre o circuito com backoff exponencial (30s → 10min). */
+/** Registra uma falha: abre o circuito com backoff exponencial (30s → 10min).
+ *  O cooldown base varia por classe (quota recupera mais devagar). */
 export function recordModelFailure(
   modelId: string,
   status?: number,
-  reason?: string
+  reason?: string,
+  kind?: FailureKind
 ): void {
+  const failureKind = kind ?? classifyFailure(status, reason);
   const prev = healthMap.get(modelId);
   const failures = (prev?.failures || 0) + 1;
-  const backoff = COOLDOWN_BASE_MS * Math.pow(2, Math.min(failures - 1, 5));
+  const backoff = COOLDOWN_BASE_BY_KIND[failureKind] * Math.pow(2, Math.min(failures - 1, 5));
   const cooldown = Math.min(backoff, COOLDOWN_MAX_MS);
   healthMap.set(modelId, {
     failures,
@@ -470,7 +502,7 @@ export function recordModelFailure(
   });
   console.warn(
     `[auto-router] modelo "${modelId}" indisponível por ${Math.round(cooldown / 1000)}s ` +
-      `(${failures} falhas consecutivas) status=${status ?? '-'}${reason ? ` — ${reason}` : ''}`
+      `(${failureKind}, ${failures} falhas consecutivas) status=${status ?? '-'}${reason ? ` — ${reason}` : ''}`
   );
 }
 
@@ -512,6 +544,176 @@ export function getModelHealthState(): Array<{
 /** Limpa o estado de saúde (usado nos testes). */
 export function resetModelHealth(): void {
   healthMap.clear();
+}
+
+// ── Circuit breaker por PROVEDOR (L2.6) ──────────────────────────────────
+// Quando um provedor inteiro cai (todos os seus modelos falhando seguidos), o
+// breaker por modelo não evita tentar os irmãos dele. Aqui rastreamos falhas
+// por provedor e, após N falhas consecutivas, suspendemos o provedor por um
+// cooldown — modelos de outros provedores assumem o roteamento.
+
+interface ProviderHealth {
+  failures: number;
+  downUntil: number;
+  lastFailAt: number;
+}
+
+const providerHealthMap = new Map<string, ProviderHealth>();
+const PROVIDER_FAIL_THRESHOLD = 3;      // falhas consecutivas p/ abrir
+const PROVIDER_COOLDOWN_BASE_MS = 30_000;
+const PROVIDER_COOLDOWN_MAX_MS = 10 * 60_000;
+
+/** True quando o provedor está com o breaker aberto (fora do roteamento). */
+export function isProviderDown(providerId: string, now: number = Date.now()): boolean {
+  if (!providerId) return false;
+  const h = providerHealthMap.get(providerId);
+  return !!h && now < h.downUntil;
+}
+
+/** Registra uma falha de um modelo do provedor. Abre o breaker após o limiar. */
+export function recordProviderFailure(
+  providerId: string,
+  status?: number,
+  reason?: string,
+  kind?: FailureKind
+): void {
+  if (!providerId) return;
+  const failureKind = kind ?? classifyFailure(status, reason);
+  const prev = providerHealthMap.get(providerId);
+  const failures = (prev?.failures || 0) + 1;
+  if (failures < PROVIDER_FAIL_THRESHOLD) {
+    providerHealthMap.set(providerId, { failures, downUntil: prev?.downUntil || 0, lastFailAt: Date.now() });
+    return;
+  }
+  const base = failureKind === 'quota' ? PROVIDER_COOLDOWN_BASE_MS * 3 : PROVIDER_COOLDOWN_BASE_MS;
+  const backoff = base * Math.pow(2, Math.min(failures - PROVIDER_FAIL_THRESHOLD, 4));
+  const cooldown = Math.min(backoff, PROVIDER_COOLDOWN_MAX_MS);
+  providerHealthMap.set(providerId, {
+    failures,
+    downUntil: Date.now() + cooldown,
+    lastFailAt: Date.now(),
+  });
+  console.warn(
+    `[auto-router] provedor "${providerId}" suspenso por ${Math.round(cooldown / 1000)}s ` +
+      `(${failureKind}, ${failures} falhas consecutivas)`
+  );
+}
+
+/** Sucesso em qualquer modelo do provedor fecha o breaker dele. */
+export function recordProviderSuccess(providerId: string): void {
+  if (!providerId) return;
+  if (providerHealthMap.delete(providerId)) {
+    console.log(`[auto-router] provedor "${providerId}" voltou ao roteamento`);
+  }
+}
+
+/** Estado de saúde dos provedores (dashboard/testes). */
+export function getProviderHealthState(): Array<{
+  providerId: string;
+  failures: number;
+  downUntil: number;
+  isDown: boolean;
+}> {
+  const now = Date.now();
+  const out: Array<{ providerId: string; failures: number; downUntil: number; isDown: boolean }> = [];
+  for (const [providerId, h] of providerHealthMap) {
+    out.push({ providerId, failures: h.failures, downUntil: h.downUntil, isDown: now < h.downUntil });
+  }
+  return out;
+}
+
+/** Limpa o estado de saúde dos provedores (testes). */
+export function resetProviderHealth(): void {
+  providerHealthMap.clear();
+}
+
+// ── Snapshot/Restore (persistência — L3.7) ───────────────────────────────
+
+export interface ModelHealthSnapshot {
+  modelId: string;
+  failures: number;
+  downUntil: number;
+  totalFailures: number;
+  lastFailAt: number;
+}
+
+export function snapshotModelHealth(): ModelHealthSnapshot[] {
+  const out: ModelHealthSnapshot[] = [];
+  for (const [modelId, h] of healthMap) out.push({ modelId, ...h });
+  return out;
+}
+
+export function restoreModelHealth(entries: ModelHealthSnapshot[]): void {
+  healthMap.clear();
+  for (const e of entries) {
+    if (!e || !e.modelId) continue;
+    healthMap.set(e.modelId, {
+      failures: e.failures || 0,
+      downUntil: e.downUntil || 0,
+      totalFailures: e.totalFailures || 0,
+      lastFailAt: e.lastFailAt || 0,
+    });
+  }
+}
+
+export interface ProviderHealthSnapshot {
+  providerId: string;
+  failures: number;
+  downUntil: number;
+  lastFailAt: number;
+}
+
+export function snapshotProviderHealth(): ProviderHealthSnapshot[] {
+  const out: ProviderHealthSnapshot[] = [];
+  for (const [providerId, h] of providerHealthMap) out.push({ providerId, ...h });
+  return out;
+}
+
+export function restoreProviderHealth(entries: ProviderHealthSnapshot[]): void {
+  providerHealthMap.clear();
+  for (const e of entries) {
+    if (!e || !e.providerId) continue;
+    providerHealthMap.set(e.providerId, {
+      failures: e.failures || 0,
+      downUntil: e.downUntil || 0,
+      lastFailAt: e.lastFailAt || 0,
+    });
+  }
+}
+
+export interface ModelMetricsSnapshot {
+  modelId: string;
+  requests: number;
+  successes: number;
+  failures: number;
+  totalLatencyMs: number;
+  lastLatencyMs: number;
+  lastError?: string;
+  lastRequestAt?: number;
+  lastSuccessAt?: number;
+}
+
+export function snapshotModelMetrics(): ModelMetricsSnapshot[] {
+  const out: ModelMetricsSnapshot[] = [];
+  for (const [modelId, m] of metricsMap) out.push({ modelId, ...m });
+  return out;
+}
+
+export function restoreModelMetrics(entries: ModelMetricsSnapshot[]): void {
+  metricsMap.clear();
+  for (const e of entries) {
+    if (!e || !e.modelId) continue;
+    metricsMap.set(e.modelId, {
+      requests: e.requests || 0,
+      successes: e.successes || 0,
+      failures: e.failures || 0,
+      totalLatencyMs: e.totalLatencyMs || 0,
+      lastLatencyMs: e.lastLatencyMs || 0,
+      lastError: e.lastError,
+      lastRequestAt: e.lastRequestAt,
+      lastSuccessAt: e.lastSuccessAt,
+    });
+  }
 }
 
 // ── Métricas de saúde por modelo ─────────────────────────────────────────

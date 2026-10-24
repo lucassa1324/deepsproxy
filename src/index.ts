@@ -38,6 +38,7 @@ import {
   primaryApiKey,
   getActiveApiKey,
 } from './services/config.ts';
+import { getModelHealth, isModelUsable } from './services/model-health.ts';
 import type { Provider } from './services/config.ts';
 import {
   extractBearerToken,
@@ -47,6 +48,7 @@ import {
 import { shutdownAgentPool, optimizedFetch } from './services/optimizations.ts';
 import { startDiscovery, stopDiscovery, startHealthCheck, stopHealthCheck } from './services/local-discovery.ts';
 import { updateApp } from './update.ts';
+import { initRouterPersistence, stopRouterPersistence } from './services/auto-router/index.ts';
 
 dotenv.config();
 
@@ -354,7 +356,14 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
     parent: null,
   };
 
-  const modelList = deduped.length ? [autoModel, autoFreeModel, ...deduped] : [autoModel, autoFreeModel,
+  // Filtra: só mostra modelos que funcionam (working), exceto auto/auto-free
+  const filteredDeduped = deduped.filter((m: any) => {
+    const id = String(m.id);
+    if (id === 'auto' || id === 'auto-free') return true;
+    return isModelUsable(id);
+  });
+
+  const modelList = filteredDeduped.length ? [autoModel, autoFreeModel, ...filteredDeduped] : [autoModel, autoFreeModel,
     {
       id: 'deepseek-thinking',
       object: 'model',
@@ -373,7 +382,11 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
       root: 'deepseek-no-thinking',
       parent: null,
     },
-  ];
+  ].filter((m: any) => {
+    const id = String(m.id);
+    if (id === 'auto' || id === 'auto-free') return true;
+    return isModelUsable(id);
+  });
 
   return new Response(
     JSON.stringify({
@@ -546,12 +559,14 @@ function serveApp(label: string, honoApp: Hono, port: number, opts: { openUi?: b
     stopDiscovery();
     stopHealthCheck();
     shutdownAgentPool();
+    stopRouterPersistence();
     process.exit(0);
   });
   process.on('SIGTERM', () => {
     stopDiscovery();
     stopHealthCheck();
     shutdownAgentPool();
+    stopRouterPersistence();
     process.exit(0);
   });
 
@@ -608,6 +623,7 @@ function startQwenRevalidationCron() {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   attachLogger();
+  initRouterPersistence();
   const port = process.env.PORT ? parseInt(process.env.PORT) : 3005;
   const gatewayPort = process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006;
 

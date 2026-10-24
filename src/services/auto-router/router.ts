@@ -15,6 +15,7 @@ import type {
   RoutingDecision,
   ModelMetadata,
   CostPolicy,
+  ScoringContext,
 } from './types.ts';
 import { classifyTask, hasImageInput } from './task-classifier.ts';
 import { selectBestModel } from './model-selector.ts';
@@ -24,9 +25,13 @@ import {
   syncWithCatalog,
   setModelAvailability,
   isModelDown,
+  isProviderDown,
   getModelHealthState,
+  getProviderHealthState,
   getModelMetrics,
+  getModelMetricsFor,
 } from './model-metadata.ts';
+import { getQuotaHeadroom, getQuotaTrackerStats } from '../quota-tracker.ts';
 
 // ── Configuração padrão ────────────────────────────────────────────────
 
@@ -105,6 +110,12 @@ export function routeRequest(
     (m) => m.isAvailable && availableIds.has(m.id) && !isModelDown(m.id)
   );
 
+  // 4a. Circuit breaker por PROVEDOR (L2.6): se um provedor inteiro está
+  // suspenso, seus modelos saem do roteamento — a menos que isso zeraria as
+  // opções (melhor tentar do que ficar sem nenhum modelo).
+  const providerUp = candidates.filter((m) => !isProviderDown(m.providerId));
+  if (providerUp.length > 0) candidates = providerUp;
+
   // 4b. auto-free (browserOnly): só provedores Playwright (gratuitos).
   if (browserOnly) {
     candidates = candidates.filter((m) => browserProviderIds.has(m.providerId));
@@ -141,11 +152,24 @@ export function routeRequest(
 
   // 5. Verificar cache de decisão (estabilidade)
   const convHash = buildConversationHash(messages, hasTools);
+
+  // Contexto de scoring (L1.1/L1.2/L1.3/L2.4/L2.5): sinais aprendidos/observados.
+  // Sem dados, cada função devolve neutro e o resultado é o determinístico.
+  const estimatedTokens = estimatePromptTokens(messages, currentMessage);
+  const scoringCtx: ScoringContext = {
+    reliability: (id) => {
+      const m = getModelMetricsFor(id);
+      return m ? { successRate: m.successRate, requests: m.requests, avgLatencyMs: m.avgLatencyMs } : undefined;
+    },
+    quotaHeadroom: (id) => getQuotaHeadroom(id),
+    estimatedTokens,
+  };
+
   const cached = decisionCache.get(convHash);
   if (cached && Date.now() - cached.timestamp < DECISION_CACHE_TTL) {
     const cachedModel = candidates.find((m) => m.id === cached.modelId);
     if (cachedModel) {
-      const decision = selectBestModel(candidates, classification, currentConfig, cached.modelId);
+      const decision = selectBestModel(candidates, classification, currentConfig, cached.modelId, scoringCtx);
       // Se o modelo cached ainda está entre os top 3, mantê-lo
       if (decision.alternatives.includes(cached.modelId) || decision.selectedModelId === cached.modelId) {
         return decision;
@@ -154,7 +178,7 @@ export function routeRequest(
   }
 
   // 6. Selecionar melhor modelo
-  const decision = selectBestModel(candidates, classification, currentConfig, previousModelId);
+  const decision = selectBestModel(candidates, classification, currentConfig, previousModelId, scoringCtx);
 
   // 7. Atualizar cache
   if (decision.selectedModelId) {
@@ -206,6 +230,27 @@ function logDecision(decision: RoutingDecision): void {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Estimativa grosseira de tokens do prompt (~4 chars/token). Usada só para o
+ * headroom de contexto (L2.5) — não precisa ser exata, apenas conservadora.
+ */
+function estimatePromptTokens(
+  messages: Array<{ role: string; content: string | any[] }>,
+  currentMessage: string
+): number {
+  let chars = 0;
+  for (const m of messages) {
+    if (typeof m.content === 'string') chars += m.content.length;
+    else if (Array.isArray(m.content)) {
+      for (const p of m.content) {
+        if (p && typeof p.text === 'string') chars += p.text.length;
+      }
+    }
+  }
+  chars += currentMessage.length;
+  return Math.ceil(chars / 4) + 64;
+}
 
 function buildConversationHash(messages: Array<{ role: string; content: string | any[] }>, hasTools = false): string {
   // Hash simples: últimas 3 mensagens (role + primeiros 100 chars)
@@ -298,6 +343,34 @@ export function clearConversationMemory(): void {
   lastModelByConv.clear();
 }
 
+export interface ConversationMemorySnapshotEntry {
+  key: string;
+  modelId: string;
+  at: number;
+}
+
+/** Snapshot da memória de conversas (persistência — L3.7). */
+export function snapshotConversationMemory(): ConversationMemorySnapshotEntry[] {
+  const out: ConversationMemorySnapshotEntry[] = [];
+  const now = Date.now();
+  for (const [key, v] of lastModelByConv) {
+    if (now - v.at < CONV_TTL_MS) out.push({ key, modelId: v.modelId, at: v.at });
+  }
+  return out;
+}
+
+/** Restaura a memória de conversas (persistência — L3.7). */
+export function restoreConversationMemory(entries: ConversationMemorySnapshotEntry[]): void {
+  lastModelByConv.clear();
+  if (!Array.isArray(entries)) return;
+  const now = Date.now();
+  for (const e of entries) {
+    if (!e || typeof e.key !== 'string' || !e.modelId) continue;
+    if (now - (e.at || 0) >= CONV_TTL_MS) continue;
+    lastModelByConv.set(e.key, { modelId: e.modelId, at: e.at || now });
+  }
+}
+
 // ── Cadeia de failover ───────────────────────────────────────────────────
 // Ordena os candidatos para retentativa quando o modelo escolhido falha:
 // [escolhido, ...fallbackChain] sem duplicatas, restrito ao catálogo real e
@@ -326,6 +399,7 @@ export function getAutoRouterStatus() {
   const now = Date.now();
   const metrics = getModelMetrics();
   const withRequests = metrics.filter((m) => m.requests > 0);
+  const providers = getProviderHealthState();
   return {
     config: currentConfig,
     modelCount: all.length,
@@ -338,6 +412,14 @@ export function getAutoRouterStatus() {
         failures: h.failures,
         retryInMs: Math.max(0, h.downUntil - now),
       })),
+    downedProviders: providers
+      .filter((p) => p.isDown)
+      .map((p) => ({
+        providerId: p.providerId,
+        failures: p.failures,
+        retryInMs: Math.max(0, p.downUntil - now),
+      })),
+    quota: getQuotaTrackerStats(),
     metrics: {
       modelsTracked: metrics.length,
       modelsWithTraffic: withRequests.length,

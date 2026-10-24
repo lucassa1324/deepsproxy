@@ -65,6 +65,7 @@ import {
   primaryApiKey,
   getActiveApiKey,
   normalizeAccountKeys,
+  syncProviderKeyStatuses,
 } from '../services/config.ts';
 import {
   listApps,
@@ -81,6 +82,7 @@ import { getBoosterSettings, updateBoosterSettings, toggleModelBooster, isModelB
 import { clearWorkspaceRootCache } from '../services/relay-path.ts';
 import { APP_VERSION, APP_TAG } from '../version.ts';
 import { buildAgentPrompt } from '../utils/prompt.ts';
+import { getAllModelHealth, getModelHealth, testModel, testAllModels, listAllModels } from '../services/model-health.ts';
 export const dashboard = new Hono();
 
 // Incrementado quando o registro de provedores muda. As páginas (chat e
@@ -214,6 +216,12 @@ dashboard.get('/api/status', async (c) => {
       }));
     }
 
+    const health = getAllModelHealth();
+    const modelsWithHealth = modelsList.map((m: any) => ({
+      ...m,
+      health: health[m.id] || { status: 'untested' },
+    }));
+
     return c.json({
       server: 'online',
       port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
@@ -229,7 +237,7 @@ dashboard.get('/api/status', async (c) => {
         hasApiKey: !!primaryApiKey(primary),
       },
       enabledCount: enabled.length,
-      models: modelsList,
+      models: modelsWithHealth,
       backend,
       providers: registry.providers.map((p) => ({
         id: p.id,
@@ -316,7 +324,11 @@ dashboard.get('/api/status', async (c) => {
 
 dashboard.get('/api/providers', (c) => {
   const registry = resolveRegistry(c.req.header('Cookie'));
-  return c.json({ ok: true, active: registry.active, providers: registry.providers });
+  return c.json({
+    ok: true,
+    active: registry.active,
+    providers: registry.providers.map((p) => syncProviderKeyStatuses(p)),
+  });
 });
 
 dashboard.post('/api/providers', async (c) => {
@@ -680,13 +692,13 @@ dashboard.patch('/api/settings/token-economy', async (c) => {
   try {
     const body: any = await c.req.json().catch(() => ({}));
     const patch: any = {};
-    for (const key of ['enabled', 'cachePrefix', 'truncateHistory', 'summarizeHistory', 'stripReasoning', 'truncateToolOutput', 'responseCache', 'tokenEstimation', 'smartTruncation', 'dedupConsecutive'] as const) {
+    for (const key of ['enabled', 'cachePrefix', 'truncateHistory', 'summarizeHistory', 'stripReasoning', 'truncateToolOutput', 'responseCache', 'tokenEstimation', 'smartTruncation', 'dedupConsecutive', 'whitespaceHygiene', 'compactJson', 'filterToolNoise', 'ageOldTurns'] as const) {
       if (typeof body[key] === 'boolean') patch[key] = body[key];
     }
     if (body.maxContextTokens !== undefined) patch.maxContextTokens = body.maxContextTokens;
     const settings = updateTokenEconomy(patch);
     console.log(
-      `[economy] configuração atualizada: enabled=${settings.enabled} cachePrefix=${settings.cachePrefix} truncate=${settings.truncateHistory} summarize=${settings.summarizeHistory} stripReasoning=${settings.stripReasoning} toolOutput=${settings.truncateToolOutput} responseCache=${settings.responseCache} tokenEstimation=${settings.tokenEstimation} smartTruncation=${settings.smartTruncation} dedup=${settings.dedupConsecutive}`
+      `[economy] configuração atualizada: enabled=${settings.enabled} cachePrefix=${settings.cachePrefix} truncate=${settings.truncateHistory} summarize=${settings.summarizeHistory} stripReasoning=${settings.stripReasoning} toolOutput=${settings.truncateToolOutput} responseCache=${settings.responseCache} tokenEstimation=${settings.tokenEstimation} smartTruncation=${settings.smartTruncation} dedup=${settings.dedupConsecutive} hygiene=${settings.whitespaceHygiene} compactJson=${settings.compactJson} toolFilter=${settings.filterToolNoise} aging=${settings.ageOldTurns}`
     );
     return c.json({ ok: true, settings });
   } catch (e: any) {
@@ -1161,6 +1173,38 @@ function generateHeuristicConfig(description: string, providerType: string, curr
     reasoning: `Configuração heurística baseada em: ${isCoding ? 'programação/agente' : isData ? 'análise de dados' : isCreative ? 'escrita criativa' : isReasoning ? 'raciocínio complexo' : 'chat geral'}${isLocalSmall ? ' + modelo local pequeno' : ''}.`
   };
 }
+
+// ── Health de Modelos ──────────────────────────────────────────────────
+dashboard.get('/api/models/health', async (c) => {
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  const enabled = enabledProviders(registry);
+  const all = await listAllModels(enabled);
+  const health = getAllModelHealth();
+  return c.json(
+    all.map((m) => ({
+      id: m.id,
+      owned_by: m.owned_by,
+      health: health[m.id] || { status: 'untested' },
+    }))
+  );
+});
+
+dashboard.post('/api/models/health/test', async (c) => {
+  const body: any = await c.req.json().catch(() => ({}));
+  const model = String(body.model || '').trim();
+  if (!model) return c.json({ ok: false, error: 'model é obrigatório' }, 400);
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  const enabled = enabledProviders(registry);
+  const ok = await testModel(model, enabled, { force: true });
+  return c.json({ ok, model, health: getModelHealth(model) });
+});
+
+dashboard.post('/api/models/health/test-all', async (c) => {
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  const enabled = enabledProviders(registry);
+  const res = await testAllModels(enabled, { concurrency: 2, force: false });
+  return c.json({ ok: true, ...res, health: getAllModelHealth() });
+});
 
 // ── FASE 4: Local Models ──────────────────────────────────────────────────
 

@@ -23,6 +23,13 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 
+import {
+  applyWhitespaceHygiene,
+  applyJsonCompact,
+  applyToolNoiseFilter,
+  applyOlderTurnCondensing,
+} from './compression.ts';
+
 export interface TokenEconomySettings {
   /** Master: se false, nenhuma das opções abaixo é aplicada. */
   enabled: boolean;
@@ -48,6 +55,19 @@ export interface TokenEconomySettings {
   smartTruncation: boolean;
   /** dedupConsecutive: remover mensagens consecutivas idênticas. */
   dedupConsecutive: boolean;
+  /** whitespaceHygiene: higiene de whitespace sem perda (trailing spaces,
+   *  3+ quebras de linha, system duplicados exatos). Portado do freellmapi. */
+  whitespaceHygiene: boolean;
+  /** compactJson: tabelas JSON repetidas em tool results codificadas como
+   *  [[json-table]] (lossless). Portado do freellmapi. */
+  compactJson: boolean;
+  /** filterToolNoise: remove linhas de ruído de output de ferramentas
+   *  (git-status/log, progressos de test, ANSI) preservando erros/código
+   *  (lossy). Portado do freellmapi. */
+  filterToolNoise: boolean;
+  /** ageOldTurns: condensa turnos antigos de user/assistant num digest de
+   *  intenção (lossy). Portado do freellmapi. */
+  ageOldTurns: boolean;
   /** Janela máxima de contexto (tokens) usada pelo truncateHistory. */
   maxContextTokens: number;
 }
@@ -65,6 +85,10 @@ export const DEFAULT_ECONOMY: TokenEconomySettings = {
   stripMetadata: true,
   smartTruncation: true,
   dedupConsecutive: true,
+  whitespaceHygiene: true,
+  compactJson: true,
+  filterToolNoise: false,
+  ageOldTurns: false,
   maxContextTokens: 8000,
 };
 
@@ -173,6 +197,10 @@ export function updateTokenEconomy(patch: Partial<TokenEconomySettings>): TokenE
     stripMetadata: sanitizeBool(patch.stripMetadata, current.stripMetadata),
     smartTruncation: sanitizeBool(patch.smartTruncation, current.smartTruncation),
     dedupConsecutive: sanitizeBool(patch.dedupConsecutive, current.dedupConsecutive),
+    whitespaceHygiene: sanitizeBool(patch.whitespaceHygiene, current.whitespaceHygiene),
+    compactJson: sanitizeBool(patch.compactJson, current.compactJson),
+    filterToolNoise: sanitizeBool(patch.filterToolNoise, current.filterToolNoise),
+    ageOldTurns: sanitizeBool(patch.ageOldTurns, current.ageOldTurns),
     maxContextTokens: sanitizeWindow(patch.maxContextTokens, current.maxContextTokens),
   };
   economyCache = next;
@@ -543,6 +571,38 @@ export async function applyTokenEconomy(
   if (settings.stripReasoning) {
     messages = stripReasoningFromMessages(messages);
     actions.push('stripReasoning');
+  }
+
+  // Engines portadas do freellmapi (compression.ts). Lossless primeiro,
+  // depois os lossy — reduzem o volume que o truncamento abaixo teria que
+  // cortar às cegas.
+  if (settings.whitespaceHygiene) {
+    const { messages: kept, changed, duplicateSystemMessages } = applyWhitespaceHygiene(messages);
+    if (changed) actions.push(`hygiene(${duplicateSystemMessages} sys duplicados)`);
+    messages = kept;
+  }
+
+  if (settings.filterToolNoise) {
+    const { messages: kept, filtersApplied, changed } = applyToolNoiseFilter(messages);
+    if (changed) {
+      const summary = Object.entries(filtersApplied)
+        .map(([id, n]) => `${id}(${n})`)
+        .join(', ');
+      actions.push(`toolFilter(${summary || 'ok'})`);
+    }
+    messages = kept;
+  }
+
+  if (settings.compactJson) {
+    const { messages: kept, tables, changed } = applyJsonCompact(messages);
+    if (tables > 0 && changed) actions.push(`jsonCompact(${tables} tables)`);
+    messages = kept;
+  }
+
+  if (settings.ageOldTurns) {
+    const { messages: kept, condensed, changed } = applyOlderTurnCondensing(messages);
+    if (changed && condensed > 0) actions.push(`aging(${condensed} turnos)`);
+    messages = kept;
   }
 
   if (settings.truncateToolOutput) {

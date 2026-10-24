@@ -14,7 +14,12 @@ import type {
   RoutingDecision,
   AutoRouterConfig,
   ScoringContext,
+  ModelExclusion,
+  ModelFeatures,
 } from './types.ts';
+import { inferModelFeatures } from './model-metadata.ts';
+
+const PREFERRED_PROVIDER_BONUS = 0.03;
 
 // ── Pesos da fórmula de scoring ─────────────────────────────────────────
 
@@ -28,7 +33,7 @@ interface ScoreWeights {
 const POLICY_WEIGHTS: Record<CostPolicy, ScoreWeights> = {
   economy:   { capability: 0.35, cost: 0.40, speed: 0.15, availability: 0.10 },
   balanced:  { capability: 0.40, cost: 0.25, speed: 0.20, availability: 0.15 },
-  quality:   { capability: 0.55, cost: 0.10, speed: 0.15, availability: 0.20 },
+  quality:   { capability: 0.65, cost: 0.05, speed: 0.10, availability: 0.20 },
   'free-only': { capability: 0.45, cost: 0.00, speed: 0.25, availability: 0.30 },
   'paid-only': { capability: 0.50, cost: 0.20, speed: 0.15, availability: 0.15 },
 };
@@ -61,43 +66,36 @@ export function selectBestModel(
 ): RoutingDecision {
   const weights = POLICY_WEIGHTS[config.costPolicy];
 
-  // 1. Filtrar por disponibilidade e política de custo
-  const eligible = filterByPolicy(candidates, config.costPolicy);
+  // 1. Filtros rígidos: disponibilidade, política de custo e requisitos
+  // binários da tarefa (visão/tools/JSON/streaming/contexto). Um modelo que não
+  // atende a um requisito obrigatório NÃO pode ser escolhido nem como fallback:
+  // o erro precisa ser explícito em vez de encaminhar para um modelo incompatível.
+  const { eligible, exclusions } = filterCandidates(candidates, config, classification);
 
   if (eligible.length === 0) {
-    // Fallback: se nenhum modelo passou no filtro, tentar com todos os disponíveis
-    const available = candidates.filter((m) => m.isAvailable);
-    if (available.length === 0) {
-      return {
-        selectedModelId: '',
-        selectedModelName: 'Nenhum modelo disponível',
-        providerId: '',
-        taskClassification: classification,
-        score: 0,
-        reason: 'Nenhum modelo disponível no momento',
-        alternatives: [],
-        fallbackChain: [],
-      };
-    }
-    // Usar o primeiro disponível como fallback
-    const fallback = available[0];
     return {
-      selectedModelId: fallback.id,
-      selectedModelName: fallback.name,
-      providerId: fallback.providerId,
+      selectedModelId: '',
+      selectedModelName: 'Nenhum modelo compatível',
+      providerId: '',
       taskClassification: classification,
       score: 0,
-      reason: 'Fallback: nenhum modelo atendeu à política de custo',
-      alternatives: available.slice(1).map((m) => m.id),
-      fallbackChain: available.slice(1).map((m) => m.id),
+      reason: buildNoModelReason(exclusions),
+      alternatives: [],
+      fallbackChain: [],
+      consideredModels: candidates.length,
+      exclusions,
     };
   }
 
   // 2. Calcular score para cada modelo
   const gate = config.complexityGate ?? 0.6;
-  const scored: ModelScore[] = eligible.map((model) =>
-    scoreModel(model, classification, weights, config.minCapabilityThreshold, gate, ctx)
-  );
+  const scored: ModelScore[] = eligible.map((model) => {
+    const score = scoreModel(model, classification, weights, config.minCapabilityThreshold, gate, ctx);
+    if (ctx?.preferredProviderId && model.providerId === ctx.preferredProviderId) {
+      score.score = Math.round((score.score + PREFERRED_PROVIDER_BONUS) * 1000) / 1000;
+    }
+    return score;
+  });
 
   // 3. Ordenar por score (maior = melhor)
   scored.sort((a, b) => b.score - a.score);
@@ -131,6 +129,8 @@ export function selectBestModel(
     reason,
     alternatives: scored.slice(1, 4).map((s) => s.modelId),
     fallbackChain,
+    consideredModels: candidates.length,
+    exclusions,
   };
 }
 
@@ -271,17 +271,57 @@ function scoreModel(
   };
 }
 
-// ── Filtragem por política de custo ─────────────────────────────────────
+// ── Filtragem rígida (política de custo + requisitos) ───────────────────
 
-function filterByPolicy(models: ModelMetadata[], policy: CostPolicy): ModelMetadata[] {
-  return models.filter((m) => {
-    if (!m.isAvailable) return false;
-    switch (policy) {
-      case 'free-only': return m.isFree;
-      case 'paid-only': return !m.isFree;
-      default: return true;
+function filterCandidates(
+  models: ModelMetadata[],
+  config: AutoRouterConfig,
+  classification: TaskClassification
+): { eligible: ModelMetadata[]; exclusions: ModelExclusion[] } {
+  const eligible: ModelMetadata[] = [];
+  const exclusions: ModelExclusion[] = [];
+  const requirements = classification.requirements;
+
+  for (const model of models) {
+    const reasons: string[] = [];
+
+    if (!model.isAvailable) reasons.push('indisponível');
+    if (config.costPolicy === 'free-only' && !model.isFree) reasons.push('política free-only (modelo pago)');
+    if (config.costPolicy === 'paid-only' && model.isFree) reasons.push('política paid-only (modelo gratuito)');
+
+    if (requirements) {
+      const features: ModelFeatures =
+        model.features || inferModelFeatures(model.id, model.capabilities, model.tags);
+      if (requirements.vision && !features.vision) reasons.push('não suporta visão');
+      if (requirements.tools && !features.tools) reasons.push('não suporta tools/function calling');
+      if (requirements.structuredOutput && !features.structuredOutput) {
+        reasons.push('não suporta structured output/JSON');
+      }
+      if (requirements.streaming && !features.streaming) reasons.push('não suporta streaming');
+      if (
+        requirements.minContextTokens &&
+        (!model.contextLength || model.contextLength < requirements.minContextTokens)
+      ) {
+        reasons.push(
+          `contexto insuficiente (${model.contextLength || 'desconhecido'} < ${requirements.minContextTokens} tokens)`
+        );
+      }
     }
-  });
+
+    if (reasons.length === 0) eligible.push(model);
+    else exclusions.push({ modelId: model.id, reason: reasons.join('; ') });
+  }
+
+  return { eligible, exclusions };
+}
+
+function buildNoModelReason(exclusions: ModelExclusion[]): string {
+  if (exclusions.length === 0) return 'Nenhum modelo disponível no momento';
+  const sample = exclusions
+    .slice(0, 3)
+    .map((e) => `${e.modelId}: ${e.reason}`)
+    .join('; ');
+  return `Nenhum modelo compatível com a tarefa (${exclusions.length} excluído(s): ${sample})`;
 }
 
 // ── Geração de justificativa ────────────────────────────────────────────

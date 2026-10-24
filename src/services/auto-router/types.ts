@@ -24,6 +24,19 @@ export interface ModelCost {
 
 // ── Metadados completos de um modelo ────────────────────────────────────
 
+/**
+ * Recursos binários do modelo (suporta ou não). Separado das capacidades
+ * numéricas (0-10) porque um requisito como "tools" é obrigatório: um modelo
+ * sem suporte não pode ser escolhido nem como fallback daquela requisição.
+ * Opcional para preservar compatibilidade com metadados antigos/testes.
+ */
+export interface ModelFeatures {
+  tools: boolean;
+  vision: boolean;
+  structuredOutput: boolean;
+  streaming: boolean;
+}
+
 export interface ModelMetadata {
   id: string;                    // ID normalizado do modelo
   name: string;                  // Nome de exibição
@@ -35,14 +48,25 @@ export interface ModelMetadata {
   isFree: boolean;               // true se custo = 0
   isAvailable: boolean;          // false se indisponível (health check)
   tags: string[];                // Tags livres: "code", "vision", "fast", etc.
+  features?: ModelFeatures;      // Recursos binários (tools/vision/JSON/stream)
 }
 
 // ── Classificação de tarefa ─────────────────────────────────────────────
+
+export interface TaskRequirements {
+  vision?: boolean;
+  tools?: boolean;
+  structuredOutput?: boolean;
+  streaming?: boolean;
+  /** O prompt precisa caber inteiro na janela de contexto. */
+  minContextTokens?: number;
+}
 
 export interface TaskClassification {
   categories: Partial<ModelCapabilities>;  // Capacidades necessárias (valores > 0)
   complexity: number;                       // 0-1 (0 = trivial, 1 = extremamente complexo)
   description: string;                      // Descrição legível da tarefa
+  requirements?: TaskRequirements;          // Requisitos binários obrigatórios
 }
 
 // ── Política de custo ───────────────────────────────────────────────────
@@ -68,6 +92,11 @@ export interface AutoRouterConfig {
 
 // ── Resultado do roteamento ─────────────────────────────────────────────
 
+export interface ModelExclusion {
+  modelId: string;
+  reason: string;
+}
+
 export interface RoutingDecision {
   selectedModelId: string;
   selectedModelName: string;
@@ -77,6 +106,8 @@ export interface RoutingDecision {
   reason: string;
   alternatives: string[];       // Outros modelos considerados
   fallbackChain: string[];      // Chain de fallback se falhar
+  consideredModels?: number;    // Candidatos após filtros de catálogo/saúde
+  exclusions?: ModelExclusion[]; // Modelos descartados e o motivo
 }
 
 // ── Entrada do score ────────────────────────────────────────────────────
@@ -106,4 +137,6 @@ export interface ScoringContext {
   quotaHeadroom?: (modelId: string) => number | undefined;
   /** Tokens estimados do prompt atual (para headroom de contexto). */
   estimatedTokens?: number;
+  /** Provedor principal do registro (preferência leve, nunca obrigatória). */
+  preferredProviderId?: string;
 }

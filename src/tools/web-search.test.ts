@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { webSearch } from './web-search.ts';
+import {
+  webSearch,
+  searchWebDetailed,
+  setWebSearchProviders,
+  resetWebSearchProviders,
+} from './web-search.ts';
 import { app } from '../index.ts';
 
 function setupFetchMock(handler: (url: string) => Response) {
@@ -100,5 +105,107 @@ test('POST /v1/web/search: valida query vazia', async () => {
     assert.strictEqual(res.status, 400);
   } finally {
     restore();
+  }
+});
+
+test('orquestrador de busca: provedor com erro cai para o próximo e valida resultados', async () => {
+  setWebSearchProviders([
+    {
+      id: 'broken',
+      name: 'Broken',
+      async search() { throw new Error('HTTP 503'); },
+    },
+    {
+      id: 'good',
+      name: 'Good',
+      async search() {
+        return [
+          { title: 'Válido', url: 'https://example.com/a', snippet: 'ok' },
+          { title: 'Inválido', url: 'javascript:alert(1)', snippet: 'x' },
+          { title: 'Duplicado', url: 'https://example.com/a', snippet: 'dup' },
+          { title: '', url: '', snippet: '' },
+        ];
+      },
+    },
+  ]);
+  try {
+    const outcome = await searchWebDetailed('teste', 5);
+    assert.strictEqual(outcome.providerId, 'good');
+    assert.strictEqual(outcome.results.length, 1);
+    assert.strictEqual(outcome.results[0].url, 'https://example.com/a');
+    assert.strictEqual(outcome.attempts.length, 2);
+    assert.strictEqual(outcome.attempts[0].ok, false);
+    assert.match(outcome.attempts[0].error || '', /503/);
+    assert.strictEqual(outcome.attempts[1].ok, true);
+  } finally {
+    resetWebSearchProviders();
+  }
+});
+
+test('orquestrador de busca: resultados vazios tentam próximo provedor', async () => {
+  setWebSearchProviders([
+    { id: 'empty', name: 'Empty', async search() { return []; } },
+    {
+      id: 'filled',
+      name: 'Filled',
+      async search() { return [{ title: 'T', url: 'https://example.com/b', snippet: 'S' }]; },
+    },
+  ]);
+  try {
+    const outcome = await searchWebDetailed('teste', 5);
+    assert.strictEqual(outcome.providerId, 'filled');
+    assert.strictEqual(outcome.results.length, 1);
+  } finally {
+    resetWebSearchProviders();
+  }
+});
+
+test('orquestrador de busca: nenhum provedor elegível falha com erro claro', async () => {
+  setWebSearchProviders([]);
+  try {
+    await assert.rejects(
+      () => searchWebDetailed('teste', 5),
+      /nenhum provedor configurado/i
+    );
+  } finally {
+    resetWebSearchProviders();
+  }
+});
+
+test('orquestrador de busca: timeout de um provedor cai para o próximo', async () => {
+  setWebSearchProviders([
+    {
+      id: 'slow',
+      name: 'Slow',
+      async search() { throw new Error('The operation was aborted due to timeout'); },
+    },
+    {
+      id: 'fast',
+      name: 'Fast',
+      async search() { return [{ title: 'T', url: 'https://example.com/c', snippet: 'S' }]; },
+    },
+  ]);
+  try {
+    const outcome = await searchWebDetailed('teste', 5);
+    assert.strictEqual(outcome.providerId, 'fast');
+    assert.strictEqual(outcome.results[0].url, 'https://example.com/c');
+    assert.match(outcome.attempts[0].error || '', /timeout/i);
+  } finally {
+    resetWebSearchProviders();
+  }
+});
+
+test('orquestrador de busca: todos sem resultados devolve lista vazia (não erro)', async () => {
+  setWebSearchProviders([
+    { id: 'empty-a', name: 'A', async search() { return []; } },
+    { id: 'empty-b', name: 'B', async search() { return []; } },
+  ]);
+  try {
+    const outcome = await searchWebDetailed('teste', 5);
+    assert.strictEqual(outcome.results.length, 0);
+    assert.strictEqual(outcome.providerId, null);
+    assert.strictEqual(outcome.attempts.length, 2);
+  } finally {
+    resetWebSearchProviders();
   }
 });

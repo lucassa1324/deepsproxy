@@ -25,7 +25,7 @@ import { attachLogger } from './ui/logger.ts';
 import { fetchModels, findProviderForModel } from './services/local.ts';
 import { isAdapterProvider, fetchProviderModels } from './services/adapters/index.ts';
 import { attachVnc, attachVncWs } from './ui/vnc.ts';
-import { webSearch, registerWebSearchTool } from './tools/web-search.ts';
+import { searchWebDetailed, registerWebSearchTool } from './tools/web-search.ts';
 import { listServerTools } from './services/agent.ts';
 import {
   resolveRegistry,
@@ -515,8 +515,13 @@ export async function listModelsForProviders(providers: Provider[]): Promise<Res
 
   try {
     console.log(`[web-search] query="${query}" max=${max}`);
-    const results = await webSearch(query, max);
-    return c.json({ query, results });
+    const outcome = await searchWebDetailed(query, max);
+    return c.json({
+      query,
+      results: outcome.results,
+      provider: outcome.providerId,
+      attempts: outcome.attempts,
+    });
   } catch (err: any) {
     console.error(`[web-search] error: ${err?.message || String(err)}`);
     return c.json({ error: { message: err?.message || String(err) } }, 502);

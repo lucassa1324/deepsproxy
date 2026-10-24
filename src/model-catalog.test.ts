@@ -84,6 +84,52 @@ describe('modelCatalog: prioridade da API oficial sobre o gemini-web', () => {
     }
   });
 
+  it('provedor desabilitado não entra no catálogo nem é consultado', async () => {
+    resetModelCatalogCache();
+    const fetched: string[] = [];
+    const original = globalThis.fetch;
+    globalThis.fetch = async (input: any) => {
+      const url = String(input?.url ?? input);
+      fetched.push(url);
+      return new Response(
+        JSON.stringify({ object: 'list', data: [{ id: 'enabled-model' }] }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      );
+    };
+    const mixed = {
+      active: 'on',
+      providers: [
+        {
+          id: 'off',
+          name: 'Desabilitado',
+          type: 'openai-compatible',
+          baseUrl: 'http://localhost:9260/v1',
+          apiKey: 'k',
+          model: 'disabled-model',
+          enabled: false,
+        },
+        {
+          id: 'on',
+          name: 'Habilitado',
+          type: 'openai-compatible',
+          baseUrl: 'http://localhost:9261/v1',
+          apiKey: 'k',
+          model: 'enabled-model',
+          enabled: true,
+        },
+      ],
+    } as unknown as ProviderRegistry;
+    try {
+      const catalog = await getModelCatalog(mixed);
+      assert.ok(catalog.some((m) => m.id === 'enabled-model'));
+      assert.ok(!catalog.some((m) => m.id === 'disabled-model'));
+      assert.ok(fetched.every((u) => !u.includes('9260')), 'não pode consultar provedor desabilitado');
+    } finally {
+      globalThis.fetch = original;
+      resetModelCatalogCache();
+    }
+  });
+
   it('modelo sem conflito aponta para o provedor oficial que o expôs', async () => {
     const restore = mockGeminiModels();
     try {

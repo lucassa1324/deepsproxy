@@ -7,7 +7,7 @@
  * registro dinâmico de modelos descobertos via providers.
  */
 
-import type { ModelMetadata, ModelCapabilities, ModelCost } from './types.ts';
+import type { ModelMetadata, ModelCapabilities, ModelCost, ModelFeatures } from './types.ts';
 
 // ── Metadados de modelos conhecidos ─────────────────────────────────────
 // Valores de capabilities: 0-10 (0 = não suporta, 10 = excelente)
@@ -232,11 +232,59 @@ let metadataCache: Map<string, ModelMetadata> = new Map();
 function buildMetadataCache(): void {
   metadataCache = new Map();
   for (const m of KNOWN_MODELS) {
-    metadataCache.set(m.id, { ...m, providerId: '', isAvailable: true });
+    metadataCache.set(m.id, {
+      ...m,
+      providerId: '',
+      isAvailable: true,
+      features: inferModelFeatures(m.id, m.capabilities, m.tags),
+    });
   }
 }
 
 buildMetadataCache();
+
+/**
+ * Infere recursos binários a partir do id/tags/capacidades. Usado apenas quando
+ * o registro não traz `features` explícitas (modelos conhecidos e dinâmicos).
+ * Heurística conservadora: um recurso só é habilitado com sinal claro.
+ */
+export function inferModelFeatures(
+  modelId: string,
+  capabilities: ModelCapabilities,
+  tags: string[] = []
+): ModelFeatures {
+  const text = `${modelId} ${tags.join(' ')}`.toLowerCase();
+  const has = (...words: string[]) => words.some((w) => text.includes(w));
+
+  const tools =
+    has(
+      'gpt', 'claude', 'gemini', 'deepseek', 'qwen', 'llama', 'mistral', 'mixtral',
+      'coder', 'code', 'reasoning', 'thinking', 'sonnet', 'opus', 'pro', 'plus',
+      'instruct', 'chat'
+    ) ||
+    capabilities.coding >= 8 ||
+    capabilities.reasoning >= 8;
+
+  const vision =
+    capabilities.vision > 0 ||
+    has('vision', 'llava', 'vl', 'multimodal', 'omni', 'pixtral', 'vlm');
+
+  const structuredOutput =
+    has(
+      'gpt', 'claude', 'gemini', 'deepseek', 'qwen', 'llama', 'mistral', 'mixtral',
+      'coder', 'code', 'instruct', 'json', 'structured'
+    ) ||
+    tools;
+
+  return {
+    tools,
+    vision,
+    structuredOutput,
+    // O proxy encaminha SSE para todos os tipos de chat; modelos antigos sem
+    // informação são tratados como compatíveis (não bloquear por desconhecido).
+    streaming: true,
+  };
+}
 
 // ── API pública ─────────────────────────────────────────────────────────
 
@@ -259,17 +307,20 @@ export function registerModel(
   data: Partial<ModelMetadata> & { providerId: string }
 ): ModelMetadata {
   const existing = metadataCache.get(id);
+  const capabilities = data.capabilities || existing?.capabilities || inferCapabilities(id);
+  const tags = data.tags || existing?.tags || [];
   const merged: ModelMetadata = {
     id,
     name: data.name || existing?.name || id,
     providerId: data.providerId,
-    capabilities: data.capabilities || existing?.capabilities || inferCapabilities(id),
+    capabilities,
     cost: data.cost || existing?.cost || { input: 0, output: 0 },
     speed: data.speed ?? existing?.speed ?? 5,
     contextLength: data.contextLength ?? existing?.contextLength ?? 128000,
     isFree: data.isFree ?? existing?.isFree ?? (data.cost?.input === 0 && data.cost?.output === 0),
     isAvailable: data.isAvailable ?? true,
-    tags: data.tags || existing?.tags || [],
+    tags,
+    features: data.features || existing?.features || inferModelFeatures(id, capabilities, tags),
   };
   metadataCache.set(id, merged);
   return merged;

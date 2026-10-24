@@ -407,9 +407,65 @@ export function providerTypeLabel(type: ProviderType): string {
   }
 }
 
+export type RoutingMode = 'auto' | 'manual';
+export type RoutingCostPolicy = 'economy' | 'balanced' | 'quality' | 'free-only' | 'paid-only';
+
+/**
+ * Preferências de roteamento persistidas junto ao registro de provedores.
+ * `mode` decide se requisições sem modelo explícito (ou com modelo desconhecido)
+ * passam pelo Auto Router; `costPolicy` alimenta o seletor de modelos.
+ *
+ * Registros antigos (sem `routing`) são tratados como `manual` para preservar o
+ * comportamento legado de encaminhar o modelo do cliente sem alterações.
+ */
+export interface RoutingSettings {
+  mode: RoutingMode;
+  costPolicy: RoutingCostPolicy;
+  /** Origem: explícita no registro ou inferida para compatibilidade. */
+  source?: 'explicit' | 'legacy';
+}
+
 export interface ProviderRegistry {
   active: string;
   providers: Provider[];
+  routing?: RoutingSettings;
+}
+
+const VALID_ROUTING_MODES: RoutingMode[] = ['auto', 'manual'];
+const VALID_COST_POLICIES: RoutingCostPolicy[] = [
+  'economy', 'balanced', 'quality', 'free-only', 'paid-only',
+];
+
+/** Normaliza as preferências de roteamento vindas do cookie/API. */
+export function sanitizeRoutingSettings(
+  input: any,
+  fallback: RoutingSettings = { mode: 'manual', costPolicy: 'balanced', source: 'legacy' }
+): RoutingSettings {
+  if (!input || typeof input !== 'object') return { ...fallback };
+  const mode = VALID_ROUTING_MODES.includes(input.mode) ? input.mode : fallback.mode;
+  const costPolicy = VALID_COST_POLICIES.includes(input.costPolicy)
+    ? input.costPolicy
+    : fallback.costPolicy;
+  return { mode, costPolicy, source: 'explicit' };
+}
+
+/** Preferências efetivas de roteamento de um registro (default legado: manual). */
+export function getRoutingSettings(registry: ProviderRegistry): RoutingSettings {
+  return registry.routing
+    ? { ...registry.routing }
+    : { mode: 'manual', costPolicy: 'balanced', source: 'legacy' };
+}
+
+/** Atualiza as preferências de roteamento de um registro (imutável). */
+export function withRoutingSettings(
+  registry: ProviderRegistry,
+  patch: Partial<RoutingSettings>
+): ProviderRegistry {
+  const current = getRoutingSettings(registry);
+  return {
+    ...registry,
+    routing: sanitizeRoutingSettings({ ...current, ...patch }, current),
+  };
 }
 
 export const PROVIDERS_COOKIE = 'deepsproxy_providers';
@@ -519,8 +575,15 @@ export function sanitizeRegistry(input: any): { registry?: ProviderRegistry; err
     providers.push(provider);
   }
   if (providers.length === 0) return { error: 'Nenhum provedor válido.' };
-  const active = providers.some((p) => p.id === input.active) ? input.active : providers[0].id;
-  return { registry: { active, providers } };
+  // `active` pode ficar vazio em modo automático (nenhum provedor principal).
+  const active =
+    typeof input.active === 'string' && (input.active === '' || providers.some((p) => p.id === input.active))
+      ? input.active
+      : providers[0].id;
+  const routing = input.routing
+    ? sanitizeRoutingSettings(input.routing)
+    : { mode: 'manual' as RoutingMode, costPolicy: 'balanced' as RoutingCostPolicy, source: 'legacy' as const };
+  return { registry: { active, providers, routing } };
 }
 
 /* ------------------------- Resolução ------------------------- */
@@ -539,7 +602,15 @@ function saveRegistryToDisk(registry: ProviderRegistry): void {
   try {
     const file = providersFile();
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, JSON.stringify({ active: registry.active, providers: registry.providers }, null, 2), 'utf-8');
+    writeFileSync(
+      file,
+      JSON.stringify(
+        { active: registry.active, providers: registry.providers, routing: registry.routing },
+        null,
+        2
+      ),
+      'utf-8'
+    );
   } catch (err: any) {
     console.warn(`[config] falha ao persistir provedores em ${providersFile()}:`, err.message);
   }
@@ -566,12 +637,20 @@ export function saveRegistryToMemory(registry: ProviderRegistry): void {
   memoryRegistry = {
     active: registry.active,
     providers: registry.providers.map((p) => ({ ...p, apiKeys: (p.apiKeys || []).map((k) => ({ ...k })) })),
+    ...(registry.routing ? { routing: { ...registry.routing } } : {}),
   };
   saveRegistryToDisk(memoryRegistry);
 }
 
 function providersFromEnv(): ProviderRegistry {
   const providerName = (process.env.PROVIDER || 'deepseek').toLowerCase();
+  // Instalações novas começam em modo automático. Quando o `.env` fixa um
+  // modelo explícito (LLM_MODEL), preserva-se o comportamento manual legado.
+  const routing: RoutingSettings = {
+    mode: process.env.LLM_MODEL ? 'manual' : 'auto',
+    costPolicy: 'balanced',
+    source: 'explicit',
+  };
   if (providerName === 'local') {
     const provider: Provider = {
       id: 'env_local',
@@ -582,7 +661,7 @@ function providersFromEnv(): ProviderRegistry {
       model: process.env.LLM_MODEL || '',
       enabled: true,
     };
-    return { active: provider.id, providers: [provider] };
+    return { active: provider.id, providers: [provider], routing };
   }
   // Provedores de navegador aparecem juntos por padrão: o escolhido via
   // PROVIDER fica como principal, mas DeepSeek e Qwen ficam disponíveis
@@ -615,12 +694,12 @@ function providersFromEnv(): ProviderRegistry {
     enabled: true,
   };
   if (providerName === 'qwen') {
-    return { active: qwen.id, providers: [qwen, deepseek, geminiWeb] };
+    return { active: qwen.id, providers: [qwen, deepseek, geminiWeb], routing };
   }
   if (providerName === 'gemini-web') {
-    return { active: geminiWeb.id, providers: [geminiWeb, deepseek, qwen] };
+    return { active: geminiWeb.id, providers: [geminiWeb, deepseek, qwen], routing };
   }
-  return { active: deepseek.id, providers: [deepseek, qwen, geminiWeb] };
+  return { active: deepseek.id, providers: [deepseek, qwen, geminiWeb], routing };
 }
 
 /**
@@ -645,7 +724,7 @@ function ensureBrowserProviders(registry: ProviderRegistry): ProviderRegistry {
     providers.push({ id: 'builtin_gemini_web', name: 'Gemini (Web)', type: 'gemini-web', baseUrl: '', apiKey: '', model: '', enabled: true });
   }
   if (providers.length === registry.providers.length) return registry;
-  return { active: registry.active, providers };
+  return { ...registry, providers };
 }
 
 /**
@@ -668,6 +747,7 @@ export function resolveRegistry(cookieHeader?: string): ProviderRegistry {
 /** Aplica o estado runtime das chaves (rate_limited/resetAt) ao registro. */
 function withRuntimeKeyStatuses(registry: ProviderRegistry): ProviderRegistry {
   return {
+    ...registry,
     active: registry.active,
     providers: registry.providers.map((p) => syncProviderKeyStatuses(p)),
   };

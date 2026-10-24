@@ -16,6 +16,7 @@ import type {
   ModelMetadata,
   CostPolicy,
   ScoringContext,
+  ModelExclusion,
 } from './types.ts';
 import { classifyTask, hasImageInput } from './task-classifier.ts';
 import { selectBestModel } from './model-selector.ts';
@@ -65,6 +66,50 @@ interface DecisionCache {
 const DECISION_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
 const decisionCache = new Map<string, DecisionCache>();
 
+// ── Diagnósticos recentes (para dashboard/suporte) ──────────────────────
+
+export interface RoutingDiagnostic {
+  at: number;
+  requestId?: string;
+  mode: 'auto' | 'auto-free';
+  selectedModelId: string;
+  selectedModelName: string;
+  task: string;
+  reason: string;
+  considered: number;
+  excluded: number;
+  exclusions: ModelExclusion[];
+}
+
+const MAX_DIAGNOSTICS = 20;
+const recentDiagnostics: RoutingDiagnostic[] = [];
+
+export function recordRoutingDiagnostic(diagnostic: RoutingDiagnostic): void {
+  recentDiagnostics.unshift(diagnostic);
+  if (recentDiagnostics.length > MAX_DIAGNOSTICS) recentDiagnostics.length = MAX_DIAGNOSTICS;
+}
+
+export function getRecentRoutingDiagnostics(): RoutingDiagnostic[] {
+  return recentDiagnostics.map((d) => ({ ...d, exclusions: [...d.exclusions] }));
+}
+
+export function clearRoutingDiagnostics(): void {
+  recentDiagnostics.length = 0;
+}
+
+export interface RouteRequestOptions {
+  /** Requisição pediu streaming (filtra modelos sem SSE). */
+  stream?: boolean;
+  /** Requisição pediu JSON/structured output. */
+  structuredOutput?: boolean;
+  /** Política de custo efetiva do registro (sobrepõe a global). */
+  costPolicy?: CostPolicy;
+  /** Provedor principal (preferência leve de score). */
+  preferredProviderId?: string;
+  /** ID para correlacionar logs/diagnósticos. */
+  requestId?: string;
+}
+
 // ── Função principal do router ──────────────────────────────────────────
 
 /**
@@ -84,7 +129,8 @@ export function routeRequest(
   availableModels: Array<{ id: string; providerId: string; providerName?: string; providerType?: string }>,
   previousModelId?: string,
   browserOnly = false,
-  hasTools = false
+  hasTools = false,
+  options: RouteRequestOptions = {}
 ): RoutingDecision {
   // 1. Sincronizar metadados com o catálogo
   syncWithCatalog(availableModels);
@@ -98,7 +144,21 @@ export function routeRequest(
     classification.categories.vision = Math.max(classification.categories.vision || 0, 8);
   }
 
-  // 4. Obter metadados apenas dos modelos disponíveis no catálogo e não down
+  // 4. Requisitos obrigatórios (filtros rígidos) e configuração efetiva.
+  const estimatedTokens = estimatePromptTokens(messages, currentMessage);
+  classification.requirements = {
+    ...(needsVision ? { vision: true } : {}),
+    ...(hasTools ? { tools: true } : {}),
+    ...(options.stream ? { streaming: true } : {}),
+    ...(options.structuredOutput ? { structuredOutput: true } : {}),
+    ...(estimatedTokens > 0 ? { minContextTokens: estimatedTokens } : {}),
+  };
+  const config: AutoRouterConfig = options.costPolicy
+    ? { ...currentConfig, costPolicy: options.costPolicy }
+    : currentConfig;
+
+  // 5. Obter metadados apenas dos modelos disponíveis no catálogo e não down.
+  // Cada exclusão é registrada para diagnóstico (sem vazar a lista inteira).
   const availableIds = new Set(availableModels.map((m) => m.id));
   const BROWSER_TYPES = new Set(['deepseek', 'qwen', 'gemini-web']);
   const browserProviderIds = new Set(
@@ -106,34 +166,71 @@ export function routeRequest(
       .filter((m) => m.providerType && BROWSER_TYPES.has(m.providerType))
       .map((m) => m.providerId)
   );
-  let candidates = getAllModelMetadata().filter(
-    (m) => m.isAvailable && availableIds.has(m.id) && !isModelDown(m.id)
+  // O blocklist abaixo vale apenas para a API oficial do Google. O mesmo ID
+  // pode ser servido por um provedor openai-compatible (OpenRouter, gateway
+  // local, mock etc.) que aceita o modelo normalmente.
+  const nonGeminiExposedIds = new Set(
+    availableModels
+      .filter((m) => m.providerType !== 'gemini' && !BROWSER_TYPES.has(m.providerType || ''))
+      .map((m) => m.id)
   );
+  const isGoogleApiUnavailable = (id: string) =>
+    GOOGLE_API_UNAVAILABLE.has(id) && !nonGeminiExposedIds.has(id);
+  const exclusions: ModelExclusion[] = [];
+  const exclude = (modelId: string, reason: string) => {
+    if (exclusions.length < 25) exclusions.push({ modelId, reason });
+  };
 
-  // 4a. Circuit breaker por PROVEDOR (L2.6): se um provedor inteiro está
+  let candidates = getAllModelMetadata().filter((m) => {
+    if (!availableIds.has(m.id)) return false;
+    if (!m.isAvailable) {
+      exclude(m.id, 'indisponível no catálogo');
+      return false;
+    }
+    if (isModelDown(m.id)) {
+      exclude(m.id, 'circuit breaker aberto');
+      return false;
+    }
+    return true;
+  });
+
+  // 5a. Circuit breaker por PROVEDOR (L2.6): se um provedor inteiro está
   // suspenso, seus modelos saem do roteamento — a menos que isso zeraria as
   // opções (melhor tentar do que ficar sem nenhum modelo).
-  const providerUp = candidates.filter((m) => !isProviderDown(m.providerId));
-  if (providerUp.length > 0) candidates = providerUp;
+  const providerDown = candidates.filter((m) => isProviderDown(m.providerId));
+  if (providerDown.length > 0 && providerDown.length < candidates.length) {
+    for (const m of providerDown) exclude(m.id, 'provedor em manutenção (circuit breaker)');
+    candidates = candidates.filter((m) => !isProviderDown(m.providerId));
+  }
 
-  // 4b. auto-free (browserOnly): só provedores Playwright (gratuitos).
+  // 5b. auto-free (browserOnly): só provedores Playwright (gratuitos).
   if (browserOnly) {
-    candidates = candidates.filter((m) => browserProviderIds.has(m.providerId));
+    const browserCandidates = candidates.filter((m) => browserProviderIds.has(m.providerId));
+    for (const m of candidates) {
+      if (!browserProviderIds.has(m.providerId)) exclude(m.id, 'auto-free: provedor não é web/Playwright');
+    }
+    candidates = browserCandidates;
   } else {
-    // 4c. Modo "auto" (com recursos): APENAS modelos de API oficial. Provedores
+    // 5c. Modo "auto" (com recursos): APENAS modelos de API oficial. Provedores
     // de navegador (gemini-web/deepseek/qwen) ficam de fora do roteamento do
     // auto — entram SOMENTE como último recurso (failover) quando nenhum modelo
     // de API responder. Também evita modelos Google deprecados/insuportados na
-    // API oficial (v1beta/generateContent) — retornam 404/429 ("no longer
-    // available to new users", "not found for API version v1beta").
+    // API oficial (v1beta/generateContent) — retornam 404/429.
     const apiOnly = candidates.filter((m) => !browserProviderIds.has(m.providerId));
-    const apiUsable = apiOnly.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
+    const apiUsable = apiOnly.filter((m) => !isGoogleApiUnavailable(m.id));
     if (apiUsable.length > 0) {
+      for (const m of candidates) {
+        if (browserProviderIds.has(m.providerId)) exclude(m.id, 'auto: provedor web só como failover');
+        else if (isGoogleApiUnavailable(m.id)) exclude(m.id, 'modelo indisponível na API oficial');
+      }
       candidates = apiUsable;
     } else {
-      // Nenhum modelo de API disponível/up: permite cair para o navegador web
-      // (ainda excluindo os Google indisponíveis na API).
-      candidates = candidates.filter((m) => !GOOGLE_API_UNAVAILABLE.has(m.id));
+      for (const m of candidates) {
+        if (m.id !== 'auto' && isGoogleApiUnavailable(m.id)) {
+          exclude(m.id, 'modelo indisponível na API oficial');
+        }
+      }
+      candidates = candidates.filter((m) => !isGoogleApiUnavailable(m.id));
     }
   }
 
@@ -144,18 +241,21 @@ export function routeRequest(
       providerId: '',
       taskClassification: classification,
       score: 0,
-      reason: 'Nenhum modelo registrado no sistema',
+      reason: exclusions.length
+        ? `Nenhum modelo disponível (${exclusions.length} excluído(s): ${exclusions[0].modelId}: ${exclusions[0].reason})`
+        : 'Nenhum modelo registrado no sistema',
       alternatives: [],
       fallbackChain: [],
+      consideredModels: 0,
+      exclusions,
     };
   }
 
-  // 5. Verificar cache de decisão (estabilidade)
-  const convHash = buildConversationHash(messages, hasTools);
+  // 6. Verificar cache de decisão (estabilidade)
+  const convHash = buildConversationHash(messages, hasTools, options);
 
   // Contexto de scoring (L1.1/L1.2/L1.3/L2.4/L2.5): sinais aprendidos/observados.
   // Sem dados, cada função devolve neutro e o resultado é o determinístico.
-  const estimatedTokens = estimatePromptTokens(messages, currentMessage);
   const scoringCtx: ScoringContext = {
     reliability: (id) => {
       const m = getModelMetricsFor(id);
@@ -163,24 +263,27 @@ export function routeRequest(
     },
     quotaHeadroom: (id) => getQuotaHeadroom(id),
     estimatedTokens,
+    preferredProviderId: options.preferredProviderId,
   };
 
   const cached = decisionCache.get(convHash);
   if (cached && Date.now() - cached.timestamp < DECISION_CACHE_TTL) {
     const cachedModel = candidates.find((m) => m.id === cached.modelId);
     if (cachedModel) {
-      const decision = selectBestModel(candidates, classification, currentConfig, cached.modelId, scoringCtx);
+      const decision = selectBestModel(candidates, classification, config, cached.modelId, scoringCtx);
       // Se o modelo cached ainda está entre os top 3, mantê-lo
       if (decision.alternatives.includes(cached.modelId) || decision.selectedModelId === cached.modelId) {
-        return decision;
+        const finalDecision = withRouterExclusions(decision, exclusions, candidates.length);
+        logDecision(finalDecision, options.requestId);
+        return finalDecision;
       }
     }
   }
 
-  // 6. Selecionar melhor modelo
-  const decision = selectBestModel(candidates, classification, currentConfig, previousModelId, scoringCtx);
+  // 7. Selecionar melhor modelo
+  const decision = selectBestModel(candidates, classification, config, previousModelId, scoringCtx);
 
-  // 7. Atualizar cache
+  // 8. Atualizar cache
   if (decision.selectedModelId) {
     decisionCache.set(convHash, {
       conversationHash: convHash,
@@ -189,10 +292,23 @@ export function routeRequest(
     });
   }
 
-  // 8. Log da decisão
-  logDecision(decision);
+  // 9. Log da decisão (com as exclusões do router já anexadas)
+  const finalDecision = withRouterExclusions(decision, exclusions, candidates.length);
+  logDecision(finalDecision, options.requestId);
 
-  return decision;
+  return finalDecision;
+}
+
+function withRouterExclusions(
+  decision: RoutingDecision,
+  routerExclusions: ModelExclusion[],
+  consideredModels: number
+): RoutingDecision {
+  return {
+    ...decision,
+    consideredModels,
+    exclusions: [...routerExclusions, ...(decision.exclusions || [])].slice(0, 25),
+  };
 }
 
 // ── Log de decisões ─────────────────────────────────────────────────────
@@ -215,17 +331,19 @@ const GOOGLE_API_UNAVAILABLE = new Set([
   'gemini-omni-flash-preview',
 ]);
 
-function logDecision(decision: RoutingDecision): void {
+function logDecision(decision: RoutingDecision, requestId?: string): void {
   const tc = decision.taskClassification;
   const cats = Object.entries(tc.categories)
     .filter(([, v]) => v && v > 0)
     .map(([k, v]) => `${k}:${v}`)
     .join(' ');
+  const prefix = requestId ? ` req=${requestId}` : '';
 
   console.log(
-    `[auto-router] modelo=${decision.selectedModelId} score=${decision.score} ` +
+    `[auto-router]${prefix} modelo=${decision.selectedModelId} score=${decision.score} ` +
     `tarefa="${tc.description}" complexidade=${tc.complexity.toFixed(2)} ` +
-    `capacidades=[${cats}] motivo="${decision.reason}"`
+    `capacidades=[${cats}] candidatos=${decision.consideredModels ?? '?'} ` +
+    `excluidos=${decision.exclusions?.length ?? 0} motivo="${decision.reason}"`
   );
 }
 
@@ -252,7 +370,11 @@ function estimatePromptTokens(
   return Math.ceil(chars / 4) + 64;
 }
 
-function buildConversationHash(messages: Array<{ role: string; content: string | any[] }>, hasTools = false): string {
+function buildConversationHash(
+  messages: Array<{ role: string; content: string | any[] }>,
+  hasTools = false,
+  options: RouteRequestOptions = {}
+): string {
   // Hash simples: últimas 3 mensagens (role + primeiros 100 chars)
   const recent = messages.slice(-3);
   const hash = recent
@@ -265,9 +387,14 @@ function buildConversationHash(messages: Array<{ role: string; content: string |
       return `${m.role}:${text}`;
     })
     .join('|');
-  // Inclui o sinal de tools: uma decisão feita SEM tools não deve ser reusada
-  // numa requisição COM tools (e vice-versa).
-  return `${hasTools ? 'tools' : 'text'}:${hash}`;
+  // Inclui sinais que mudam os filtros: uma decisão feita SEM tools/streaming
+  // não deve ser reusada numa requisição COM esses requisitos (e vice-versa).
+  const flags = [
+    hasTools ? 'tools' : 'text',
+    options.stream ? 'stream' : 'nostream',
+    options.structuredOutput ? 'json' : 'plain',
+  ].join(':');
+  return `${flags}:${hash}`;
 }
 
 // ── Estabilidade entre turnos da mesma conversa ─────────────────────────
@@ -428,6 +555,7 @@ export function getAutoRouterStatus() {
       totalFailures: withRequests.reduce((s, m) => s + m.failures, 0),
     },
     cacheSize: decisionCache.size,
+    recentDecisions: getRecentRoutingDiagnostics(),
   };
 }
 

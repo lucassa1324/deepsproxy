@@ -161,6 +161,22 @@ describe('Task Classifier', () => {
     assert.ok(result.categories.coding && result.categories.coding > 3, 'deve ter coding no contexto');
   });
 
+  it('pergunta conceitual sobre API não vira tarefa de coding', () => {
+    const result = classifyTask([], 'Explique o que é uma API REST e como funciona no contexto de integrações.');
+    assert.equal(result.categories.coding, undefined, 'consulta conceitual não deve exigir coding');
+    assert.ok(result.categories.general && result.categories.general > 0, 'deve ser geral');
+  });
+
+  it('pedido de implementação de API continua exigindo coding', () => {
+    const result = classifyTask([], 'Explique como implementar uma API REST em Node.js com autenticação');
+    assert.ok(result.categories.coding && result.categories.coding > 3, 'deve detectar coding');
+  });
+
+  it('keyword curta não casa dentro de outra palavra (api em capital)', () => {
+    const result = classifyTask([], 'Qual é a capital da França?');
+    assert.equal(result.categories.coding, undefined, 'não deve detectar coding em "capital"');
+  });
+
   it('classifica tarefa mista (múltiplas capacidades)', () => {
     const result = classifyTask([], 'Escreva uma função em Python que gere um relatório com gráficos');
     assert.ok(result.categories.coding && result.categories.coding > 0, 'deve ter coding');
@@ -341,6 +357,49 @@ describe('Auto Router', () => {
     const result = routeRequest([], 'Qualquer tarefa', []);
     assert.equal(result.selectedModelId, '', 'deve retornar modelo vazio');
     assert.ok(result.reason.includes('Nenhum'), 'deve indicar que não há modelos');
+  });
+
+  it('gemini via provedor openai-compatible não herda o blocklist da API oficial', () => {
+    registerModel('gemini-2.5-pro', {
+      name: 'Gemini 2.5 Pro',
+      providerId: 'mock-openai',
+      capabilities: { reasoning: 9, coding: 8, math: 8, writing: 8, vision: 10, general: 9 },
+      cost: { input: 0, output: 0 },
+      speed: 7,
+      contextLength: 1000000,
+      isFree: true,
+      isAvailable: true,
+      tags: ['vision', 'free'],
+    });
+    clearDecisionCache();
+    const result = routeRequest(
+      [],
+      'Analise essa imagem e descreva o que vê',
+      [{ id: 'gemini-2.5-pro', providerId: 'mock-openai', providerType: 'openai-compatible' }]
+    );
+    assert.equal(result.selectedModelId, 'gemini-2.5-pro', 'provedor compatível deve poder servir o modelo');
+  });
+
+  it('gemini via API oficial continua bloqueado', () => {
+    registerModel('gemini-2.5-pro', {
+      name: 'Gemini 2.5 Pro',
+      providerId: 'gemini-official',
+      capabilities: { reasoning: 9, coding: 8, math: 8, writing: 8, vision: 10, general: 9 },
+      cost: { input: 0, output: 0 },
+      speed: 7,
+      contextLength: 1000000,
+      isFree: false,
+      isAvailable: true,
+      tags: ['vision'],
+    });
+    clearDecisionCache();
+    const result = routeRequest(
+      [],
+      'Analise essa imagem e descreva o que vê',
+      [{ id: 'gemini-2.5-pro', providerId: 'gemini-official', providerType: 'gemini' }]
+    );
+    assert.equal(result.selectedModelId, '', 'modelo indisponível na API oficial não deve ser escolhido');
+    assert.ok(result.exclusions?.some((e) => e.modelId === 'gemini-2.5-pro'), 'exclusão deve ser registrada');
   });
 
   it('usa política economy para tarefas simples', () => {

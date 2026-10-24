@@ -201,6 +201,19 @@ const IMAGE_INDICATORS = [
   /type.*image_url/i,
 ];
 
+// ── Sinais de intenção (evitam falso positivo de coding) ────────────────
+
+const EXPLANATORY_QUESTION =
+  /^(o que (é|e|são|sao)|explique|como funciona|qual (é|e) a (diferença|diferenca)|defina|descreva|what is|explain|how does|how do|define|describe)/iu;
+
+const CODING_ACTION =
+  /\b(implement(ar|e)?|refator(ar|e)?|debug(ar|ue)?|corrig(ir|a)|compil(ar|e)|cri(e|ar) (uma? )?(função|funcao|classe|script|app|api|endpoint|componente)|escrev(a|er) (uma? )?(função|funcao|classe|script|api)|build|deploy)\b/iu;
+
+const STRONG_CODING_SIGNAL =
+  /typescript|javascript|python|node\.?js|react|angular|vue|sql|docker|kubernetes/iu;
+
+const CODE_BLOCK = /```[\s\S]*```|function\s|class\s|import\s|const\s|let\s|var\s/;
+
 // ── Classificador principal ─────────────────────────────────────────────
 
 export interface ClassifyOptions {
@@ -233,6 +246,25 @@ export function classifyTask(
 
   // 1. Detectar categorias necessárias
   const categories = detectCategories(fullContext);
+
+  // 1a. Pergunta conceitual sobre um termo técnico ("o que é uma API REST?")
+  // não é tarefa de implementação. Sem verbo de ação/código, o keyword
+  // "api" sozinho não deve puxar o roteamento para um modelo de código.
+  if (
+    EXPLANATORY_QUESTION.test(text.trim()) &&
+    !CODING_ACTION.test(text) &&
+    !STRONG_CODING_SIGNAL.test(text) &&
+    !CODE_BLOCK.test(text) &&
+    categories.coding
+  ) {
+    delete categories.coding;
+  }
+
+  // 1a-bis. Verbo de implementação é sinal forte: evita que uma tarefa real
+  // de código perca score só porque o texto não repete "código"/"função".
+  if (CODING_ACTION.test(text)) {
+    categories.coding = Math.max(categories.coding || 0, 8);
+  }
 
   // 1b. Requisição com ferramentas: garante o mínimo de coding+reasoning
   // para que o seletor escolha um modelo capaz de executar as tools.
@@ -283,8 +315,7 @@ function detectCategories(text: string): Partial<ModelCapabilities> {
   for (const pattern of CATEGORY_PATTERNS) {
     let hits = 0;
     for (const keyword of pattern.keywords) {
-      const regex = new RegExp(`\\b${escapeRegex(keyword)}\\b|${escapeRegex(keyword)}`, 'gi');
-      if (regex.test(text)) hits++;
+      if (matchesKeyword(text, keyword)) hits++;
     }
     if (hits > 0) {
       scores[pattern.category] = (scores[pattern.category] || 0) + hits * pattern.weight;
@@ -378,6 +409,19 @@ function describeClassification(
 
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Casa a keyword respeitando limites de letra/número Unicode. A versão
+ * anterior (`\bkeyword\b|keyword`) casava "api" dentro de "capital" e
+ * inflava coding em perguntas gerais. Phrases com pontuação continuam
+ * funcionando; só as bordas alfanuméricas são exigidas.
+ */
+function matchesKeyword(text: string, keyword: string): boolean {
+  const escaped = escapeRegex(keyword);
+  const left = /^[\p{L}\p{N}]/u.test(keyword) ? '(?<![\\p{L}\\p{N}])' : '';
+  const right = /[\p{L}\p{N}]$/u.test(keyword) ? '(?![\\p{L}\\p{N}])' : '';
+  return new RegExp(`${left}${escaped}${right}`, 'iu').test(text);
 }
 
 // ── Função para extrair se tem imagens ──────────────────────────────────

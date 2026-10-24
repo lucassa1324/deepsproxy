@@ -34,6 +34,7 @@ import {
   isGeminiWebProvider,
   normalizeModelId,
   primaryApiKey,
+  getRoutingSettings,
 } from '../services/config.ts';
 import type { Provider, ProviderRegistry } from '../services/config.ts';
 import { resolveModelEntry, providerFromCatalogEntry, getModelCatalog } from '../services/modelCatalog.ts';
@@ -68,7 +69,8 @@ import { registry } from '../tools/registry.ts';
 import type { FunctionToolDefinition } from '../tools/types.ts';
 import { startKeepAlive } from '../utils/sse.ts';
 import { applyPhase1Optimizations, cacheSystemPrompt, getCachedPrompt, optimizedFetch } from '../services/optimizations.ts';
-import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome, classifyFailure, recordProviderFailure, recordProviderSuccess } from '../services/auto-router/index.ts';
+import { routeRequest, getAutoRouterConfig, getModelMetadata, isModelDown, recordModelFailure, recordModelSuccess, getPreviousAutoModel, rememberAutoModel, buildAutoFailoverChain, recordModelRequest, recordModelLatency, recordModelOutcome, classifyFailure, recordProviderFailure, recordProviderSuccess, recordRoutingDiagnostic } from '../services/auto-router/index.ts';
+import { capFailoverChain, shouldFailover, timeoutMs } from '../services/auto-router/failover-policy.ts';
 import { recordQuotaUsage, recordQuotaTokens, recordQuotaExhaustion } from '../services/quota-tracker.ts';
 import { routedViaValue } from '../utils/header-value.ts';
 import {
@@ -562,6 +564,8 @@ async function resolveAutoModel(
   isBrowserOnly: boolean
 ): Promise<{ model: string; message?: string; status?: number; failoverChain?: string[] }> {
   const registry = resolveRegistry(c.req.header('Cookie'));
+  const routing = getRoutingSettings(registry);
+  const primary = resolveActiveProvider(c.req.header('Cookie'));
   const catalog = await getModelCatalog(registry);
   const availableModels = catalog
     .filter((m) => m.id !== 'auto' && m.id !== 'auto-free')
@@ -583,14 +587,40 @@ async function resolveAutoModel(
   const mode = isBrowserOnly ? 'auto-free' : 'auto';
   const previousModelId = getPreviousAutoModel(messages as Array<{ role: string; content: string | any[] }>, namespace, mode);
 
+  const requestId = (c as any).get('requestId') as string | undefined;
+  const structuredOutput = !!(
+    (body as any).response_format ||
+    (body as any).json_schema ||
+    (body as any).structured_output
+  );
   const decision = routeRequest(
     messages as Array<{ role: string; content: string | any[] }>,
     currentMessage,
     availableModels,
     previousModelId,
     isBrowserOnly,
-    hasTools(body)
+    hasTools(body),
+    {
+      stream: body.stream === true,
+      structuredOutput,
+      costPolicy: routing.costPolicy,
+      preferredProviderId: primary?.id,
+      requestId,
+    }
   );
+
+  recordRoutingDiagnostic({
+    at: Date.now(),
+    requestId,
+    mode,
+    selectedModelId: decision.selectedModelId,
+    selectedModelName: decision.selectedModelName,
+    task: decision.taskClassification.description,
+    reason: decision.reason,
+    considered: decision.consideredModels ?? availableModels.length,
+    excluded: decision.exclusions?.length ?? 0,
+    exclusions: (decision.exclusions || []).map((e) => ({ ...e })),
+  });
 
   if (!decision.selectedModelId) {
     return { model: '', status: 503, message: `Auto Router: ${decision.reason}` };
@@ -634,13 +664,19 @@ async function resolveAutoModel(
   c.header('X-AutoRouter-Score', String(decision.score));
   c.header('X-AutoRouter-Task', sanitizeHeader(decision.taskClassification.description));
   c.header('X-AutoRouter-Reason', sanitizeHeader(decision.reason));
-  if (isBrowserOnly) {
-    c.header('X-AutoRouter-Mode', 'free-browser');
-  }
+  c.header('X-AutoRouter-Mode', isBrowserOnly ? 'free-browser' : 'auto');
+  c.header('X-AutoRouter-Policy', routing.costPolicy);
+  c.header('X-AutoRouter-Candidates', String(decision.consideredModels ?? 0));
+  c.header('X-AutoRouter-Excluded', String(decision.exclusions?.length ?? 0));
 
   // Guarda o modelo escolhido no contexto para o chatCompletions reportar o
   // resultado (sucesso/falha) ao circuit breaker do Auto Router.
   c.set('autoRoutedModel', model);
+
+  // Headers de execução também no caminho sem failover (uma única tentativa):
+  // sem isto, respostas 200 de cadeia curta ficavam sem FinalModel/Attempts.
+  c.header('X-AutoRouter-FinalModel', model);
+  c.header('X-AutoRouter-Attempts', '1');
 
   // Cadeia de failover: ordem de modelos a tentar se o escolhido falhar.
   // Usada pelo chatCompletions para retentar com o próximo melhor modelo.
@@ -716,8 +752,9 @@ async function attemptFailoverChain(
   const tried: string[] = [];
   let lastRes: Response | null = null;
   let lastError: any = null;
+  const attempts = capFailoverChain(chain);
 
-  for (const modelId of chain) {
+  for (const modelId of attempts) {
     if (tried.includes(modelId)) continue;
     tried.push(modelId);
 
@@ -741,16 +778,16 @@ async function attemptFailoverChain(
 
       let res: Response;
       if (isQwenProvider(t)) {
-        res = await qwenChatCompletions(c, body);
+        res = await withAttemptTimeout(qwenChatCompletions(c, body));
       } else if (isGeminiWebProvider(t)) {
-        res = await geminiChatCompletions(c, body);
+        res = await withAttemptTimeout(geminiChatCompletions(c, body));
       } else {
-        res = await forwardChatCompletions(c, body, t);
+        res = await withAttemptTimeout(forwardChatCompletions(c, body, t));
       }
-      
+
       // Anti-Lazy Loop no failover
       res = await applyAntiLazyLoop(c, res, body, t);
-      
+
       recordModelLatency(modelId, Date.now() - startedLat);
       const stored = await maybeStoreCache(res, modelId);
       lastRes = stored;
@@ -758,11 +795,25 @@ async function attemptFailoverChain(
         c.header('X-Routed-Via', routedViaValue(t.name, modelId));
         c.header('X-FreeLLM-Cache', 'MISS');
         c.header('X-AutoRouter-FinalModel', modelId);
+        c.header('X-AutoRouter-Attempts', String(tried.length));
         if (tried.length > 1) c.header('X-AutoRouter-Failover', String(tried.length - 1));
         onSuccess?.(modelId);
         console.log(`[auto-router] failover: "${modelId}" respondeu OK na ${tried.length}ª tentativa`);
         return stored;
       }
+
+      const errText = await stored.clone().text().catch(() => '');
+      if (!shouldFailover(stored.status, errText)) {
+        c.header('X-AutoRouter-FinalModel', modelId);
+        c.header('X-AutoRouter-Attempts', String(tried.length));
+        console.warn(
+          `[auto-router] tentativa "${modelId}" falhou com erro permanente (HTTP ${stored.status}); sem novo fallback`
+        );
+        return stored;
+      }
+      console.warn(
+        `[auto-router] tentativa "${modelId}" falhou (HTTP ${stored.status}); tentando próximo modelo`
+      );
     } catch (err: any) {
       lastError = err;
       recordModelLatency(modelId, Date.now() - startedLat);
@@ -772,11 +823,36 @@ async function attemptFailoverChain(
   }
 
   // Esgotou os candidatos não-DeepSeek: devolve a última falha (ou 502).
-  if (lastRes) return lastRes;
+  c.header('X-AutoRouter-Attempts', String(tried.length));
+  if (lastRes) {
+    c.header('X-AutoRouter-FinalModel', tried[tried.length - 1] || '');
+    return lastRes;
+  }
   return c.json(
-    { error: { message: lastError?.message || 'Auto Router: todos os modelos falharam.' } },
+    {
+      error: {
+        message: lastError?.message || 'Auto Router: todos os modelos falharam.',
+        attempts: tried.length,
+      },
+    },
     502 as any
   );
+}
+
+function withAttemptTimeout<T>(promise: Promise<T>): Promise<T> {
+  const ms = timeoutMs();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err: any = new Error(`Auto Router: tentativa excedeu ${Math.round(ms / 1000)}s`);
+      err.name = 'AutoRouterTimeout';
+      err.code = 'AUTO_ROUTER_TIMEOUT';
+      reject(err);
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  }) as Promise<T>;
 }
 
 /**
@@ -815,6 +891,9 @@ async function resolveTargetForModel(
 export async function chatCompletions(c: Context) {
   const startedAt = Date.now();
   let autoRouted: string | undefined = undefined;
+  const requestId = c.req.header('X-Request-Id') || uuidv4().slice(0, 12);
+  c.set('requestId', requestId);
+  c.header('X-Request-Id', requestId);
   try {
     let body: OpenAIRequest = await c.req.json();
     // Normaliza o id do modelo (ex.: cliente envia "models/gemini-2.5-flash"
@@ -935,10 +1014,19 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       return await runFusionChat(c, body, registry, enabled, primary);
     }
 
-    // ── Auto Router: quando modelo="auto" ou "auto-free", seleciona o melhor
-    // modelo (vale para o cliente direto e para apps do gateway com modelo auto).
-    const isAutoMode = body.model === 'auto' || body.model === 'auto-free';
-    const isBrowserOnly = body.model === 'auto-free';
+    // ── Auto Router: modelo="auto"/"auto-free" (explícito) ou modo automático
+    // configurado no registro (modelo vazio/desconhecido). Modelo explícito
+    // conhecido continua sendo respeitado; em modo manual nada muda.
+    const routing = getRoutingSettings(registry);
+    const explicitAuto = body.model === 'auto' || body.model === 'auto-free';
+    let wantsAuto = explicitAuto || (routing.mode === 'auto' && (!body.model || body.model === 'default'));
+    if (!wantsAuto && routing.mode === 'auto' && body.model) {
+      const known = await resolveModelEntry(body.model, registry);
+      if (!known) wantsAuto = true;
+    }
+    const isAutoMode = wantsAuto;
+    const isBrowserOnly = explicitAuto && body.model === 'auto-free';
+    c.header('X-Routing-Mode', routing.mode);
     let autoFailoverChain: string[] = [];
     if (isAutoMode) {
       const resolved = await resolveAutoModel(c, body, isBrowserOnly);

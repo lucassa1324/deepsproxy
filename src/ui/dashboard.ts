@@ -66,7 +66,10 @@ import {
   getActiveApiKey,
   normalizeAccountKeys,
   syncProviderKeyStatuses,
+  getRoutingSettings,
+  withRoutingSettings,
 } from '../services/config.ts';
+import { localApiUrls } from '../services/local-url.ts';
 import {
   listApps,
   createApp,
@@ -222,10 +225,13 @@ dashboard.get('/api/status', async (c) => {
       health: health[m.id] || { status: 'untested' },
     }));
 
+    const local = localApiUrls(c.req.header('Origin') || c.req.header('Referer'));
     return c.json({
       server: 'online',
-      port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
+      port: local.port,
       uptime: Math.floor(process.uptime()),
+      local,
+      routing: getRoutingSettings(registry),
       apiKeyConfigured: !!process.env.API_KEY,
       apiKey: process.env.API_KEY || '',
       provider: {
@@ -279,18 +285,22 @@ dashboard.get('/api/status', async (c) => {
       vnc: vncEnabled() ? { enabled: true, url: vncUrl() } : { enabled: false },
       gateway: {
         enabled: process.env.ENABLE_GATEWAY !== 'false',
-        port: process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006,
-        baseUrl: `http://localhost:${process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006}/v1`,
+        port: local.gatewayPort,
+        baseUrl: local.gatewayLocalhostUrl,
+        loopbackUrl: local.gatewayUrl,
       },
     });
   } catch (err: any) {
     // Um erro isolado (ex.: página do navegador fechada) não pode derrubar o
     // status inteiro do dashboard — o login ficaria congelado no botão.
     console.warn('[status] Falha ao montar status completo:', err.message);
+    const local = localApiUrls(c.req.header('Origin') || c.req.header('Referer'));
     return c.json({
       server: 'online',
-      port: process.env.PORT ? parseInt(process.env.PORT) : 3005,
+      port: local.port,
       uptime: Math.floor(process.uptime()),
+      local,
+      routing: { mode: 'manual', costPolicy: 'balanced', source: 'legacy' },
       apiKeyConfigured: !!process.env.API_KEY,
       apiKey: process.env.API_KEY || '',
       provider: { id: '', name: '', type: 'unknown', baseUrl: '', model: '', hasApiKey: false },
@@ -313,8 +323,9 @@ dashboard.get('/api/status', async (c) => {
       vnc: { enabled: false },
       gateway: {
         enabled: process.env.ENABLE_GATEWAY !== 'false',
-        port: process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006,
-        baseUrl: `http://localhost:${process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : 3006}/v1`,
+        port: local.gatewayPort,
+        baseUrl: local.gatewayLocalhostUrl,
+        loopbackUrl: local.gatewayUrl,
       },
     });
   }
@@ -328,25 +339,60 @@ dashboard.get('/api/providers', (c) => {
     ok: true,
     active: registry.active,
     providers: registry.providers.map((p) => syncProviderKeyStatuses(p)),
+    routing: getRoutingSettings(registry),
   });
 });
 
 dashboard.post('/api/providers', async (c) => {
   try {
     const body: any = await c.req.json().catch(() => ({}));
+    const current = resolveRegistry(c.req.header('Cookie'));
     const { registry, error } = sanitizeRegistry(body);
     if (!registry) {
       return c.json({ ok: false, error }, 400);
     }
+    if (!body.routing && current.routing) registry.routing = { ...current.routing };
     saveRegistryToMemory(registry);
     clearModelsCache();
     modelsVersion++;
     c.header('Set-Cookie', serializeProvidersCookie(registry));
     const enabledCount = registry.providers.filter((p) => p.enabled !== false).length;
     console.log(
-      `[providers] ${registry.providers.length} provedor(es) (${enabledCount} ativo(s)); principal: ${registry.active}`
+      `[providers] ${registry.providers.length} provedor(es) (${enabledCount} ativo(s)); principal: ${registry.active || '(auto)'}; roteamento: ${registry.routing?.mode || 'manual'}`
     );
-    return c.json({ ok: true, active: registry.active, providers: registry.providers });
+    return c.json({
+      ok: true,
+      active: registry.active,
+      providers: registry.providers,
+      routing: getRoutingSettings(registry),
+    });
+  } catch (e: any) {
+    return c.json({ ok: false, error: e.message }, 500);
+  }
+});
+
+dashboard.get('/api/routing', (c) => {
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  return c.json({
+    ok: true,
+    routing: getRoutingSettings(registry),
+    endpoints: localApiUrls(c.req.header('Origin') || c.req.header('Referer')),
+  });
+});
+
+dashboard.post('/api/routing', async (c) => {
+  try {
+    const body: any = await c.req.json().catch(() => ({}));
+    const registry = resolveRegistry(c.req.header('Cookie'));
+    const updated = withRoutingSettings(registry, {
+      mode: body.mode,
+      costPolicy: body.costPolicy,
+    });
+    saveRegistryToMemory(updated);
+    clearModelsCache();
+    modelsVersion++;
+    c.header('Set-Cookie', serializeProvidersCookie(updated));
+    return c.json({ ok: true, routing: getRoutingSettings(updated) });
   } catch (e: any) {
     return c.json({ ok: false, error: e.message }, 500);
   }

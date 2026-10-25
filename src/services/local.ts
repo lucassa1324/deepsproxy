@@ -136,6 +136,32 @@ export async function findProviderForModel(
   return null;
 }
 
+/* ------------------------- Rotação de chaves: rastro da conta ------------------ */
+
+const ACCOUNT_HEADER_ID = 'X-Account-Id';
+const ACCOUNT_HEADER_LABEL = 'X-Account-Label';
+
+/**
+ * Carimba a conta/chave usada (AccountKey) na Response final para a
+ * telemetria de uso "Consumo por conta" (services/usage.ts lê os headers).
+ * A Response crua do fetch tem headers imutáveis — reconstroi com Headers cópia.
+ */
+function stampAccountHeaders(res: Response, key?: AccountKey): Response {
+  try {
+    if (!res || !key?.id) return res;
+    const headers = new Headers(res.headers);
+    headers.set(ACCOUNT_HEADER_ID, String(key.id));
+    if (key.label) headers.set(ACCOUNT_HEADER_LABEL, String(key.label));
+    return new Response(res.body, {
+      status: res.status,
+      statusText: res.statusText,
+      headers,
+    });
+  } catch {
+    return res;
+  }
+}
+
 export async function forwardChatCompletions(c: Context, body: OpenAIRequest, provider: Provider) {
   // FASE 4: Fallback automático — verifica se deve usar cloud
   if (isAdapterProvider(provider)) {
@@ -156,7 +182,17 @@ export async function forwardChatCompletions(c: Context, body: OpenAIRequest, pr
           if (!resp) throw new Error(`Adapter não disponível para "${provider.type}".`);
           return resp;
         },
-        handle: (res) => res,
+        handle: (res, key) => {
+          // Rastro da conta no contexto Hono (fonte primária da telemetria,
+          // imune a re-wrap de Response no ciclo do roteador).
+          try {
+            if (key?.id) {
+              (c as any).set('usageAccountId', key.id);
+              (c as any).set('usageAccountName', key.label || key.id);
+            }
+          } catch {}
+          return stampAccountHeaders(res, key);
+        },
       });
       if (outcome.allQuotaExhausted) {
         return quotaExhaustedResponse(provider.name, !!body.stream);
@@ -292,6 +328,15 @@ async function forwardPassthrough(c: Context, body: OpenAIRequest, provider: Pro
       return response;
     },
     handle: async (res, key, attempt) => {
+      // Rastro da conta: contexto Hono (fonte primária) + headers de resposta.
+      try {
+        if (key?.id) {
+          (c as any).set('usageAccountId', key.id);
+          (c as any).set('usageAccountName', key.label || key.id);
+          c.header(ACCOUNT_HEADER_ID, key.id);
+          if (key.label) c.header(ACCOUNT_HEADER_LABEL, key.label);
+        }
+      } catch {}
       console.log(
         `[local] forward passthrough → ${provider.name} (${provider.type}) model=${effectiveModel(provider, body) || body.model} stream=${body.stream ? 'yes' : 'no'} chave="${key.label || key.id}" tentativa=${attempt + 1}`
       );

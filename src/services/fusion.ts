@@ -116,7 +116,7 @@ export async function selectFusionPanel(
         dropped.push(`${id} (desconhecido ou desabilitado)`);
         continue;
       }
-      const provider = providerFromCatalogEntry(entry);
+      const provider = providerFromCatalogEntry(entry, registry);
       const key = `${provider.name}/${id}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -128,7 +128,7 @@ export async function selectFusionPanel(
   const enabledNames = new Set(enabled.map((p) => p.name));
   const members: FusionMember[] = [];
   for (const entry of (await getModelCatalog()) ?? []) {
-    const provider = providerFromCatalogEntry(entry);
+    const provider = providerFromCatalogEntry(entry, registry);
     if (!enabledNames.has(provider.name)) continue;
     if (!API_TYPES.has(provider.type)) continue;
     members.push({ modelId: entry.id, provider });

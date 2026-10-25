@@ -16,6 +16,7 @@ import {
   isAdapterProvider,
   isDeepseekProvider,
   isQwenProvider,
+  normalizeAccountKeys,
   normalizeModelId,
   resolveRegistry,
   defaultBaseUrl,
@@ -258,9 +259,18 @@ export function groupModelsByProvider(models: CatalogModel[]): Record<string, Ca
   return groups;
 }
 
-/** Reconstrói um Provider (config.ts) a partir de uma entrada do catálogo. */
-export function providerFromCatalogEntry(entry: CatalogModel): Provider {
-  return {
+/**
+ * Reconstrói um Provider (config.ts) a partir de uma entrada do catálogo.
+ *
+ * `registry` (opcional, mas RECOMENDADO no caminho de chat): sem ele o Provider
+ * sai só com a chave crua (`apiKey`) — perdendo as contas (apiKeys[]) com seus
+ * ids/labels, o que quebra a rotação de chaves e a telemetria "Consumo por
+ * conta" (todo request cairia em "(sem identificação)"). Com o registry, a
+ * lista completa de contas é preservada, com a conta do modelo do catálogo
+ * como primeira na rotação.
+ */
+export function providerFromCatalogEntry(entry: CatalogModel, registry?: ProviderRegistry): Provider {
+  const base: Provider = {
     id: entry.provider,
     name: entry.providerName,
     type: entry.providerType,
@@ -269,4 +279,16 @@ export function providerFromCatalogEntry(entry: CatalogModel): Provider {
     model: '',
     enabled: true,
   };
+  if (!registry) return base;
+  const p = registry.providers.find((x) => x.id === entry.provider);
+  if (!p) return base;
+  const keys = normalizeAccountKeys(p);
+  if (keys.length === 0) return base;
+  // A conta correspondente à chave escolhida pelo catálogo vai primeiro (a
+  // rotação começa por ela e mantém o fallback para as demais contas).
+  const ordered =
+    entry.apiKey && keys.some((k) => k.key === entry.apiKey)
+      ? [...keys.filter((k) => k.key === entry.apiKey), ...keys.filter((k) => k.key !== entry.apiKey)]
+      : keys;
+  return { ...base, apiKey: ordered[0].key, apiKeys: ordered };
 }

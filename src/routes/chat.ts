@@ -653,8 +653,9 @@ async function resolveAutoModel(
   }
 
   console.log(
-    `[auto-router] redirecionando "${body.model}" → "${model}" ` +
-    `(${decision.reason})`
+    `[auto-router] redirecionando "${body.model}" → "${model}"` +
+    (gwEntry ? ` · app do gateway: "${gwEntry.name}"` : '') +
+    ` (${decision.reason})`
   );
 
   // Header visível para clientes API (Postman, curl, libs).
@@ -881,7 +882,7 @@ async function resolveTargetForModel(
 ): Promise<Provider | null> {
   const gwEntry = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
   const entry = await resolveModelEntry(modelId, registry);
-  if (entry) return providerFromCatalogEntry(entry);
+  if (entry) return providerFromCatalogEntry(entry, registry);
   if (gwEntry) return null;
   // Porta 3005 (direta): fallback por nome de modelo conhecido.
   const deepseekEnabled = enabled.some((p) => isDeepseekProvider(p));
@@ -1062,7 +1063,8 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     if (gwEntry) {
       const entry = await resolveModelEntry(body.model, registry);
       if (entry) {
-        target = providerFromCatalogEntry(entry);
+        // registry garante a preservação das contas/chaves (telemetria por conta).
+        target = providerFromCatalogEntry(entry, registry);
       } else {
         // Fallback: tenta encontrar o provedor pela lista de modelos (igual à porta 3005)
         // Isso evita 404 quando o catálogo ainda não carregou os modelos do provedor API.
@@ -1085,7 +1087,7 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       // Porta 3005 (direta): o model enviado pelo cliente decide o provedor.
       const entry = await resolveModelEntry(body.model, registry);
       if (entry) {
-        target = providerFromCatalogEntry(entry);
+        target = providerFromCatalogEntry(entry, registry);
       } else {
         // Fallback: roteamento por nome de modelo conhecido (DeepSeek/Qwen)
         // ou, se nada reconhecer, o provedor principal.
@@ -1104,14 +1106,15 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
 
     // ── Log estruturado do orquestrador: visibilidade imediata do modo de
     // roteamento e do destino no terminal (Railway/CI) sem adivinhação.
+    const gwApp = gwEntry ? ` | Gateway App: "${gwEntry.name}"` : '';
     if (isAutoMode) {
       const taskDesc = (c.get('autoRouterTask') as string | undefined) || 'auto (sem classificação)';
       console.log(
-        `[Orchestrator] Mode: Auto | Task Evaluation: ${taskDesc} | Selected Model: ${body.model} | Provider: ${target?.name || 'desconhecido'}`
+        `[Orchestrator] Mode: Auto${gwApp} | Task Evaluation: ${taskDesc} | Selected Model: ${body.model} | Provider: ${target?.name || 'desconhecido'}`
       );
     } else {
       console.log(
-        `[Orchestrator] Mode: Manual | Requested: ${body.model} | Routed To: ${target?.name || 'desconhecido'} (${target?.type || '?'})`
+        `[Orchestrator] Mode: Manual${gwApp} | Requested: ${body.model} | Routed To: ${target?.name || 'desconhecido'} (${target?.type || '?'})`
       );
     }
 
@@ -1157,6 +1160,9 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       stripMetadata: economy.stripMetadata,
       compressTools: economy.compressTools,
 });
+    // Estimativa de tokens de entrada para a telemetria (contexto usagePromptChars):
+    // usado como fallback quando o upstream não reporta o bloco `usage`.
+    c.set('usagePromptChars', JSON.stringify(body.messages || []).length);
  
     // Reforço de contexto + limpeza de arquivo ativo: se a última mensagem do usuário
     // for uma confirmação curta (ex.: "pode implementar", "sim", "faz aí"), o Proxy:

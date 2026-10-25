@@ -4211,6 +4211,14 @@
       text-overflow: ellipsis;
     }
 
+    .account-limit {
+      font-size: 10.5px;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
     .account-none {
       font-size: 12px;
       color: var(--muted-2);
@@ -5191,6 +5199,15 @@
                     <button class="btn ghost" id="btnAddKey" type="button">+ Adicionar</button>
                     <button class="btn ghost" id="btnClearKeyForm" type="button"
                       title="Limpar os campos acima e sair da edição">Limpar</button>
+                    <div class="key-form" style="margin-top:6px;grid-column:1/-1;">
+                      <select id="pvKeyLimitPeriod" title="Janela do limite de cota">
+                        <option value="">Sem limite de cota</option>
+                        <option value="day">Limite por dia</option>
+                        <option value="month">Limite por mês</option>
+                      </select>
+                      <input id="pvKeyLimitTokens" type="number" min="0" step="1" title="Limite máximo de tokens nesta conta (0 = sem limite)" placeholder="Limite de tokens (ex: 500000)" />
+                      <input id="pvKeyLimitRequests" type="number" min="0" step="1" title="Limite máximo de requisições nesta conta (0 = sem limite)" placeholder="Limite de requisições (ex: 10000)" />
+                    </div>
                   </div>
                 </div>
                 <div id="pvTypeHint" class="note" style="margin:0 0 12px;"></div>
@@ -5804,6 +5821,12 @@
                   placeholder="ou digite um modelo customizado..." />
                 <datalist id="appModelList"></datalist>
               </div>
+              <p class="note" style="margin:8px 0 0;">
+                <b>⚡ Auto (Smart Router)</b>: cada requisição da app é classificada
+                (código, raciocínio, tradução...) e enviada ao melhor modelo disponível
+                no momento, com failover se um provedor cair. Use um modelo específico
+                na lista abaixo se quiser fixar o destino.
+              </p>
             </label>
             <div class="row">
               <button class="btn" id="btnCreateApp" type="button">Criar chave</button>
@@ -6547,6 +6570,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
               <span class="tab-count" id="usageModelsBadge">0</span>
             </button>
             <button type="button" role="tab" aria-selected="false" data-usage-tab="advanced">Avançado</button>
+            <button type="button" role="tab" aria-selected="false" data-usage-tab="accounts">Consumo por
+              conta</button>
           </div>
 
           <div class="subtab-panel" id="usage-overview">
@@ -6636,6 +6661,42 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
                 ainda não devolveu um erro de cota, o restante aparece como “sem limite aprendido”.
               </p>
               <div id="umList" class="note">Sem dados de uso no período selecionado.</div>
+            </div>
+          </div>
+
+          <div class="subtab-panel hidden" id="usage-accounts">
+            <div class="grid cols-4">
+              <div class="card">
+                <h3>Contas monitoradas</h3>
+                <div class="value" id="uaAccCount">—</div>
+                <div class="note" id="uaAccCountSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Tokens por contas</h3>
+                <div class="value" id="uaAccTokens">—</div>
+                <div class="note" id="uaAccTokensSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Em cooldown (cota)</h3>
+                <div class="value" id="uaAccCooldown">—</div>
+                <div class="note" id="uaAccCooldownSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Taxa de erro geral</h3>
+                <div class="value" id="uaAccErrors">—</div>
+                <div class="note" id="uaAccErrorsSub">—</div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Consumo, cota e limites por conta (chave de API)</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Diferencia o uso entre chaves do mesmo provedor (ex.: múltiplas contas do Google AI).
+                O <b>status de cota</b> vem do runtime do provedor (<code class="inline">rate_limited</code> aplica
+                cooldown ao momento em que a chave toma 429); requisições anteriores à adição do
+                rastro de conta aparecem como <i>sem identificação</i>.
+              </p>
+              <div id="uaAccountsList" class="note">Sem dados de contas no período selecionado.</div>
             </div>
           </div>
 
@@ -8125,6 +8186,9 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         editingKeyId = null;
         $("#pvKeyLabel").value = "";
         $("#pvKeyValue").value = "";
+        $("#pvKeyLimitPeriod").value = "";
+        $("#pvKeyLimitTokens").value = "";
+        $("#pvKeyLimitRequests").value = "";
         $("#btnAddKey").textContent = "+ Adicionar Chave";
       }
 
@@ -8135,9 +8199,23 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         editingKeyId = keyId;
         $("#pvKeyLabel").value = k.label || "";
         $("#pvKeyValue").value = k.key || "";
+        $("#pvKeyLimitPeriod").value = k.limitPeriod || "";
+        $("#pvKeyLimitTokens").value = k.limitTokens || "";
+        $("#pvKeyLimitRequests").value = k.limitRequests || "";
         $("#btnAddKey").textContent = "Salvar alteração";
         renderEditingKeys();
         $("#pvKeyLabel").focus();
+      }
+
+      /** Lê os limites do form: {limitTokens, limitRequests, limitPeriod} ou nulos. */
+      function readKeyLimits() {
+        const period = $("#pvKeyLimitPeriod").value;
+        const tokens = Math.floor(Number($("#pvKeyLimitTokens").value));
+        const requests = Math.floor(Number($("#pvKeyLimitRequests").value));
+        const limitTokens = period && Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+        const limitRequests = period && Number.isFinite(requests) && requests > 0 ? requests : null;
+        if (!limitTokens && !limitRequests) return {};
+        return { limitTokens, limitRequests, limitPeriod: period };
       }
 
       /** Valida os inputs e consolida no array (novo cadastro ou alteração). */
@@ -8156,10 +8234,14 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
           if (k) {
             k.label = label;
             k.key = key;
+            delete k.limitTokens;
+            delete k.limitRequests;
+            delete k.limitPeriod;
+            Object.assign(k, readKeyLimits());
           }
           fb.textContent = "Alteração da chave salva.";
         } else {
-          editingKeys.push({ id: _newKeyClientId(), label, key, status: 'active', resetAt: null, lastUsedAt: null, useCount: 0, lastResult: null });
+          editingKeys.push({ id: _newKeyClientId(), label, key, status: 'active', resetAt: null, lastUsedAt: null, useCount: 0, lastResult: null, ...readKeyLimits() });
           fb.textContent = "Chave adicionada.";
         }
         resetKeyForm();
@@ -8184,6 +8266,12 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             (isEditing ? 'outline:1px solid var(--green);border-radius:8px;padding:2px 4px;' : '');
           const statusCls = k.status === 'rate_limited' ? 'warn' : k.status === 'disabled' ? 'err' : 'ok';
           const statusTxt = k.status === 'rate_limited' ? 'Cota Esgotada' : k.status === 'disabled' ? 'Desativada' : 'Ativa';
+          const limitTxt = k.limitTokens || k.limitRequests
+            ? (k.limitTokens ? fmtCompactNum(k.limitTokens) + ' tok' : '') +
+              (k.limitTokens && k.limitRequests ? ' · ' : '') +
+              (k.limitRequests ? fmtCompactNum(k.limitRequests) + ' req' : '') +
+              (k.limitPeriod === 'month' ? '/mês' : '/dia')
+            : '';
           row.innerHTML =
             '<span style="font-size:12px;font-weight:600;min-width:90px;white-space:nowrap;user-select:text;" title="' + (k.label || 'Conta') + '">' +
             escapeHtml(k.label || 'Conta') +
@@ -8191,6 +8279,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             '<code style="font-size:11px;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;user-select:text;" title="' + (k.key || '') + '">' +
             escapeHtml(_maskKey(k.key || '')) +
             '</code>' +
+            (limitTxt ? '<span class="pill" style="font-size:10px;padding:2px 6px;" title="Limite de cota configurado para esta conta">🧮 ' + limitTxt + '</span>' : '') +
             '<span class="pill ' + statusCls + '" style="font-size:10px;padding:2px 6px;">' + statusTxt + '</span>' +
             '<button type="button" class="btn ghost" data-action="edit" data-keyid="' + k.id + '" style="font-size:11px;padding:2px 6px;" title="Editar esta chave">✎</button>' +
             '<button type="button" class="btn ghost danger" data-action="remove" data-keyid="' + k.id + '" style="font-size:11px;padding:2px 6px;" title="Remover esta chave">✕</button>';
@@ -8340,6 +8429,13 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
               '<div class="account-info">' +
               '<b>' + escapeHtml(k.label || "Conta") + '</b>' +
               '<code title="' + escapeHtml(k.key || "") + '">' + escapeHtml(_maskKey(k.key || "")) + '</code>' +
+              (k.limitTokens || k.limitRequests
+                ? '<span class="account-limit">🧮 Limite: ' +
+                  (k.limitTokens ? fmtCompactNum(k.limitTokens) + ' tokens' : '') +
+                  (k.limitTokens && k.limitRequests ? ' · ' : '') +
+                  (k.limitRequests ? fmtCompactNum(k.limitRequests) + ' reqs' : '') +
+                  (k.limitPeriod === 'month' ? '/mês' : '/dia') + '</span>'
+                : '') +
               '</div>' +
               '<div class="account-status-cell">' +
               '<span class="status-badge ' + st.cls + '"><span class="dot"></span>' + st.label + '</span>' +
@@ -8431,6 +8527,10 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             lastUsedAt: k.lastUsedAt || null,
             useCount: k.useCount || 0,
             lastResult: k.lastResult || null,
+            // Limites de cota: preservados na re-edição do provedor.
+            limitTokens: k.limitTokens || undefined,
+            limitRequests: k.limitRequests || undefined,
+            limitPeriod: k.limitPeriod || undefined,
           }));
         } else if (p && p.apiKey) {
           // Migração frontend: campo legado
@@ -8766,6 +8866,9 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             lastUsedAt: k.lastUsedAt || null,
             useCount: k.useCount || 0,
             lastResult: k.lastResult || null,
+            limitTokens: k.limitTokens,
+            limitRequests: k.limitRequests,
+            limitPeriod: k.limitPeriod,
           })),
           model: $("#pvModel").value.trim(),
           enabled: existing ? existing.enabled : false,
@@ -9628,31 +9731,43 @@ for await (const chunk of stream) {
       }
 
       function groupedModelOptions(selected) {
+        // Modelos virtuais do Smart Router sempre em PRIMEIRO lugar: na app do
+        // gateway, escolher "auto" faz cada requisição passar pelo roteador
+        // inteligente (classifica a tarefa e aponta para o melhor modelo
+        // disponível do catálogo, com failover). Não são provedores "de verdade".
+        const autoLabel = '⚡ Auto (Smart Router) — escolhe o melhor modelo por requisição';
+        const opts =
+          '<optgroup label="⚡ ROTEAMENTO AUTOMÁTICO (Smart Router)">' +
+          '<option value="auto"' + (selected === "auto" ? " selected" : "") + '>' + autoLabel + '</option>' +
+          '<option value="auto-free"' + (selected === "auto-free" ? " selected" : "") + '>🆓 Auto Free — roteia só entre provedores de navegador (grátis)</option>' +
+          '</optgroup>';
         const groups = {};
         (catalogModels || []).forEach((m) => {
+          // "auto"/"auto-free" já estão nas opções dedicadas acima: evita duplicar.
+          if (m.id === "auto" || m.id === "auto-free") return;
           const key = m.providerName || m.provider || "outros";
           (groups[key] = groups[key] || []).push(m);
         });
-        const opts = [];
+        const groupOpts = [];
         Object.keys(groups)
           .sort()
           .forEach((key) => {
-            opts.push('<optgroup label="' + escapeHtml(key.toUpperCase()) + '">');
+            groupOpts.push('<optgroup label="' + escapeHtml(key.toUpperCase()) + '">');
             groups[key].forEach((m) => {
-              opts.push(
+              groupOpts.push(
                 '<option value="' + escapeHtml(m.id) + '"' + (m.id === selected ? " selected" : "") + ">" +
                 escapeHtml(m.name || m.id) + "</option>"
               );
             });
-            opts.push("</optgroup>");
+            groupOpts.push("</optgroup>");
           });
         // Preserva o modelo atual da app mesmo se ele não estiver mais no catálogo.
-        if (selected && !catalogModels.some((m) => m.id === selected)) {
-          opts.push('<optgroup label="ATUAL">');
-          opts.push('<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + "</option>");
-          opts.push("</optgroup>");
+        if (selected && !catalogModels.some((m) => m.id === selected) && selected !== "auto" && selected !== "auto-free") {
+          groupOpts.push('<optgroup label="ATUAL">');
+          groupOpts.push('<option value="' + escapeHtml(selected) + '" selected>' + escapeHtml(selected) + "</option>");
+          groupOpts.push("</optgroup>");
         }
-        return opts.join("");
+        return opts + groupOpts.join("");
       }
 
       function refreshAppForm() {
@@ -9710,14 +9825,21 @@ for await (const chunk of stream) {
           const row = document.createElement("div");
           row.className = "provider-row" + (a.enabled === false ? " disabled" : "");
           const modelVal = a.model || "";
+          // Apps configuradas com "auto"/"auto-free" não têm um provedor fixo:
+          // cada requisição é roteada pelo Smart Router no momento do uso.
+          const isGwAuto = modelVal === "auto" || modelVal === "auto-free";
+          const providerPill = isGwAuto
+            ? '<span class="pill ok" style="font-size:11px;padding:2px 8px;"><span class="s"></span>' +
+              (modelVal === "auto" ? "⚡ Auto · roteia a cada requisição" : "🆓 Auto Free · roteia entre navegadores") + '</span>'
+            : (a.providerName
+              ? '<span class="pill' + (a.providerEnabled ? " ok" : "") + '" style="font-size:11px;padding:2px 8px;"><span class="s"></span>' + escapeHtml(a.providerName) + '</span>'
+              : '<span class="pill err" style="font-size:11px;padding:2px 8px;"><span class="s"></span>modelo não está no catálogo</span>');
           row.innerHTML =
             '<div style="flex:1;min-width:0;">' +
             '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
             '<b style="font-size:14px;">' + escapeHtml(a.name) + '</b>' +
             '<code class="mono" style="font-size:12px;color:var(--muted);">' + escapeHtml(a.keyHint || "") + '</code>' +
-            (a.providerName
-              ? '<span class="pill' + (a.providerEnabled ? " ok" : "") + '" style="font-size:11px;padding:2px 8px;"><span class="s"></span>' + escapeHtml(a.providerName) + '</span>'
-              : '<span class="pill err" style="font-size:11px;padding:2px 8px;"><span class="s"></span>modelo não está no catálogo</span>') +
+            providerPill +
             '</div>' +
             '<div class="row" style="margin-top:8px;">' +
             '<select data-act="model" data-id="' + a.id + '" style="flex:1;min-width:120px;">' + groupedModelOptions(modelVal) + '</select>' +
@@ -9779,10 +9901,14 @@ for await (const chunk of stream) {
           const data = await res.json();
           if (!res.ok) throw new Error(data.error || ("HTTP " + res.status));
           $("#appKeyValue").value = data.apiKey;
+          const createdModel = data.app.model || "";
+          const modelNote = (createdModel === "auto" || createdModel === "auto-free")
+            ? "  (o Smart Router escolhe o melhor modelo a cada requisição)"
+            : "  (obrigatório na IDE; o gateway usa o modelo configurado no painel, ignorando o valor enviado)";
           $("#appConfigSnippet").textContent =
             'Base URL: ' + gatewayBase() + "\n" +
             "API Key:  " + data.apiKey + "\n" +
-            "Model ID: \"" + (data.app.model || "") + "\"  (obrigatório na IDE; o gateway usa o modelo configurado no painel, ignorando o valor enviado)";
+            "Model ID: \"" + createdModel + "\"" + modelNote;
           $("#appKeyBox").classList.remove("hidden");
           fb.textContent = "Aplicação \"" + data.app.name + "\" criada com sucesso.";
           $("#appName").value = "";
@@ -11397,7 +11523,9 @@ for await (const chunk of stream) {
       }
 
       function refreshUsageTab() {
-        if (currentUsageTab() === "overview") loadUsageDashboard();
+        const tab = currentUsageTab();
+        if (tab === "overview") loadUsageDashboard();
+        else if (tab === "accounts") loadUsageAccounts();
         else loadUsageAdvanced();
       }
 
@@ -11433,6 +11561,14 @@ for await (const chunk of stream) {
 
       function fmtInt(n) {
         return (Number(n) || 0).toLocaleString("pt-BR");
+      }
+
+      /** Formato compacto para limites de cota: 500k, 1.2M, 350. */
+      function fmtCompactNum(n) {
+        const v = Number(n) || 0;
+        if (v >= 1000000) return (Math.round((v / 1000000) * 10) / 10) + "M";
+        if (v >= 1000) return Math.round(v / 1000) + "k";
+        return String(v);
       }
 
       function escapeHtml(s) {
@@ -11888,6 +12024,125 @@ for await (const chunk of stream) {
         } finally {
           loadUsageAdvanced._inflight = false;
         }
+      }
+
+      // ---------- Consumo por conta (chave de API) ----------
+      async function loadUsageAccounts() {
+        const period = $("#usagePeriod")?.value || "all";
+        if (loadUsageAccounts._inflight) return;
+        loadUsageAccounts._inflight = true;
+        try {
+          const res = await fetch(`/api/usage/accounts?period=${encodeURIComponent(period)}`);
+          if (!res.ok) throw new Error(String(res.status));
+          const json = await res.json();
+          renderUsageAccounts(json.accounts || []);
+          usageStamp();
+        } catch {
+          const el = $("#uaAccountsList");
+          if (el) {
+            el.className = "note";
+            el.textContent = "Falha ao carregar o consumo por conta.";
+          }
+        } finally {
+          loadUsageAccounts._inflight = false;
+        }
+      }
+
+      function accountStatusPill(status, resetsInMs) {
+        if (status === "rate_limited") {
+          const mins = Math.max(1, Math.round((resetsInMs || 0) / 60000));
+          return `<span class="pill err" style="font-size:11px;"><span class="s"></span>cooldown de cota · volta em ~${mins}min</span>`;
+        }
+        if (status === "disabled") {
+          return '<span class="pill" style="font-size:11px;"><span class="s"></span>desativada</span>';
+        }
+        return '<span class="pill ok" style="font-size:11px;"><span class="s"></span>ativa</span>';
+      }
+
+      function renderUsageAccounts(accs) {
+        const box = $("#uaAccountsList");
+        const set = (sel, val, subSel, subVal) => {
+          if ($(sel)) $(sel).textContent = val;
+          if (subSel && $(subSel)) $(subSel).textContent = subVal;
+        };
+        if (!Array.isArray(accs)) return;
+        const withUse = accs.filter((a) => a.totalRequests > 0);
+        const cooldowns = accs.filter((a) => a.status === "rate_limited");
+        const totalTokens = withUse.reduce((s, a) => s + (a.totalTokens || 0), 0);
+        const totalReq = withUse.reduce((s, a) => s + (a.totalRequests || 0), 0);
+        const totalErr = withUse.reduce((s, a) => s + (a.errorRequests || 0), 0);
+        set("#uaAccCount", fmtInt(accs.length), "#uaAccCountSub", withUse.length ? `${withUse.length} com uso no período` : "nenhuma com uso ainda");
+        set("#uaAccTokens", fmtInt(totalTokens), "#uaAccTokensSub", `${fmtInt(totalReq)} req · ${fmtInt(totalErr)} erros`);
+        set("#uaAccCooldown", fmtInt(cooldowns.length), "#uaAccCooldownSub", cooldowns.length
+          ? cooldowns.map((a) => a.accountName).join(", ")
+          : "nenhuma conta em cooldown");
+        set("#uaAccErrors", totalReq ? `${Math.round(((totalReq - totalErr) / totalReq) * 1000) / 10}%` : "—", "#uaAccErrorsSub", totalReq ? "sucesso geral (0-100)" : "sem requisições");
+
+        if (!box) return;
+        if (!accs.length) {
+          box.className = "note";
+          box.textContent = "Nenhuma conta configurada nos provedores (aba Conexão → API keys múltiplas).";
+          return;
+        }
+        box.className = "";
+        box.innerHTML = accs.map((a) => {
+          const errPct = a.totalRequests ? Math.round((a.errorRequests / a.totalRequests) * 1000) / 10 : 0;
+          const health = a.status === "rate_limited"
+            ? "err"
+            : (a.totalRequests && errPct > 20 ? "warn" : "ok");
+          const models = a.models ? `${a.models} modelo(s)` : "sem uso";
+          // Barra de cota: usa o consumo DENTRO da janela do limite (window*),
+          // que independe do seletor de período da UI.
+          const lit = a.limitTokens || a.limitRequests;
+          let quotaHtml = "";
+          if (lit) {
+            const pctTok = a.limitTokens ? a.usagePctTokens : null;
+            const pctReq = a.limitRequests ? a.usagePctRequests : null;
+            // % visível: prioriza tokens; se só tiver reqs, usa reqs.
+            const pct = pctTok != null ? pctTok : (pctReq != null ? pctReq : 0);
+            const barCls = pct >= 100 ? "err" : pct >= 80 ? "warn" : "ok";
+            const remParts = [];
+            if (a.limitTokens) remParts.push(a.remainingTokens > 0 ? `restam ${fmtCompactNum(a.remainingTokens)}/${fmtCompactNum(a.limitTokens)} tokens` : "tokens esgotados");
+            if (a.limitRequests) remParts.push(a.remainingRequests > 0 ? `restam ${fmtCompactNum(a.remainingRequests)}/${fmtCompactNum(a.limitRequests)} reqs` : "reqs esgotadas");
+            const winLbl = a.limitPeriod === "month" ? "este mês" : "hoje";
+            quotaHtml = `
+            <div style="flex:1.4;min-width:180px;font-size:11px;color:var(--muted);">
+              <div style="height:6px;border-radius:999px;background:var(--border);overflow:hidden;margin-bottom:4px;">
+                <div style="height:100%;width:${Math.max(2, Math.min(100, pct))}%;border-radius:999px;background:${barCls === "err" ? "var(--red,#ef4444)" : barCls === "warn" ? "var(--yellow,#f59e0b)" : "var(--green,#10b981)"};transition:width .4s;"></div>
+              </div>
+              <div><b style="color:var(--fg);">${fmtPct(pct)}</b> da cota (${winLbl})</div>
+              <div>${escapeHtml(remParts.join(" · "))}</div>
+            </div>`;
+          } else {
+            quotaHtml = '<div style="flex:1;min-width:110px;font-size:11px;color:var(--muted);">sem limite configurado</div>';
+          }
+          return `
+          <div class="usage-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border);flex-wrap:wrap;">
+            <div style="flex:2;min-width:170px;">
+              <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+                <b style="font-size:13px;">${escapeHtml(a.accountName)}</b>
+                <span class="pill ${health}" style="font-size:10px;"><span class="s"></span>${escapeHtml(a.provider)}</span>
+              </div>
+              <div style="font-size:10px;color:var(--muted);margin-top:2px;">
+                ${escapeHtml(models)}${a.lastUsedAt ? ` · último uso ${new Date(a.lastUsedAt).toLocaleTimeString("pt-BR")}` : ""}
+              </div>
+            </div>
+            <div style="flex:1;min-width:110px;font-size:11px;color:var(--muted);">
+              <div><b style="color:var(--fg);">${fmtInt(a.totalRequests)}</b> req</div>
+              <div>${fmtInt(a.errorRequests)} erros (${errPct}%)</div>
+            </div>
+            <div style="flex:1;min-width:110px;font-size:11px;color:var(--muted);">
+              <div><b style="color:var(--fg);">${fmtInt(a.totalTokens)}</b> tokens</div>
+              <div>${fmtInt(a.tokensPrompt)} in · ${fmtInt(a.tokensCompletion)} out</div>
+            </div>
+            <div style="flex:1;min-width:110px;font-size:11px;color:var(--muted);">
+              <div>lat média <b style="color:var(--fg);">${fmtInt(a.avgLatencyMs)}ms</b></div>
+              <div>p95 ${fmtInt(a.p95LatencyMs)}ms</div>
+            </div>
+            <div style="flex:1;min-width:150px;">${accountStatusPill(a.status, a.resetsInMs)}</div>
+            ${quotaHtml}
+          </div>`;
+        }).join("");
       }
 
       // ---------- Init ----------

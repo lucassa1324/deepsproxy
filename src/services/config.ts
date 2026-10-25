@@ -48,6 +48,12 @@ export interface AccountKey {
   useCount?: number;
   /** Resultado da última tentativa que usou a chave. */
   lastResult?: 'success' | 'quota' | 'error' | null;
+  /** Limite opcional de tokens configurado pelo usuário (janela `limitPeriod`). */
+  limitTokens?: number;
+  /** Limite opcional de requisições configurado pelo usuário (janela `limitPeriod`). */
+  limitRequests?: number;
+  /** Janela do limite configurado. Ausente/undefined quando nenhum limite. */
+  limitPeriod?: 'day' | 'month';
 }
 
 export interface Provider {
@@ -93,6 +99,13 @@ export function normalizeAccountKeys(provider: Pick<Provider, 'apiKey' | 'apiKey
       raw.lastResult === 'success' || raw.lastResult === 'quota' || raw.lastResult === 'error'
         ? raw.lastResult
         : null;
+    // Limites de cota configurados pelo usuário: só números inteiros finitos
+    // (> 0) são preservados; qualquer lixo cai fora e a conta volta a ficar
+    // "sem limite".
+    const limitTokens = Math.floor(Number(raw.limitTokens));
+    const limitRequests = Math.floor(Number(raw.limitRequests));
+    const limitPeriod: AccountKey['limitPeriod'] =
+      raw.limitPeriod === 'day' || raw.limitPeriod === 'month' ? raw.limitPeriod : undefined;
     out.push({
       id: raw.id ? String(raw.id) : newAccountKeyId(),
       label: String(raw.label || `Conta ${out.length + 1}`).trim(),
@@ -102,6 +115,10 @@ export function normalizeAccountKeys(provider: Pick<Provider, 'apiKey' | 'apiKey
       lastUsedAt: raw.lastUsedAt != null ? String(raw.lastUsedAt) : null,
       useCount: Number.isFinite(useCount) && useCount > 0 ? Math.floor(useCount) : 0,
       lastResult,
+      ...(Number.isFinite(limitTokens) && limitTokens > 0
+        ? { limitTokens, limitPeriod: limitPeriod || 'day' }
+        : {}),
+      ...(Number.isFinite(limitRequests) && limitRequests > 0 ? { limitRequests } : {}),
     });
   }
   // Migração: registro antigo com `apiKey: string` vira a primeira conta.

@@ -114,11 +114,20 @@ function toolContentToText(content: any): string {
  * functionCall do histórico. Para eles, um call sem assinatura recuperável é
  * convertido em texto (em vez de mandar o functionCall e tomar 400). Modelos
  * antigos (2.0/1.5) não exigem — seguem com functionResponse normalmente.
+ *
+ * Aliases sem número de versão ("gemini-flash-lite-latest", "gemini-2.5-flash",
+ * "gemini-3-flash-preview"...) apontam atualmente para modelos 2.5+/3.x e são
+ * tratados como exigentes — era a causa do 400 "missing thought_signature" no
+ * flash-lite-latest, que não casava com a regex de versão.
  */
 function requiresThoughtSignature(model: string): boolean {
   const id = normalizeModelId(model);
   if (!id) return true;
-  return /(^|[-_/])(2\.[4-9]|3(\.|-|$))/.test(id);
+  // Só NÃO exigir quando a versão antiga é explícita (1.x, 2.0–2.3).
+  // 2.4+, 3.x e aliases sem versão numérica (-latest, -preview) exigem —
+  // era a causa do 400 "missing thought_signature" no flash-lite-latest.
+  const oldVersion = /(^|[-_/])(1\.\d|2\.[0-3])(\.|-|$)/.test(id);
+  return !oldVersion;
 }
 
 // O Gemini (function_declarations.parameters) aceita apenas um subconjunto do
@@ -197,7 +206,7 @@ function toGeminiTools(payload: OpenAIRequest): { tools: any[]; toolConfig?: any
   return out;
 }
 
-export function buildGeminiBody(payload: OpenAIRequest): any {
+export function buildGeminiBody(payload: OpenAIRequest, forceSigRequirement = false): any {
   const systemParts: string[] = [];
   const contents: any[] = [];
 
@@ -205,8 +214,10 @@ export function buildGeminiBody(payload: OpenAIRequest): any {
   // gerados por outro caminho (gemini-web/Playwright) ou antes desta correção
   // não têm assinatura recuperável. Para modelos que exigem a assinatura,
   // esses calls são descartados e o resultado da tool vira texto do usuário —
-  // sem isso a API responde 400.
-  const requiresSig = requiresThoughtSignature(payload.model);
+  // sem isso a API responde 400. forceSigRequirement=true é a rede de
+  // segurança: usada quando a API respondeu 400 de thought_signature mesmo
+  // depois da detecção normal.
+  const requiresSig = forceSigRequirement || requiresThoughtSignature(payload.model);
   const unsignedCallIds = new Set<string>();
   const callNameById = new Map<string, string>();
   for (const msg of payload.messages || []) {
@@ -389,19 +400,36 @@ export class GeminiAdapter implements ProviderAdapter {
       return openaiError(400, 'Gemini: API Key não configurada para este provedor.');
     }
     const baseUrl = (provider.baseUrl || DEFAULT_BASE).replace(/\/+$/, '');
-    const body = buildGeminiBody(payload);
+    let body = buildGeminiBody(payload);
     const endpoint = isStream ? 'streamGenerateContent' : 'generateContent';
     const url = `${baseUrl}/models/${encodeURIComponent(model)}:${endpoint}?key=${encodeURIComponent(resolvedKey)}${isStream ? '&alt=sse' : ''}`;
 
+    const attempt = () =>
+      optimizedFetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    let sigRetryUsed = false;
     const doFetch = () =>
       withRetry(async () => {
-        const res = await optimizedFetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
+        const res = await attempt();
         if (!res.ok) {
           const errText = await res.text().catch(() => '');
+          // Rede de segurança: alias novo/renomeado que procura função
+          // (reasoning) mesmo sem bater na regex de versão. A API responde
+          // 400 "Function call is missing a thought_signature": reconstrói o
+          // body convertendo todos os calls sem assinatura em texto e tenta
+          // UMA única vez em transparência.
+          if (res.status === 400 && !sigRetryUsed && /thought_signature/i.test(errText)) {
+            sigRetryUsed = true;
+            body = buildGeminiBody(payload, true);
+            console.warn(
+              `[gemini] 400 thought_signature no modelo "${model}": reenviando com calls sem assinatura convertidos em texto`
+            );
+            return attempt();
+          }
           throw new HttpError(res.status, `Gemini ${res.status}: ${errText.slice(0, 300)}`, errText);
         }
         return res;

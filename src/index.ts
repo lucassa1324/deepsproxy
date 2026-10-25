@@ -249,8 +249,8 @@ function registerOpenAIRoutes(h: Hono) {
     const startedAt = Date.now();
     const res = await chatCompletions(c);
     // Telemetria de uso (best-effort, fora do caminho crítico da resposta).
-    recordRequestUsageFromResponse(c, res, startedAt);
-    return res;
+    // Em SSE o tee da stream acontece aqui: devolve a branch do cliente.
+    return recordRequestUsageFromResponse(c, res, startedAt);
   });
 
   h.get('/v1/models', async (c) => {

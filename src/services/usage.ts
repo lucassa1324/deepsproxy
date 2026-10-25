@@ -13,6 +13,7 @@
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
+import { normalizeAccountKeys, type ProviderRegistry } from './config.ts';
 import { getCachedModelCatalog, providerFromCatalogEntry } from './modelCatalog.ts';
 import { getQuotaTrackerStats, type QuotaTrackerStats } from './quota-tracker.ts';
 import { getRateTrackerStats, type RateTrackerStats } from './rate-tracker.ts';
@@ -37,6 +38,12 @@ export interface UsageRecord {
   tokensTotal: number;
   /** Tempo total do request no proxy (ms). */
   latencyMs: number;
+  /** Id da conta/chave de API usada (AccountKey.id), quando identificada. */
+  accountId?: string;
+  /** Rótulo/apelido da conta (ex.: "atrossilva", "lucassa"). */
+  accountName?: string;
+  /** true quando os tokens vieram de estimativa (upstream não reportou usage). */
+  tokensEstimated?: boolean;
 }
 
 export interface UsageSummary {
@@ -191,7 +198,7 @@ function sanitizeRecord(raw: any): UsageRecord | null {
   if (!Number.isFinite(ts) || ts <= 0) return null;
   const status = Number.isFinite(Number(raw.status)) ? Number(raw.status) : 0;
   const mode: UsageRoutingMode = raw.routingMode === 'auto' ? 'auto' : 'manual';
-  return {
+  const rec: UsageRecord = {
     ts,
     status,
     requestedModel: String(raw.requestedModel || ''),
@@ -203,6 +210,10 @@ function sanitizeRecord(raw: any): UsageRecord | null {
     tokensTotal: Number(raw.tokensTotal) || 0,
     latencyMs: Number(raw.latencyMs) || 0,
   };
+  if (raw.accountId) rec.accountId = String(raw.accountId).slice(0, 128);
+  if (raw.accountName) rec.accountName = String(raw.accountName).slice(0, 128);
+  if (raw.tokensEstimated) rec.tokensEstimated = true;
+  return rec;
 }
 
 function loadFromDisk(): void {
@@ -263,13 +274,14 @@ export function recordUsage(entry: UsageRecord): void {
 export function patchUsageTokens(
   ts: number,
   finalModel: string,
-  tokens: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number }
+  tokens: { tokensPrompt?: number; tokensCompletion?: number; tokensTotal?: number; estimated?: boolean }
 ): void {
   const rec = [...records].reverse().find((r) => r.ts === ts && r.finalModel === finalModel);
   if (!rec) return;
   if (tokens.tokensPrompt !== undefined) rec.tokensPrompt = tokens.tokensPrompt;
   if (tokens.tokensCompletion !== undefined) rec.tokensCompletion = tokens.tokensCompletion;
   if (tokens.tokensTotal !== undefined) rec.tokensTotal = tokens.tokensTotal;
+  if (tokens.estimated) rec.tokensEstimated = true;
   scheduleSave();
 }
 
@@ -411,6 +423,241 @@ export function computeModelRanking(period?: string, limit = 15): UsageModelStat
   const out = aggregateModels(getUsageRecords(period));
   out.sort((a, b) => b.requests - a.requests || b.tokens - a.tokens);
   return out.slice(0, Math.max(1, Math.min(50, limit)));
+}
+
+/* ------------------------- Consumo por conta/chave ----------------========= */
+
+export interface UsageAccountStat {
+  /** Id da conta (AccountKey.id) ou chave de agrupamento dos sem-id. */
+  accountId: string;
+  /** Rótulo/apelido da conta (ex.: "atrossilva") ou "(sem identificação)". */
+  accountName: string;
+  provider: string;
+  providerId: string;
+  totalRequests: number;
+  errorRequests: number;
+  /** 0-100. */
+  successRate: number;
+  totalTokens: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  avgTokensPerRequest: number;
+  avgLatencyMs: number;
+  p95LatencyMs: number;
+  lastUsedAt: number;
+  /** Modelos distintos atendidos pela conta no período. */
+  models: number;
+  /** Saúde da conta no runtime: active/rate_limited/disabled (+ desconhecido). */
+  status: 'active' | 'rate_limited' | 'disabled' | 'desconhecido';
+  /** Cooldown de cota restante (ms) quando rate_limited; 0 caso contrário. */
+  resetsInMs: number;
+  /** Resultado da última tentativa com esta chave (registro do AccountKey). */
+  lastResult: 'success' | 'quota' | 'error' | null;
+  /** Limite de tokens configurado no AccountKey (null = sem limite). */
+  limitTokens: number | null;
+  /** Limite de requisições configurado no AccountKey (null = sem limite). */
+  limitRequests: number | null;
+  /** Janela do limite. null quando nenhum limite configurado. */
+  limitPeriod: 'day' | 'month' | null | undefined;
+  /** Consumo de tokens/requisições DENTRO da janela do limite (independe do
+   * seletor de período da UI — quota sempre reflete hoje/este mês). */
+  windowTokens: number;
+  windowRequests: number;
+  /** Saldo restante da cota (null = sem limite configurado). */
+  remainingTokens: number | null;
+  remainingRequests: number | null;
+  /** % da cota consumida (0-100, clampado; null = sem limite). */
+  usagePctTokens: number | null;
+  usagePctRequests: number | null;
+  /** true quando a conta já estourou pelo menos um dos limites configurados. */
+  quotaExhausted: boolean;
+}
+
+type AccountAgg = Omit<
+  UsageAccountStat,
+  | 'successRate'
+  | 'avgTokensPerRequest'
+  | 'p95LatencyMs'
+  | 'windowTokens'
+  | 'windowRequests'
+  | 'remainingTokens'
+  | 'remainingRequests'
+  | 'usagePctTokens'
+  | 'usagePctRequests'
+  | 'quotaExhausted'
+> & {
+  latSum: number;
+  latencies: number[];
+};
+
+/**
+ * Agrega o uso por conta (chave de API) para GET /api/usage/accounts.
+ * Junta dois repositórios:
+ *  1. telemetria de requisições (accountId gravado nos headers X-Account-*);
+ *  2. inventário de contas do registry (inclui contas sem uso no período, com
+ *     o status runtime de cota — active/rate_limited/disabled — e o cooldown).
+ */
+export function getUsageByAccount(
+  period?: string,
+  registry?: ProviderRegistry | null
+): UsageAccountStat[] {
+  const { since } = periodToSince(period);
+  loadFromDisk();
+  const list = since ? records.filter((r) => r.ts >= since) : records;
+  const now = Date.now();
+
+  const map = new Map<string, AccountAgg>();
+  const touch = (key: string, init: Partial<AccountAgg>): AccountAgg => {
+    let acc: AccountAgg | undefined = map.get(key);
+    if (!acc) {
+      acc = {
+        accountId: init.accountId || key,
+        accountName: init.accountName || '(sem identificação)',
+        provider: init.provider || '—',
+        providerId: init.providerId || '',
+        totalRequests: 0,
+        errorRequests: 0,
+        totalTokens: 0,
+        tokensPrompt: 0,
+        tokensCompletion: 0,
+        avgLatencyMs: 0,
+        lastUsedAt: 0,
+        models: 0,
+        status: 'desconhecido',
+        resetsInMs: 0,
+        lastResult: null,
+        limitTokens: null,
+        limitRequests: null,
+        limitPeriod: undefined,
+        latSum: 0,
+        latencies: [],
+      };
+      map.set(key, acc);
+    }
+    return acc;
+  };
+
+  // 1) Inventário de contas configuradas (inclusive as sem uso no período).
+  const providers = registry?.providers || [];
+  for (const p of providers) {
+    const keys = normalizeAccountKeys(p);
+    for (const k of keys) {
+      const acc = touch(k.id, {
+        accountId: k.id,
+        accountName: k.label || k.id,
+        provider: p.name || p.id,
+        providerId: p.id,
+      });
+      acc.status = k.status || 'active';
+      acc.lastResult = k.lastResult ?? null;
+      const resetAt = k.resetAt ? Date.parse(k.resetAt) : NaN;
+      acc.resetsInMs = Number.isFinite(resetAt) ? Math.max(0, resetAt - now) : 0;
+      // Limites de cota definidos na configuração da conta.
+      acc.limitTokens = Number(k.limitTokens) > 0 ? Math.floor(Number(k.limitTokens)) : null;
+      acc.limitRequests = Number(k.limitRequests) > 0 ? Math.floor(Number(k.limitRequests)) : null;
+      acc.limitPeriod = acc.limitTokens || acc.limitRequests ? k.limitPeriod || 'day' : undefined;
+    }
+  }
+
+  // 2) Consumo DENTRO da janela de cota (independente do período da UI):
+  //    dia = desde a meia-noite local; mês = desde o dia 1º 00:00 local.
+  //    Feito sobre TODOS os registros (não só o recorte do seletor),
+  //    numa passada própria — lim (recorte) é só para as métricas gerais.
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const monthStart = new Date();
+  monthStart.setDate(1);
+  monthStart.setHours(0, 0, 0, 0);
+  const winDay = new Map<string, { tokens: number; requests: number }>();
+  const winMonth = new Map<string, { tokens: number; requests: number }>();
+  for (const r of records) {
+    if (!r.accountId) continue;
+    const tok = Number(r.tokensTotal) || Number(r.tokensPrompt) + Number(r.tokensCompletion);
+    const d0 = new Date(r.ts);
+    if (d0 >= monthStart) {
+      const w = winMonth.get(r.accountId) || { tokens: 0, requests: 0 };
+      w.tokens += tok;
+      w.requests++;
+      winMonth.set(r.accountId, w);
+    }
+    if (d0 >= dayStart) {
+      const w = winDay.get(r.accountId) || { tokens: 0, requests: 0 };
+      w.tokens += tok;
+      w.requests++;
+      winDay.set(r.accountId, w);
+    }
+  }
+
+  // 3) Telemetria: contas com id conhecido + bucket "(sem identificação)".
+  const modelsByAcc = new Map<string, Set<string>>();
+  for (const r of list) {
+    const key = r.accountId ? r.accountId : `anon::${r.provider}`;
+    const providerId = providers.find((p) => p.name === r.provider)?.id || '';
+    const invEntry = r.accountId ? providers.find((p) => (p.apiKeys || []).some((k2) => k2.id === r.accountId)) : undefined;
+    const invKey = invEntry ? (invEntry.apiKeys || []).find((k2) => k2.id === r.accountId) : undefined;
+    const acc = touch(key, {
+      accountId: invKey?.id || '',
+      accountName: invKey?.label || r.accountName || '',
+      provider: invEntry?.name || r.provider,
+      providerId: providerId,
+    });
+    acc.totalRequests++;
+    if (r.status >= 400) acc.errorRequests++;
+    acc.totalTokens += Number(r.tokensTotal) || Number(r.tokensPrompt) + Number(r.tokensCompletion);
+    acc.tokensPrompt += Number(r.tokensPrompt) || 0;
+    acc.tokensCompletion += Number(r.tokensCompletion) || 0;
+    acc.latSum += r.latencyMs || 0;
+    acc.latencies.push(r.latencyMs || 0);
+    acc.lastUsedAt = Math.max(acc.lastUsedAt, r.ts);
+    if (!modelsByAcc.has(key)) modelsByAcc.set(key, new Set());
+    if (r.finalModel) modelsByAcc.get(key)!.add(r.finalModel);
+  }
+
+  const out: UsageAccountStat[] = [];
+  for (const [key, acc] of map) {
+    // Cota: janela conforme a configuração da conta (padrão: dia) e consumo
+    // registrado dentro dela. Excedido → quotaExhausted.
+    const win = acc.limitPeriod === 'month' ? winMonth : winDay;
+    const w = win.get(key) || { tokens: 0, requests: 0 };
+    const remainingTokens = acc.limitTokens != null ? Math.max(0, acc.limitTokens - w.tokens) : null;
+    const remainingRequests = acc.limitRequests != null ? Math.max(0, acc.limitRequests - w.requests) : null;
+    const usagePctTokens = acc.limitTokens ? Math.min(100, Math.round((w.tokens / acc.limitTokens) * 1000) / 10) : null;
+    const usagePctRequests = acc.limitRequests
+      ? Math.min(100, Math.round((w.requests / acc.limitRequests) * 1000) / 10)
+      : null;
+    const exhaustedTokens = acc.limitTokens != null ? w.tokens >= acc.limitTokens : false;
+    const exhaustedRequests = acc.limitRequests != null ? w.requests >= acc.limitRequests : false;
+    const { latSum, latencies, ...rest } = acc;
+    out.push({
+      ...rest,
+      providerId: rest.providerId || '',
+      successRate: acc.totalRequests
+        ? Math.round(((acc.totalRequests - acc.errorRequests) / acc.totalRequests) * 1000) / 10
+        : 0,
+      avgTokensPerRequest: acc.totalRequests ? Math.round(acc.totalTokens / acc.totalRequests) : 0,
+      avgLatencyMs: acc.totalRequests ? Math.round(latSum / acc.totalRequests) : 0,
+      p95LatencyMs: percentile(latencies, 95),
+      limitTokens: acc.limitTokens ?? null,
+      limitRequests: acc.limitRequests ?? null,
+      limitPeriod: acc.limitPeriod ?? null,
+      windowTokens: w.tokens,
+      windowRequests: w.requests,
+      remainingTokens,
+      remainingRequests,
+      usagePctTokens,
+      usagePctRequests,
+      quotaExhausted: exhaustedTokens || exhaustedRequests,
+      models: modelsByAcc.get(key)?.size || 0,
+      resetsInMs: Math.max(0, acc.resetsInMs || 0),
+    });
+  }
+  out.sort(
+    (a, b) =>
+      b.totalRequests - a.totalRequests ||
+      (b.totalTokens || 0) - (a.totalTokens || 0) ||
+      String(a.accountName).localeCompare(String(b.accountName))
+  );
+  return out;
 }
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -678,10 +925,10 @@ export function recordRequestUsageFromResponse(
   c: any,
   res: Response,
   startedAt: number
-): void {
+): Response {
   try {
-    if (!c || typeof (c as any).req?.path !== 'string') return;
-    if ((c as any).req.path !== '/v1/chat/completions') return;
+    if (!c || typeof (c as any).req?.path !== 'string') return res;
+    if ((c as any).req.path !== '/v1/chat/completions') return res;
 
     const requested = String((c as any).get?.('usageRequestedModel') || '');
     const routingMode: UsageRoutingMode = (c as any).get?.('usageRoutingMode') === 'auto' ? 'auto' : 'manual';
@@ -722,6 +969,15 @@ export function recordRequestUsageFromResponse(
     }
 
     const ts = Date.now();
+    // Conta/chave de API usada. Fonte primária: contexto Hono gravado no
+    // handle da rotação (local.ts); headers X-Account-* ficam de reserva para
+    // caminhos que só conseguem carimbar a Response (agent.ts).
+    const accountId = String(
+      c.get?.('usageAccountId') || res.headers.get('X-Account-Id') || ''
+    ).slice(0, 128);
+    const accountName = String(
+      c.get?.('usageAccountName') || res.headers.get('X-Account-Label') || ''
+    ).slice(0, 128);
     recordUsage({
       ts,
       status: res.status,
@@ -733,25 +989,136 @@ export function recordRequestUsageFromResponse(
       tokensCompletion: 0,
       tokensTotal: 0,
       latencyMs: Date.now() - startedAt,
+      ...(accountId ? { accountId: accountId } : {}),
+      ...(accountName ? { accountName: accountName } : {}),
     });
 
-    // Tokens: best-effort (apenas respostas JSON; SSE é consumido pelo cliente).
+    // Tokens: best-effort.
+    //  - JSON: clone barato da response (não-streaming).
+    //  - SSE: tee da stream — uma branch vai ao cliente, a outra é escaneada
+    //    em background procurando o objeto `usage` (o chunk final do formato
+    //    OpenAI interno o traz). IDEs sempre usam stream: true, então sem isto
+    //    TODA telemetria de token ficava zerada.
+    //  - Sem `usage` reportável: estimativa por caracteres (fallback garante
+    //    que o consumo nunca fique zerado). prompt via usagePromptChars
+    //    (contexto Hono do chat.ts), completion via tamanho dos payloads SSE.
     const ct = res.headers.get('content-type') || '';
     if (ct.includes('application/json') && (res.status === 200 || res.status === 201)) {
       const fm = finalModel;
+      const tsUsed = ts;
+      const promptChars = Number(c.get?.('usagePromptChars')) || 0;
       res
         .clone()
         .json()
         .then((j: any) => {
-          const p = Number(j?.usage?.prompt_tokens) || 0;
-          const comp = Number(j?.usage?.completion_tokens) || 0;
+          let p = Number(j?.usage?.prompt_tokens) || 0;
+          let comp = Number(j?.usage?.completion_tokens) || 0;
           const tot = Number(j?.usage?.total_tokens) || p + comp;
-          if (p || comp || tot) patchUsageTokens(ts, fm, { tokensPrompt: p, tokensCompletion: comp, tokensTotal: tot });
+          if (!p && !comp) {
+            // Upstream (OpenAI-compatível) sem bloco usage: estima.
+            const contentLen = String(j?.choices?.[0]?.message?.content || '').length;
+            comp = Math.ceil(contentLen / 3.5);
+            p = promptChars ? Math.ceil(promptChars / 3.5) : 0;
+          }
+          const est = !!(p || comp) && !j?.usage?.total_tokens;
+          if (p || comp || tot) {
+            patchUsageTokens(tsUsed, fm, {
+              tokensPrompt: p,
+              tokensCompletion: comp,
+              tokensTotal: tot || p + comp,
+              ...(est ? { estimated: true } : {}),
+            });
+          }
         })
         .catch(() => {});
+      return res;
     }
+    if (
+      res.status === 200 &&
+      ct.includes('text/event-stream') &&
+      res.body &&
+      typeof res.body.tee === 'function' &&
+      finalModel &&
+      finalModel !== '(desconhecido)'
+    ) {
+      const [clientBranch, scanBranch] = res.body.tee();
+      const returned = new Response(clientBranch, { status: res.status, headers: res.headers });
+      scanSseForUsage(scanBranch, finalModel, ts, Number(c.get?.('usagePromptChars')) || 0).catch(() => {});
+      return returned;
+    }
+    return res;
   } catch {
     // nunca quebra o fluxo de resposta
+    return res;
+  }
+}
+
+/**
+ * Consome uma branch da stream SSE (descartável) e extrai o último objeto
+ * `usage` visto nos chunks `data:` no formato OpenAI. NUNCA toca na branch do
+ * cliente — qualquer erro aqui só significa tokens zerados na telemetria.
+ *
+ * `promptChars`: estimativa do tamanho do prompt (contexto Hono usagePromptChars,
+ * grava no ciclo do request) — usado no fallback quando NENHUM chunk traz
+ * `usage` (upstreams que só emitem usage com stream_options.include_usage).
+ */
+async function scanSseForUsage(
+  stream: ReadableStream<Uint8Array>,
+  finalModel: string,
+  ts: number,
+  promptChars = 0
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let usage: any = null;
+  let sseChars = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') continue;
+        try {
+          const j = JSON.parse(payload);
+          if (j && j.usage) usage = j.usage;
+        } catch {
+          // linha parcial: ignora
+        }
+        sseChars += payload.length;
+      }
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {}
+  }
+  if (!usage) {
+    // Fallback: completion estimada pelo volume de payload SSE (÷4), prompt
+    // pelo tamanho registrado do prompt (÷3.5). Nada no stream → patch vazio.
+    const estCompletion = Math.ceil(sseChars / 4);
+    const estPrompt = promptChars ? Math.ceil(promptChars / 3.5) : 0;
+    if (estCompletion > 0 || estPrompt > 0) {
+      patchUsageTokens(ts, finalModel, {
+        tokensPrompt: estPrompt,
+        tokensCompletion: estCompletion,
+        tokensTotal: estPrompt + estCompletion,
+        estimated: true,
+      });
+    }
+    return;
+  }
+  const p = Number(usage?.prompt_tokens) || 0;
+  const comp = Number(usage?.completion_tokens) || 0;
+  const tot = Number(usage?.total_tokens) || p + comp;
+  if (p || comp || tot) {
+    patchUsageTokens(ts, finalModel, { tokensPrompt: p, tokensCompletion: comp, tokensTotal: tot });
   }
 }
 

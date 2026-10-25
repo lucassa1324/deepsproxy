@@ -13,10 +13,12 @@ import {
   computeAdvancedUsage,
   computeModelRanking,
   computeSummary,
+  getUsageByAccount,
   getUsageRecords,
   periodToSince,
   recordsToCsv,
 } from '../services/usage.ts';
+import { resolveRegistry } from '../services/config.ts';
 
 const KNOWN_PERIODS = new Set(['24h', '7d', '30d', 'all']);
 
@@ -31,6 +33,13 @@ export const usageRoutes = new Hono();
 usageRoutes.get('/api/usage/summary', (c) => {
   const period = normalizePeriod(c.req.query('period'));
   return c.json(computeSummary(period));
+});
+
+/** Consumo por conta/chave de API (inventário + telemetria + status de cota). */
+usageRoutes.get('/api/usage/accounts', (c) => {
+  const period = normalizePeriod(c.req.query('period'));
+  const registry = resolveRegistry(c.req.header('Cookie'));
+  return c.json({ success: true, period, accounts: getUsageByAccount(period, registry) });
 });
 
 /** Ranking dos modelos mais usados no período. */

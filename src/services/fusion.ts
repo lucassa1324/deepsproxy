@@ -365,6 +365,8 @@ export async function runFusionChat(
       exposePanel,
       strategy,
     });
+    c.set('usageProviderName', 'fusion');
+    c.set('usageFinalModel', `tool_call:${toolCallWinner.modelId}`);
     c.header('X-Routed-Via', routedViaValue('fusion', `tool_call:${toolCallWinner.modelId}`));
     return emitFusionResponse(c, response, isStream);
   }
@@ -407,6 +409,8 @@ export async function runFusionChat(
   });
 
   const via = `fusion(${textSurvivors.map((a) => a.modelId).join('+')}${synthesized && judgeLabel ? ` -> ${judgeLabel}` : ''})`;
+  c.set('usageProviderName', 'fusion');
+  c.set('usageFinalModel', via.slice('fusion('.length, -1));
   c.header('X-Routed-Via', routedViaValue('fusion', via.slice('fusion('.length, -1)));
 
   console.log(`[fusion] via=${via} stream=${isStream ? 'yes' : 'no'} banca=${targets.length}`);

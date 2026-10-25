@@ -2361,6 +2361,68 @@
       white-space: nowrap;
     }
 
+    /* Painel de Uso & Métricas */
+    .usage-row {
+      display: grid;
+      grid-template-columns: minmax(160px, 3fr) minmax(90px, 2fr) 70px 90px 90px 110px;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      margin-top: 8px;
+      font-size: 13px;
+    }
+
+    .usage-row.usage-head {
+      background: none;
+      border: 0;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-top: 12px;
+    }
+
+    .usage-row.top {
+      border-color: rgba(124, 108, 255, .35);
+      background: rgba(124, 108, 255, .06);
+    }
+
+    .usage-model {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .usage-sub {
+      font-size: 11px;
+      color: var(--muted);
+      font-weight: 400;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .usage-cell {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .badge.auto {
+      color: #9ad29a;
+      border-color: rgba(94, 178, 94, .35);
+      background: rgba(94, 178, 94, .1);
+    }
+
+    .badge.manual {
+      color: #8ab8e8;
+      border-color: rgba(90, 150, 220, .35);
+      background: rgba(90, 150, 220, .1);
+    }
+
     .badge.primary {
       color: #c4bbff;
       border-color: rgba(124, 108, 255, .3);
@@ -4664,6 +4726,13 @@
           </svg></span>
         Auto Router
       </button>
+      <button data-tab="usage">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M4 20V10m5 10V4m5 16v-7m5 7v-11" />
+          </svg></span>
+        Uso & Métricas
+      </button>
       <div class="sidebar-divider"></div>
       <div class="sidebar-section">Sistema</div>
       <button data-tab="settings">
@@ -6332,6 +6401,69 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         </div>
       </section>
 
+      <!-- ============ USO & MÉTRICAS ============ -->
+      <section class="tab" id="tab-usage">
+        <div class="card">
+          <div class="logs-header">
+            <h3 style="margin:0;">Uso & Métricas</h3>
+            <span class="spacer"></span>
+            <label for="usagePeriod" style="font-size:12px;color:var(--muted);">Período:</label>
+            <select id="usagePeriod" style="max-width:180px;">
+              <option value="24h">Últimas 24 horas</option>
+              <option value="7d">Últimos 7 dias</option>
+              <option value="30d">Últimos 30 dias</option>
+              <option value="all" selected>Todo o período</option>
+            </select>
+            <span id="usageUpdatedAt" class="usage-sub" style="margin-right:auto;"></span>
+            <button class="btn ghost" id="btnUsageRefresh" title="Atualizar agora">⟳ Atualizar</button>
+            <button class="btn ghost" id="btnUsageExportCsv">Exportar CSV</button>
+            <button class="btn ghost" id="btnUsageExportJson">Exportar JSON</button>
+          </div>
+          <p class="note" style="margin:6px 0 14px;">
+            Métricas de consumo dos modelos (inclusive os escolhidos pelo modo automático).
+            Cada requisição concluída no <code class="inline">/v1/chat/completions</code> gera um registro
+            com modelo pedido, modelo final (from orquestrador/failover), provedor, tokens e latência.
+          </p>
+
+          <div class="grid cols-4" id="usageCards" style="margin-bottom:16px;">
+            <div class="card">
+              <h3>Total de Requisições</h3>
+              <div class="value" id="usageTotalReq">—</div>
+              <div class="note" id="usageErrors" style="margin-top:4px;">Erros: —</div>
+            </div>
+            <div class="card">
+              <h3>Modelo Mais Utilizado</h3>
+              <div class="value" id="usageTopModel" style="font-size:18px;">—</div>
+              <div class="note" id="usageTopProvider" style="margin-top:4px;">—</div>
+            </div>
+            <div class="card">
+              <h3>Auto vs Manual</h3>
+              <div class="value" id="usageAutoPct">—</div>
+              <div class="note" id="usageAutoSplit" style="margin-top:4px;">—</div>
+            </div>
+            <div class="card">
+              <h3>Total de Tokens</h3>
+              <div class="value" id="usageTokens">—</div>
+              <div class="note" id="usageLatency" style="margin-top:4px;">Latência média: —</div>
+            </div>
+          </div>
+
+          <div class="card" style="margin-top:16px;">
+            <h3>Modelos Mais Utilizados</h3>
+            <div id="usageRanking" class="note">Sem dados de uso no período selecionado.</div>
+          </div>
+
+          <div class="card" style="margin-top:16px;">
+            <h3>Últimas Requisições (Rastreabilidade)</h3>
+            <p class="note" style="margin:0 0 10px;">
+              Mapeamento exato entre o <b>pedido</b> do usuário, o modelo escolhido pelo
+              orquestrador (<b>final</b>) e o <b>provedor</b> que executou a chamada.
+            </p>
+            <div id="usageRecent" class="note">Sem registros ainda.</div>
+          </div>
+        </div>
+      </section>
+
       <!-- ============ AUTO ROUTER ============ -->
       <section class="tab" id="tab-auto-router">
         <div class="card">
@@ -7993,7 +8125,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             '<div class="provider-name-row">' +
             '<b>' + escapeHtml(p.name) + '</b>' +
             '<span class="badge">' + escapeHtml(typeBadge) + '</span>' +
-            (p.id === activeProviderId ? '<span class="badge primary">Principal</span>' : '') +
+            (p.id === activeProviderId ? '' : '') +
             '</div>' +
             '<div class="provider-meta">' + escapeHtml(sub) + '</div>' +
             '</div>' +
@@ -8002,7 +8134,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             '<input type="checkbox" data-act="toggle" data-id="' + p.id + '"' + (p.enabled === false ? "" : " checked") + ' aria-label="Ativar provedor" />' +
             '<span class="track"></span>' +
             '</label>' +
-            (p.id !== activeProviderId ? '<button class="btn ghost sm" data-act="primary" data-id="' + p.id + '">Definir principal</button>' : '') +
+            (p.id !== activeProviderId ? '' : '') +
             '<button class="btn ghost sm" data-act="edit" data-id="' + p.id + '">Editar</button>' +
             '<button class="btn ghost sm danger" data-act="remove" data-id="' + p.id + '">Excluir</button>' +
             '</div>';
@@ -8370,7 +8502,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             lastResult: k.lastResult || null,
           })),
           model: $("#pvModel").value.trim(),
-          enabled: existing ? existing.enabled : true,
+          enabled: existing ? existing.enabled : false,
         };
         const snapshot = providers.slice();
         const existingIndex = providers.findIndex((p) => p.id === provider.id);
@@ -10978,6 +11110,141 @@ for await (const chunk of stream) {
         tabLocalModels.addEventListener("click", () => loadLocalModels());
       }
 
+      // ---------- Uso & Métricas (painel) ----------
+      const tabUsage = document.querySelector('[data-tab="usage"]');
+      if (tabUsage) {
+        tabUsage.addEventListener("click", () => loadUsageDashboard());
+      }
+      if ($("#usagePeriod")) $("#usagePeriod").addEventListener("change", () => loadUsageDashboard());
+      if ($("#btnUsageRefresh")) $("#btnUsageRefresh").addEventListener("click", () => loadUsageDashboard());
+      if ($("#btnUsageExportCsv")) {
+        $("#btnUsageExportCsv").addEventListener("click", () => {
+          location.href = "/api/usage/export?format=csv&period=" + encodeURIComponent($("#usagePeriod").value || "all");
+        });
+      }
+      if ($("#btnUsageExportJson")) {
+        $("#btnUsageExportJson").addEventListener("click", () => {
+          location.href = "/api/usage/export?format=json&period=" + encodeURIComponent($("#usagePeriod").value || "all");
+        });
+      }
+
+      function fmtInt(n) {
+        return (Number(n) || 0).toLocaleString("pt-BR");
+      }
+
+      function escapeHtml(s) {
+        return String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+      }
+
+      async function loadUsageDashboard() {
+        const period = $("#usagePeriod")?.value || "all";
+        // Evita request duplicado concorrente (poll + clique no mesmo tick).
+        if (loadUsageDashboard._inflight) return;
+        loadUsageDashboard._inflight = true;
+        try {
+          const [sumRes, modRes, recRes] = await Promise.all([
+            fetch(`/api/usage/summary?period=${encodeURIComponent(period)}`),
+            fetch(`/api/usage/models?period=${encodeURIComponent(period)}&limit=15`),
+            fetch(`/api/usage/recent?limit=12`),
+          ]);
+          if (!sumRes.ok || !modRes.ok || !recRes.ok) throw new Error(String(sumRes.status));
+          const summary = await sumRes.json();
+          const ranking = await modRes.json();
+          const recent = await recRes.json();
+
+          // Cards de métricas chave
+          const total = summary.totalRequests || 0;
+          $("#usageTotalReq").textContent = fmtInt(total);
+          $("#usageErrors").textContent = `Erros: ${fmtInt(summary.totalErrors)}`;
+          const top = summary.topModel;
+          $("#usageTopModel").textContent = top ? top.model : "—";
+          $("#usageTopProvider").textContent = top ? `Provedor: ${top.provider} · ${fmtInt(top.requests)} req` : "Sem uso registrado";
+          const pct = total ? Math.round((summary.autoRequests / total) * 100) : 0;
+          $("#usageAutoPct").textContent = total ? `${pct}% Auto / ${100 - pct}% Manual` : "—";
+          $("#usageAutoSplit").textContent = `${fmtInt(summary.autoRequests)} auto · ${fmtInt(summary.manualRequests)} manual`;
+          $("#usageTokens").textContent = fmtInt(summary.totalTokens);
+          $("#usageLatency").textContent = `Latência média: ${fmtInt(summary.avgLatencyMs)} ms · Período: ${summary.period}`;
+          const stamp = $("#usageUpdatedAt");
+          if (stamp) stamp.textContent = `Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`;
+
+          // Ranking de modelos
+          const rows = ranking.models || [];
+          const box = $("#usageRanking");
+          if (!rows.length) {
+            box.textContent = "Sem dados de uso no período selecionado.";
+          } else {
+            const head = `
+              <div class="usage-row usage-head">
+                <div>Modelo (Pedido → Final)</div>
+                <div>Provedor</div>
+                <div>Requisições</div>
+                <div>Modo</div>
+                <div>Status</div>
+                <div>Tokens</div>
+              </div>`;
+            box.className = "";
+            box.innerHTML = head + rows.map((m, i) => `
+              <div class="usage-row ${i === 0 ? "top " : ""}">
+                <div>
+                  <div class="usage-model" title="${escapeHtml(m.model)}">${i + 1}. ${escapeHtml(m.model)}</div>
+                  <div class="usage-sub">pedido: ${escapeHtml(m.predominantRequest || "—")}</div>
+                </div>
+                <div class="usage-cell">${escapeHtml(m.provider || "—")}</div>
+                <div class="usage-cell">${fmtInt(m.requests)}</div>
+                <div>${m.predominantMode === "auto" ? '<span class="badge auto">Auto</span>' : m.predominantMode === "manual" ? '<span class="badge manual">Manual</span>' : "—"}</div>
+                <div class="usage-cell">${m.errors ? `${fmtInt(m.errors)} erro(s)` : "✓ OK"}</div>
+                <div class="usage-cell">${fmtInt(m.tokens)} tokens · ${fmtInt(m.avgLatencyMs)} ms</div>
+              </div>`).join("");
+
+            // Rastreabilidade: últimas requisições (Pedido → Final → Provedor)
+            const recBox = $("#usageRecent");
+            const recs = (recent.records || []);
+            if (!recs.length) {
+              recBox.textContent = "Sem registros ainda.";
+            } else {
+              recBox.className = "";
+              recBox.innerHTML = `
+                <div class="usage-row usage-head">
+                  <div>Modelo Pedido</div>
+                  <div>Modelo Final</div>
+                  <div>Provedor Real</div>
+                  <div>Modo</div>
+                  <div>Status</div>
+                  <div>Latência</div>
+                </div>` + recs.map((r) => {
+                const when = new Date(r.ts).toLocaleTimeString("pt-BR");
+                const done = r.status >= 400 || r.status === 0;
+                return `
+                  <div class="usage-row ${done ? "" : ""}">
+                    <div>
+                      <div class="usage-model" title="${escapeHtml(r.requestedModel)}">→ ${escapeHtml(r.requestedModel || "—")}</div>
+                      <div class="usage-sub">${when}</div>
+                    </div>
+                    <div class="usage-cell" title="${escapeHtml(r.finalModel)}">${escapeHtml(r.finalModel || "—")}</div>
+                    <div class="usage-cell">${escapeHtml(r.provider || "—")}</div>
+                    <div>${r.routingMode === "auto" ? '<span class="badge auto">Auto</span>' : '<span class="badge manual">Manual</span>'}</div>
+                    <div class="usage-cell">${done ? `✗ ${r.status || "erro"}` : `✓ ${r.status}`}</div>
+                    <div class="usage-cell">${fmtInt(r.latencyMs)} ms</div>
+                  </div>`;
+              }).join("");
+            }
+          }
+        } catch {
+          const box = $("#usageRanking");
+          if (box) {
+            box.className = "note";
+            box.textContent = "Falha ao carregar métricas de uso (verifique a API key do painel).";
+          }
+          const recBox = $("#usageRecent");
+          if (recBox) {
+            recBox.className = "note";
+            recBox.textContent = "Falha ao carregar o histórico recente.";
+          }
+        } finally {
+          loadUsageDashboard._inflight = false;
+        }
+      }
+
       // ---------- Init ----------
       initSettings();
       loadRoutingSettings();
@@ -10986,6 +11253,14 @@ for await (const chunk of stream) {
       // A cada 10s mantém o card de fila de requisições razoavelmente atualizado;
       // o SSE abaixo torna a atualização imediata quando o registro muda.
       setInterval(loadStatus, 10000);
+
+      // Auto-refresh do painel de Uso & Métricas: a cada 10s enquanto a aba
+      // estiver ativa, sem precisar de F5; o botão "Atualizar" continua
+      // servindo para forçar na hora e o seletor de período para recortar.
+      setInterval(() => {
+        const active = document.querySelector('#tab-usage.active');
+        if (active) loadUsageDashboard();
+      }, 10000);
 
       // SSE: ao salvar/ligar/desligar provedores no dashboard, atualiza na hora
       // os seletores de modelo (chat, teste e editor). Reconecta automaticamente

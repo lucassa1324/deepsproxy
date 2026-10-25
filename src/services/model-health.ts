@@ -17,6 +17,8 @@ import {
 import { fetchQwenModels, QWEN_KNOWN_MODELS } from './qwen.ts';
 import { GEMINI_KNOWN_MODELS } from './gemini-web.ts';
 import { optimizedFetch } from './optimizations.ts';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { dirname, join } from 'path';
 
 export type ModelHealthStatus = 'untested' | 'testing' | 'working' | 'broken';
 
@@ -33,11 +35,95 @@ export interface ModelHealthEntry {
 const DEFAULT_TEST_TIMEOUT = 8000;
 const modelHealth = new Map<string, ModelHealthEntry>();
 
+/*
+ * Persistência do estado de saúde em disco (mesmo padrão leve do
+ * usage-logs.json): arquivo `model-health.json` (ou MODEL_HEALTH_FILE),
+ * gravação debounced fora do caminho de resposta. No boot, a primeira leitura
+ * popula o Map a partir do disco para que o status "Funcionando"/"Com
+ * problema" (aba Testar API) e isModelUsable sobrevivam a reinícios.
+ */
+function healthFile(): string {
+  return process.env.MODEL_HEALTH_FILE || join(process.cwd(), 'model-health.json');
+}
+
+let healthLoaded = false;
+
+function sanitizeHealthEntry(raw: any): ModelHealthEntry | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const status = raw.status;
+  if (status !== 'untested' && status !== 'working' && status !== 'broken') return null;
+  // 'testing' é estado transiente de uma sessão: nunca restaurado.
+  return {
+    status,
+    lastTested: Number.isFinite(Number(raw.lastTested)) ? Number(raw.lastTested) : undefined,
+    error: raw.error == null ? undefined : String(raw.error),
+    latencyMs: Number.isFinite(Number(raw.latencyMs)) ? Number(raw.latencyMs) : undefined,
+    providerId: raw.providerId == null ? undefined : String(raw.providerId),
+    providerType: raw.providerType == null ? undefined : String(raw.providerType),
+    testedBy: raw.testedBy == null ? undefined : String(raw.testedBy),
+  };
+}
+
+function loadHealthFromDisk(force = false): void {
+  if (healthLoaded && !force) return;
+  healthLoaded = true;
+  try {
+    const file = healthFile();
+    if (!existsSync(file)) return;
+    const raw = JSON.parse(readFileSync(file, 'utf-8'));
+    const models = raw?.models;
+    if (!models || typeof models !== 'object') return;
+    let restored = 0;
+    for (const [id, entry] of Object.entries(models)) {
+      const sanitized = sanitizeHealthEntry(entry);
+      if (sanitized) {
+        modelHealth.set(getKey(id), sanitized);
+        restored++;
+      }
+    }
+    console.log(`[model-health] estado de saúde restaurado de ${file} (${restored} modelos)`);
+  } catch (err: any) {
+    console.warn(`[model-health] falha ao carregar estado (${healthFile()}): ${err?.message}`);
+  }
+}
+
+let healthSaveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleHealthSave(): void {
+  if (healthSaveTimer) return;
+  healthSaveTimer = setTimeout(() => {
+    healthSaveTimer = null;
+    flushModelHealth();
+  }, 1500);
+  if (typeof (healthSaveTimer as any).unref === 'function') (healthSaveTimer as any).unref();
+}
+
+/** Grava o estado atual em disco (síncrono, fora do caminho do request). */
+export function flushModelHealth(): void {
+  try {
+    const file = healthFile();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      JSON.stringify({ version: 1, savedAt: Date.now(), models: Object.fromEntries(modelHealth) }, null, 2),
+      'utf-8'
+    );
+  } catch (err: any) {
+    console.warn(`[model-health] falha ao salvar estado: ${err?.message}`);
+  }
+}
+
+/** Recarrega o estado do disco (usado no boot e nos testes). */
+export function restoreModelHealthFromDisk(force = true): void {
+  loadHealthFromDisk(force);
+}
+
 function getKey(modelId: string): string {
   return normalizeModelId(modelId);
 }
 
 export function getModelHealth(modelId: string): ModelHealthEntry {
+  loadHealthFromDisk();
   const key = getKey(modelId);
   const existing = modelHealth.get(key);
   if (existing) return existing;
@@ -45,12 +131,15 @@ export function getModelHealth(modelId: string): ModelHealthEntry {
 }
 
 export function setModelHealth(modelId: string, entry: Partial<ModelHealthEntry>): void {
+  loadHealthFromDisk();
   const key = getKey(modelId);
   const current = modelHealth.get(key) || { status: 'untested' };
   modelHealth.set(key, { ...current, ...entry });
+  scheduleHealthSave();
 }
 
 export function getAllModelHealth(): Record<string, ModelHealthEntry> {
+  loadHealthFromDisk();
   const out: Record<string, ModelHealthEntry> = {};
   for (const [k, v] of modelHealth) {
     out[k] = v;
@@ -59,11 +148,13 @@ export function getAllModelHealth(): Record<string, ModelHealthEntry> {
 }
 
 export function clearModelHealth(modelId?: string): void {
+  loadHealthFromDisk();
   if (modelId) {
     modelHealth.delete(getKey(modelId));
-    return;
+  } else {
+    modelHealth.clear();
   }
-  modelHealth.clear();
+  scheduleHealthSave();
 }
 
 function isVirtualModel(modelId: string): boolean {

@@ -672,6 +672,8 @@ async function resolveAutoModel(
   // Guarda o modelo escolhido no contexto para o chatCompletions reportar o
   // resultado (sucesso/falha) ao circuit breaker do Auto Router.
   c.set('autoRoutedModel', model);
+  // Classificação da tarefa usada pelo log estruturado do orquestrador.
+  c.set('autoRouterTask', decision.taskClassification.description);
 
   // Headers de execução também no caminho sem failover (uma única tentativa):
   // sem isto, respostas 200 de cadeia curta ficavam sem FinalModel/Attempts.
@@ -761,6 +763,10 @@ async function attemptFailoverChain(
     // Resolve o provedor deste candidato (mesma lógica do fluxo principal).
     const t = await resolveTargetForModel(c, modelId, registry, enabled, primary);
     if (!t) continue;
+    // Rastreio da telemetria de uso: marca o provedor/modelo em tentativa
+    // (serve mesmo quando TODOS os candidatos falham).
+    c.set('usageProviderName', t.name);
+    c.set('usageFinalModel', modelId);
     if (isDeepseekProvider(t)) {
       // DeepSeek é o fluxo original (streaming/sessão própria): não entra no
       // failover. Se for o primeiro candidato, devolve o controle ao fluxo.
@@ -792,6 +798,8 @@ async function attemptFailoverChain(
       const stored = await maybeStoreCache(res, modelId);
       lastRes = stored;
       if (stored.status < 400) {
+        c.set('usageProviderName', t.name);
+        c.set('usageFinalModel', modelId);
         c.header('X-Routed-Via', routedViaValue(t.name, modelId));
         c.header('X-FreeLLM-Cache', 'MISS');
         c.header('X-AutoRouter-FinalModel', modelId);
@@ -804,6 +812,8 @@ async function attemptFailoverChain(
 
       const errText = await stored.clone().text().catch(() => '');
       if (!shouldFailover(stored.status, errText)) {
+        c.set('usageProviderName', t.name);
+        c.set('usageFinalModel', modelId);
         c.header('X-AutoRouter-FinalModel', modelId);
         c.header('X-AutoRouter-Attempts', String(tried.length));
         console.warn(
@@ -825,6 +835,7 @@ async function attemptFailoverChain(
   // Esgotou os candidatos não-DeepSeek: devolve a última falha (ou 502).
   c.header('X-AutoRouter-Attempts', String(tried.length));
   if (lastRes) {
+    c.set('usageFinalModel', tried[tried.length - 1] || '');
     c.header('X-AutoRouter-FinalModel', tried[tried.length - 1] || '');
     return lastRes;
   }
@@ -900,6 +911,9 @@ export async function chatCompletions(c: Context) {
     // com prefixo da REST do Google). Sem isso o roteamento e os adapters
     // falham ao montar a URL (ex.: /models/models/...).
     body.model = normalizeModelId(body.model);
+    // Telemetria de uso: guarda o modelo solicitado no payload original
+    // (antes do roteamento/failover reescreverem body.model).
+    c.set('usageRequestedModel', body.model);
     const isStream = body.stream ?? false;
     const economy: TokenEconomySettings = getTokenEconomy();
 
@@ -1025,6 +1039,8 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       if (!known) wantsAuto = true;
     }
     const isAutoMode = wantsAuto;
+    // Telemetria de uso: modo de roteamento efetivo desta requisição.
+    c.set('usageRoutingMode', isAutoMode ? 'auto' : 'manual');
     const isBrowserOnly = explicitAuto && body.model === 'auto-free';
     c.header('X-Routing-Mode', routing.mode);
     let autoFailoverChain: string[] = [];
@@ -1084,6 +1100,19 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
           if (owner) target = owner;
         }
       }
+    }
+
+    // ── Log estruturado do orquestrador: visibilidade imediata do modo de
+    // roteamento e do destino no terminal (Railway/CI) sem adivinhação.
+    if (isAutoMode) {
+      const taskDesc = (c.get('autoRouterTask') as string | undefined) || 'auto (sem classificação)';
+      console.log(
+        `[Orchestrator] Mode: Auto | Task Evaluation: ${taskDesc} | Selected Model: ${body.model} | Provider: ${target?.name || 'desconhecido'}`
+      );
+    } else {
+      console.log(
+        `[Orchestrator] Mode: Manual | Requested: ${body.model} | Routed To: ${target?.name || 'desconhecido'} (${target?.type || '?'})`
+      );
     }
 
     // Handoff de contexto (sticky sessions): quando a conversa veio de outro
@@ -1155,7 +1184,11 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       const hit = responseCacheGet(cacheKey);
       if (hit) {
         c.header('X-FreeLLM-Cache', 'HIT');
-        c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+        c.set('usageProviderName', target.name);
+      c.set('usageFinalModel', body.model);
+      c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
         rememberSuccess(autoRouted);
         console.log(`[economy] cache HIT ${cacheKey.slice(0, 10)}… (${hit.body.choices?.[0]?.message?.content?.length ?? 0} chars)`);
         return c.json(hit.body, hit.status as any);
@@ -1215,7 +1248,11 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     body = applyPromptCaching(body, target);
 
     if (isQwenProvider(target)) {
-      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      c.set('usageProviderName', target.name);
+      c.set('usageFinalModel', body.model);
+      c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
       if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
         const res = await maybeStoreCache(await qwenChatCompletions(c, body), autoRouted, () => rememberSuccess(autoRouted));
@@ -1224,7 +1261,11 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     }
 
     if (isGeminiWebProvider(target)) {
-      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      c.set('usageProviderName', target.name);
+      c.set('usageFinalModel', body.model);
+      c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
       if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
         const res = await maybeStoreCache(await geminiChatCompletions(c, body), autoRouted, () => rememberSuccess(autoRouted));
@@ -1233,7 +1274,11 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     }
 
     if (!isDeepseekProvider(target)) {
-      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      c.set('usageProviderName', target.name);
+      c.set('usageFinalModel', body.model);
+      c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
       if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       return await trackSend(autoRouted, async () => {
         const res = await maybeStoreCache(await forwardChatCompletions(c, body, target), autoRouted, () => rememberSuccess(autoRouted));
@@ -1286,7 +1331,11 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     if (!isStream) {
       const t0 = Date.now();
       if (autoRouted) recordModelRequest(autoRouted);
-      c.header('X-Routed-Via', routedViaValue(target.name, body.model));
+      c.set('usageProviderName', target.name);
+      c.set('usageFinalModel', body.model);
+      c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
+    c.header('X-Routed-Via', routedViaValue(target.name, body.model));
       if (cacheKey) c.header('X-FreeLLM-Cache', 'MISS');
       const res = await handleDeepSeekNonStreaming(c, body, finalPrompt, isThinkingModel, isNewSession, refFileIds, visionOpts);
       if (autoRouted) recordModelLatency(autoRouted, Date.now() - t0);
@@ -1320,6 +1369,8 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
     c.header('Content-Type', 'text/event-stream');
     c.header('Cache-Control', 'no-cache');
     c.header('Connection', 'keep-alive');
+    c.set('usageProviderName', target.name);
+    c.set('usageFinalModel', body.model);
     c.header('X-Routed-Via', routedViaValue(target.name, body.model));
 
     const completionId = 'chatcmpl-' + uuidv4();

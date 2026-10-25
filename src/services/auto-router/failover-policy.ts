@@ -12,7 +12,11 @@ export function capFailoverChain<T>(chain: T[], max = maxAutoAttempts()): T[] {
 
 export function isPermanentFailure(status: number, bodyText = ''): boolean {
   if (status === 400 || status === 401 || status === 403 || status === 422) return true;
-  return /invalid\s+(api[\s_-]?key|token)|unauthori[sz]ed|authentication\s+(failed|required)|incorrect\s+api\s+key/i.test(
+  // Alguns adapters convertem o 400 do upstream em 502/503 genérico quando
+  // re-enviam a resposta; reconhece a assinatura do corpo para não gastar a
+  // cadeia de failover (nem inflar o circuit breaker do provedor) com erros
+  // que NUNCA vão funcionar nenhuma nova tentativa.
+  return /invalid\s+(api[\s_-]?key|token)|unauthori[sz]ed|authentication\s+(failed|required)|incorrect\s+api\s+key|invalid[_\s-]?request(_error)?|must\s+be\s+less\s+than\s+or\s+equal/i.test(
     bodyText
   );
 }

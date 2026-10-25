@@ -273,6 +273,9 @@ function scoreModel(
 
 // ── Filtragem rígida (política de custo + requisitos) ───────────────────
 
+/** Ids de modelos que nunca devem ser candidatos a chat no modo automático. */
+export const NON_CHAT_MODEL_PATTERN = /prompt-guard|moderation|moderator|embedding|whisper|text-to-speech|tts/i;
+
 function filterCandidates(
   models: ModelMetadata[],
   config: AutoRouterConfig,
@@ -286,6 +289,13 @@ function filterCandidates(
     const reasons: string[] = [];
 
     if (!model.isAvailable) reasons.push('indisponível');
+    // Modelos não-conversáveis (guardas de prompt, moderação, STT/TTS,
+    // embeddings) aparecem no catálogo do provedor, mas JAMAIS atendem um
+    // chat — excluir antes de pontuar evita tentativas com 400 garantido
+    // (ex.: llama-prompt-guard do Groq tentado como modelo de programação).
+    if (NON_CHAT_MODEL_PATTERN.test(model.id) || NON_CHAT_MODEL_PATTERN.test(model.name || '')) {
+      reasons.push('modelo não-conversável (guarda/moderação/STT/TTS)');
+    }
     if (config.costPolicy === 'free-only' && !model.isFree) reasons.push('política free-only (modelo pago)');
     if (config.costPolicy === 'paid-only' && model.isFree) reasons.push('política paid-only (modelo gratuito)');
 

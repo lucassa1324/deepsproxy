@@ -567,7 +567,7 @@ export function sanitizeRegistry(input: any): { registry?: ProviderRegistry; err
       apiKey: legacyKey,
       apiKeys: isBrowser ? [] : normalizeAccountKeys({ apiKey: legacyKey, apiKeys: raw.apiKeys }),
       model: String(raw.model || '').trim(),
-      enabled: raw.enabled !== false,
+      enabled: raw.enabled !== undefined ? raw.enabled : false,
     };
     if (type === 'openai-compatible' && !provider.baseUrl) {
       return { error: `Provedor "${provider.name || '?'}": Base URL é obrigatória.` };

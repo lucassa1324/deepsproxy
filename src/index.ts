@@ -21,6 +21,9 @@ import { fetchQwenModels, QWEN_KNOWN_MODELS, qwenStreamsActive } from './service
 import { initGeminiPlaywright, checkGeminiLogin } from './services/gemini-playwright.ts';
 import { GEMINI_KNOWN_MODELS } from './services/gemini-web.ts';
 import { dashboard } from './ui/dashboard.ts';
+// Painel de Uso & Métricas (endpoints /api/usage/*).
+import { usageRoutes } from './routes/usage.ts';
+import { recordRequestUsageFromResponse } from './services/usage.ts';
 import { attachLogger } from './ui/logger.ts';
 import { fetchModels, findProviderForModel } from './services/local.ts';
 import { isAdapterProvider, fetchProviderModels } from './services/adapters/index.ts';
@@ -175,6 +178,9 @@ app.route('/', dashboard);
 // Atualização via GitHub Releases (banner no dashboard).
 app.route('/', updateApp);
 
+// Painel de Uso & Métricas (mesma proteção de API key do restante do /api).
+app.route('/', usageRoutes);
+
 // Login remoto (VNC) — apenas quando ENABLE_VNC=true (Docker)
 attachVnc(app);
 
@@ -227,6 +233,7 @@ gatewayApp.use('*', async (c, next) => {
 });
 
 gatewayApp.route('/', dashboard);
+gatewayApp.route('/', usageRoutes);
 attachVnc(gatewayApp);
 gatewayApp.get('/health', (c) => c.json({ status: 'ok', mode: 'gateway' }));
 registerOpenAIRoutes(gatewayApp);
@@ -238,7 +245,13 @@ registerOpenAIRoutes(gatewayApp);
  */
 function registerOpenAIRoutes(h: Hono) {
   // OpenAI compatible routes
-  h.post('/v1/chat/completions', chatCompletions);
+  h.post('/v1/chat/completions', async (c) => {
+    const startedAt = Date.now();
+    const res = await chatCompletions(c);
+    // Telemetria de uso (best-effort, fora do caminho crítico da resposta).
+    recordRequestUsageFromResponse(c, res, startedAt);
+    return res;
+  });
 
   h.get('/v1/models', async (c) => {
     const registry = resolveRegistry(c.req.header('Cookie'));

@@ -14,6 +14,8 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { dirname, join } from 'path';
 import { getCachedModelCatalog, providerFromCatalogEntry } from './modelCatalog.ts';
+import { getQuotaTrackerStats, type QuotaTrackerStats } from './quota-tracker.ts';
+import { getRateTrackerStats, type RateTrackerStats } from './rate-tracker.ts';
 
 export type UsageRoutingMode = 'auto' | 'manual';
 
@@ -47,6 +49,8 @@ export interface UsageSummary {
   manualRequests: number;
   topModel: { model: string; provider: string; requests: number } | null;
   avgLatencyMs: number;
+  /** Quantidade de modelos finais distintos observados no período. */
+  uniqueModels: number;
 }
 
 export interface UsageModelStat {
@@ -55,6 +59,18 @@ export interface UsageModelStat {
   requests: number;
   errors: number;
   tokens: number;
+  /** Tokens de entrada (prompt) somados no período. */
+  tokensPrompt: number;
+  /** Tokens de saída (completion) somados no período. */
+  tokensCompletion: number;
+  /** Média de tokens por requisição (total / requests). */
+  avgTokensPerRequest: number;
+  /** Percentual de requisições com status < 400 (0-100). */
+  successRate: number;
+  /** Latência p95 do bucket (ms). */
+  p95LatencyMs: number;
+  /** Timestamp do último uso observado. */
+  lastUsedAt: number;
   autoRequests: number;
   manualRequests: number;
   /** Modo predominante neste modelo. */
@@ -62,6 +78,94 @@ export interface UsageModelStat {
   /** requestModel predominante no bucket (ex.: "auto", nome do modelo). */
   predominantRequest: string;
   avgLatencyMs: number;
+}
+
+/** Cota observada para um modelo na janela deslizante do quota-tracker. */
+export interface UsageModelQuotaInfo {
+  /** Janela deslizante usada pelo tracker (horas). */
+  windowHours: number;
+  usedTokens: number;
+  usedRequests: number;
+  /** Limite aprendido a partir de erros 429/quota (0 = ainda desconhecido). */
+  learnedLimitTokens: number;
+  learnedLimitRequests: number;
+  /** Tokens/requests restantes até o limite aprendido (null = desconhecido). */
+  remainingTokens: number | null;
+  remainingRequests: number | null;
+  /** Folga 0-1 usada pelo roteador (null = sem informação suficiente). */
+  headroom: number | null;
+  exhausted: boolean;
+  exhaustedUntil: number;
+  /** Cooldown restante até o modelo voltar (ms). */
+  resetsInMs: number;
+  lastErrorAt: number;
+}
+
+export interface UsageModelAdvancedStat extends UsageModelStat {
+  quota: UsageModelQuotaInfo | null;
+}
+
+export interface UsageAdvancedSummary {
+  totalRequests: number;
+  totalErrors: number;
+  successRate: number;
+  totalTokens: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  avgTokensPerRequest: number;
+  /** Requisições sem tokens reportados (ex.: streaming não contabilizado). */
+  requestsWithoutTokens: number;
+  autoRequests: number;
+  manualRequests: number;
+  autoRate: number;
+  avgLatencyMs: number;
+  p50LatencyMs: number;
+  p95LatencyMs: number;
+  /** Requisições auto cujo modelo final diferiu do pedido (failover). */
+  failovers: number;
+  uniqueModels: number;
+  uniqueProviders: number;
+}
+
+export interface UsageProviderStat {
+  provider: string;
+  requests: number;
+  errors: number;
+  successRate: number;
+  tokens: number;
+  tokensPrompt: number;
+  tokensCompletion: number;
+  models: number;
+  avgLatencyMs: number;
+}
+
+export interface UsageTimelinePoint {
+  ts: number;
+  label: string;
+  requests: number;
+  tokens: number;
+  errors: number;
+}
+
+export interface UsageTransition {
+  requested: string;
+  final: string;
+  provider: string;
+  mode: UsageRoutingMode;
+  count: number;
+}
+
+export interface UsageAdvancedReport {
+  period: string;
+  since: number | null;
+  generatedAt: number;
+  summary: UsageAdvancedSummary;
+  models: UsageModelAdvancedStat[];
+  providers: UsageProviderStat[];
+  timeline: UsageTimelinePoint[];
+  transitions: UsageTransition[];
+  quota: QuotaTrackerStats;
+  rate: RateTrackerStats;
 }
 
 const MAX_RECORDS = 10_000;
@@ -194,12 +298,14 @@ export function computeSummary(period?: string): UsageSummary {
   let manualRequests = 0;
   let errors = 0;
   let latencySum = 0;
+  const uniqueModels = new Set<string>();
   for (const r of list) {
     const key = `${r.finalModel}::${r.provider}`;
     const cur = topCounts.get(key) || { requests: 0, provider: r.provider };
     cur.requests++;
     topCounts.set(key, cur);
     totalTokens += r.tokensTotal || (r.tokensPrompt + r.tokensCompletion);
+    if (r.finalModel) uniqueModels.add(r.finalModel);
     if (r.routingMode === 'auto') autoRequests++;
     else manualRequests++;
     if (r.status >= 400 || r.status === 0) errors++;
@@ -224,13 +330,24 @@ export function computeSummary(period?: string): UsageSummary {
     manualRequests,
     topModel,
     avgLatencyMs: list.length ? Math.round(latencySum / list.length) : 0,
+    uniqueModels: uniqueModels.size,
   };
 }
 
-/** Ranking por modelo para GET /api/usage/models. */
-export function computeModelRanking(period?: string, limit = 15): UsageModelStat[] {
-  const list = getUsageRecords(period);
-  type Agg = Omit<UsageModelStat, 'predominantMode' | 'predominantRequest'> & { latSum: number; reqCounts: Map<string, number> };
+/** Percentil (0-100) de uma lista de números; 0 quando vazia. */
+export function percentile(values: number[], p: number): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+  return Math.round(sorted[idx]);
+}
+
+function aggregateModels(list: UsageRecord[]): UsageModelStat[] {
+  type Agg = Omit<UsageModelStat, 'predominantMode' | 'predominantRequest' | 'avgLatencyMs' | 'avgTokensPerRequest' | 'successRate' | 'p95LatencyMs'> & {
+    latSum: number;
+    latencies: number[];
+    reqCounts: Map<string, number>;
+  };
   const map = new Map<string, Agg>();
   for (const r of list) {
     const key = `${r.finalModel}::${r.provider}`;
@@ -241,24 +358,33 @@ export function computeModelRanking(period?: string, limit = 15): UsageModelStat
       requests: 0,
       errors: 0,
       tokens: 0,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      lastUsedAt: 0,
       autoRequests: 0,
       manualRequests: 0,
-      avgLatencyMs: 0,
       latSum: 0,
+      latencies: [],
       reqCounts: new Map(),
     };
     map.set(key, agg);
+    const prompt = Number(r.tokensPrompt) || 0;
+    const completion = Number(r.tokensCompletion) || 0;
     agg.reqCounts.set(r.requestedModel, (agg.reqCounts.get(r.requestedModel) || 0) + 1);
     agg.requests++;
     if (r.status >= 400 || r.status === 0) agg.errors++;
-    agg.tokens += r.tokensTotal || (r.tokensPrompt + r.tokensCompletion);
+    agg.tokens += r.tokensTotal || (prompt + completion);
+    agg.tokensPrompt += prompt;
+    agg.tokensCompletion += completion;
+    agg.lastUsedAt = Math.max(agg.lastUsedAt, r.ts);
     if (r.routingMode === 'auto') agg.autoRequests++;
     else agg.manualRequests++;
     agg.latSum += r.latencyMs;
+    agg.latencies.push(r.latencyMs);
   }
   const out: UsageModelStat[] = [];
   for (const agg of map.values()) {
-    const { latSum, reqCounts, ...rest } = agg;
+    const { latSum, latencies, reqCounts, ...rest } = agg;
     let predominantRequest = '';
     let bestReq = -1;
     for (const [req, n] of reqCounts) {
@@ -270,12 +396,243 @@ export function computeModelRanking(period?: string, limit = 15): UsageModelStat
     out.push({
       ...rest,
       avgLatencyMs: agg.requests ? Math.round(latSum / agg.requests) : 0,
+      avgTokensPerRequest: agg.requests ? Math.round(rest.tokens / agg.requests) : 0,
+      successRate: agg.requests ? Math.round(((agg.requests - agg.errors) / agg.requests) * 1000) / 10 : 0,
+      p95LatencyMs: percentile(latencies, 95),
       predominantMode: agg.autoRequests === agg.manualRequests ? '—' : agg.autoRequests > agg.manualRequests ? 'auto' : 'manual',
       predominantRequest,
     });
   }
+  return out;
+}
+
+/** Ranking por modelo para GET /api/usage/models. */
+export function computeModelRanking(period?: string, limit = 15): UsageModelStat[] {
+  const out = aggregateModels(getUsageRecords(period));
   out.sort((a, b) => b.requests - a.requests || b.tokens - a.tokens);
   return out.slice(0, Math.max(1, Math.min(50, limit)));
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+const MAX_TIMELINE_BUCKETS = 60;
+
+function pad2(n: number): string {
+  return String(n).padStart(2, '0');
+}
+
+function buildTimeline(
+  list: UsageRecord[],
+  period: string,
+  since: number | null
+): UsageTimelinePoint[] {
+  if (!list.length) return [];
+  const bucketMs = period === '24h' ? HOUR_MS : DAY_MS;
+  const now = Date.now();
+  const lastTs = list.reduce((max, r) => Math.max(max, r.ts), 0);
+  const end = Math.max(now, lastTs);
+  const firstTs = list.reduce((min, r) => Math.min(min, r.ts), Number.POSITIVE_INFINITY);
+  let start = since ?? firstTs;
+  const minStart = end - (MAX_TIMELINE_BUCKETS - 1) * bucketMs;
+  if (start < minStart) start = minStart;
+  if (start > end) start = end;
+  const startBucket = Math.floor(start / bucketMs) * bucketMs;
+  const endBucket = Math.floor(end / bucketMs) * bucketMs;
+
+  const buckets = new Map<number, { requests: number; tokens: number; errors: number }>();
+  for (const r of list) {
+    const key = Math.floor(r.ts / bucketMs) * bucketMs;
+    const cur = buckets.get(key) || { requests: 0, tokens: 0, errors: 0 };
+    cur.requests++;
+    cur.tokens += r.tokensTotal || r.tokensPrompt + r.tokensCompletion;
+    if (r.status >= 400 || r.status === 0) cur.errors++;
+    buckets.set(key, cur);
+  }
+
+  const out: UsageTimelinePoint[] = [];
+  for (let ts = startBucket; ts <= endBucket; ts += bucketMs) {
+    const cur = buckets.get(ts) || { requests: 0, tokens: 0, errors: 0 };
+    const d = new Date(ts);
+    out.push({
+      ts,
+      label: period === '24h' ? `${pad2(d.getHours())}:00` : `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}`,
+      ...cur,
+    });
+  }
+  return out;
+}
+
+function isAutoRequested(model: string): boolean {
+  return model === 'auto' || model === 'auto-free';
+}
+
+/**
+ * Relatório avançado de uso: consumo/cotas por modelo, split prompt×completion,
+ * percentis de latência, timeline, failovers e estado dos trackers de cota/rate.
+ */
+export function computeAdvancedUsage(period?: string): UsageAdvancedReport {
+  const list = getUsageRecords(period);
+  const { since, period: p } = periodToSince(period);
+
+  let tokensPrompt = 0;
+  let tokensCompletion = 0;
+  let totalTokens = 0;
+  let totalErrors = 0;
+  let requestsWithoutTokens = 0;
+  let autoRequests = 0;
+  let manualRequests = 0;
+  let failovers = 0;
+  let latencySum = 0;
+  const latencies: number[] = [];
+  const uniqueModels = new Set<string>();
+  const uniqueProviders = new Set<string>();
+  const providerMap = new Map<string, {
+    provider: string;
+    requests: number;
+    errors: number;
+    tokens: number;
+    tokensPrompt: number;
+    tokensCompletion: number;
+    latSum: number;
+    models: Set<string>;
+  }>();
+  const transitionMap = new Map<string, UsageTransition>();
+
+  for (const r of list) {
+    const prompt = Number(r.tokensPrompt) || 0;
+    const completion = Number(r.tokensCompletion) || 0;
+    const tokens = r.tokensTotal || prompt + completion;
+    const failed = r.status >= 400 || r.status === 0;
+
+    tokensPrompt += prompt;
+    tokensCompletion += completion;
+    totalTokens += tokens;
+    if (!tokens) requestsWithoutTokens++;
+    if (failed) totalErrors++;
+    if (r.routingMode === 'auto') autoRequests++;
+    else manualRequests++;
+    if (r.routingMode === 'auto' && isAutoRequested(r.requestedModel) && r.finalModel !== r.requestedModel) {
+      failovers++;
+    }
+    latencySum += r.latencyMs;
+    latencies.push(r.latencyMs);
+    if (r.finalModel) uniqueModels.add(r.finalModel);
+    if (r.provider) uniqueProviders.add(r.provider);
+
+    const providerKey = r.provider || '(desconhecido)';
+    const prov = providerMap.get(providerKey) || {
+      provider: providerKey,
+      requests: 0,
+      errors: 0,
+      tokens: 0,
+      tokensPrompt: 0,
+      tokensCompletion: 0,
+      latSum: 0,
+      models: new Set<string>(),
+    };
+    providerMap.set(providerKey, prov);
+    prov.requests++;
+    if (failed) prov.errors++;
+    prov.tokens += tokens;
+    prov.tokensPrompt += prompt;
+    prov.tokensCompletion += completion;
+    prov.latSum += r.latencyMs;
+    if (r.finalModel) prov.models.add(r.finalModel);
+
+    if (r.routingMode === 'auto' && r.requestedModel !== r.finalModel) {
+      const key = `${r.requestedModel}→${r.finalModel}::${r.provider}`;
+      const tr = transitionMap.get(key) || {
+        requested: r.requestedModel,
+        final: r.finalModel,
+        provider: r.provider,
+        mode: r.routingMode,
+        count: 0,
+      };
+      tr.count++;
+      transitionMap.set(key, tr);
+    }
+  }
+
+  const quotaStats = getQuotaTrackerStats();
+  const quotaByModel = new Map(quotaStats.models.map((q) => [q.modelId, q]));
+  const models: UsageModelAdvancedStat[] = aggregateModels(list)
+    .sort((a, b) => b.tokens - a.tokens || b.requests - a.requests)
+    .map((m) => {
+      const q = quotaByModel.get(m.model);
+      return {
+        ...m,
+        quota: q
+          ? {
+              windowHours: quotaStats.windowHours,
+              usedTokens: q.tokens,
+              usedRequests: q.requests,
+              learnedLimitTokens: q.learnedLimitTokens,
+              learnedLimitRequests: q.learnedLimitRequests,
+              remainingTokens: q.learnedLimitTokens > 0 ? Math.max(0, q.learnedLimitTokens - q.tokens) : null,
+              remainingRequests: q.learnedLimitRequests > 0 ? Math.max(0, q.learnedLimitRequests - q.requests) : null,
+              headroom: q.headroom ?? null,
+              exhausted: q.exhausted,
+              exhaustedUntil: q.exhaustedUntil,
+              resetsInMs: q.exhausted ? Math.max(0, q.exhaustedUntil - Date.now()) : 0,
+              lastErrorAt: q.lastErrorAt,
+            }
+          : null,
+      };
+    });
+
+  const providers: UsageProviderStat[] = [...providerMap.values()]
+    .map((p) => ({
+      provider: p.provider,
+      requests: p.requests,
+      errors: p.errors,
+      successRate: p.requests ? Math.round(((p.requests - p.errors) / p.requests) * 1000) / 10 : 0,
+      tokens: p.tokens,
+      tokensPrompt: p.tokensPrompt,
+      tokensCompletion: p.tokensCompletion,
+      models: p.models.size,
+      avgLatencyMs: p.requests ? Math.round(p.latSum / p.requests) : 0,
+    }))
+    .sort((a, b) => b.requests - a.requests || b.tokens - a.tokens);
+
+  const transitions = [...transitionMap.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 10);
+
+  const totalRequests = list.length;
+  const successRate = totalRequests
+    ? Math.round(((totalRequests - totalErrors) / totalRequests) * 1000) / 10
+    : 0;
+
+  return {
+    period: p,
+    since,
+    generatedAt: Date.now(),
+    summary: {
+      totalRequests,
+      totalErrors,
+      successRate,
+      totalTokens,
+      tokensPrompt,
+      tokensCompletion,
+      avgTokensPerRequest: totalRequests ? Math.round(totalTokens / totalRequests) : 0,
+      requestsWithoutTokens,
+      autoRequests,
+      manualRequests,
+      autoRate: totalRequests ? Math.round((autoRequests / totalRequests) * 1000) / 10 : 0,
+      avgLatencyMs: totalRequests ? Math.round(latencySum / totalRequests) : 0,
+      p50LatencyMs: percentile(latencies, 50),
+      p95LatencyMs: percentile(latencies, 95),
+      failovers,
+      uniqueModels: uniqueModels.size,
+      uniqueProviders: uniqueProviders.size,
+    },
+    models,
+    providers,
+    timeline: buildTimeline(list, p, since),
+    transitions,
+    quota: quotaStats,
+    rate: getRateTrackerStats(),
+  };
 }
 
 /** Formata os registros em CSV (para o export). */

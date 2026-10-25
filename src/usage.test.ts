@@ -15,16 +15,20 @@ import path from 'node:path';
 process.env.USAGE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'usage-test-')), 'usage-logs.json');
 
 import {
+  computeAdvancedUsage,
   computeModelRanking,
   computeSummary,
   getUsageRecords,
   getUsageSnapshot,
+  percentile,
   periodToSince,
   recordUsage,
   recordsToCsv,
   resetUsage,
   type UsageRecord,
 } from './services/usage.ts';
+import { recordQuotaExhaustion, recordQuotaUsage, resetQuotaTracker } from './services/quota-tracker.ts';
+import { acquireKeyBudget, resetRateTracker } from './services/rate-tracker.ts';
 import { usageRoutes } from './routes/usage.ts';
 
 let seq = 0;
@@ -124,6 +128,93 @@ test('computeModelRanking marca erro quando status >= 400', () => {
   const [stat] = computeModelRanking('all');
   assert.equal(stat.errors, 1);
   assert.equal(stat.requests, 1);
+});
+
+test('percentile calcula p50/p95 e lida com lista vazia', () => {
+  assert.equal(percentile([], 95), 0);
+  assert.equal(percentile([10], 95), 10);
+  assert.equal(percentile([10, 20, 30, 40, 50], 50), 30);
+  assert.equal(percentile([10, 20, 30, 40, 50], 95), 50);
+});
+
+test('computeModelRanking expõe split de tokens, taxa de sucesso e p95', () => {
+  resetUsage();
+  recordUsage(mk({ tokensPrompt: 100, tokensCompletion: 50, tokensTotal: 150, latencyMs: 100 }));
+  recordUsage(mk({ tokensPrompt: 60, tokensCompletion: 40, tokensTotal: 100, latencyMs: 300 }));
+  recordUsage(mk({ status: 500, tokensPrompt: 0, tokensCompletion: 0, tokensTotal: 0, latencyMs: 200 }));
+  const [stat] = computeModelRanking('all');
+  assert.equal(stat.tokens, 250);
+  assert.equal(stat.tokensPrompt, 160);
+  assert.equal(stat.tokensCompletion, 90);
+  assert.equal(stat.avgTokensPerRequest, 83);
+  assert.equal(stat.successRate, 66.7);
+  assert.equal(stat.p95LatencyMs, 300);
+});
+
+test('computeAdvancedUsage consolida cotas por modelo, timeline e failovers', () => {
+  resetUsage();
+  resetQuotaTracker();
+  resetRateTracker();
+  const now = Date.now();
+  recordUsage(mk({ ts: now - 3 * 60 * 60 * 1000, tokensPrompt: 100, tokensCompletion: 50, tokensTotal: 150, latencyMs: 100 }));
+  recordUsage(mk({ tokensPrompt: 60, tokensCompletion: 40, tokensTotal: 100, latencyMs: 300 }));
+  recordUsage(mk({
+    requestedModel: 'claude-4-sonnet',
+    finalModel: 'claude-4-sonnet',
+    provider: 'Anthropic',
+    routingMode: 'manual',
+    status: 500,
+    tokensPrompt: 0,
+    tokensCompletion: 0,
+    tokensTotal: 0,
+    latencyMs: 200,
+  }));
+  recordQuotaUsage('gpt-4o', 250);
+  recordQuotaExhaustion('gpt-4o', 60_000);
+  acquireKeyBudget('openai', 'key-1', 100);
+
+  const report = computeAdvancedUsage('all');
+  assert.equal(report.summary.totalRequests, 3);
+  assert.equal(report.summary.totalErrors, 1);
+  assert.equal(report.summary.successRate, 66.7);
+  assert.equal(report.summary.tokensPrompt, 160);
+  assert.equal(report.summary.tokensCompletion, 90);
+  assert.equal(report.summary.totalTokens, 250);
+  assert.equal(report.summary.requestsWithoutTokens, 1);
+  assert.equal(report.summary.failovers, 2);
+  assert.equal(report.summary.uniqueModels, 2);
+  assert.equal(report.summary.uniqueProviders, 2);
+
+  const gpt = report.models.find((m) => m.model === 'gpt-4o');
+  assert.ok(gpt);
+  assert.equal(gpt.tokens, 250);
+  assert.equal(gpt.quota?.learnedLimitTokens, 250);
+  assert.equal(gpt.quota?.remainingTokens, 0);
+  assert.equal(gpt.quota?.exhausted, true);
+  assert.ok((gpt.quota?.resetsInMs || 0) > 0);
+
+  const anthropic = report.providers.find((p) => p.provider === 'Anthropic');
+  assert.equal(anthropic?.requests, 1);
+  assert.equal(anthropic?.successRate, 0);
+
+  assert.equal(report.timeline.reduce((sum, t) => sum + t.requests, 0), 3);
+  assert.equal(report.transitions[0].count, 2);
+  assert.equal(report.rate.keys[0].key, 'openai::key-1');
+});
+
+test('GET /api/usage/advanced responde com consumo por modelo e trackers', async () => {
+  resetUsage();
+  resetQuotaTracker();
+  recordUsage(mk());
+  const res = await usageRoutes.request('/api/usage/advanced?period=all');
+  assert.equal(res.status, 200);
+  const json = await res.json();
+  assert.equal(json.period, 'all');
+  assert.equal(json.models[0].model, 'gpt-4o');
+  assert.equal(json.models[0].quota, null);
+  assert.equal(json.summary.totalRequests, 1);
+  assert.ok(Array.isArray(json.timeline));
+  assert.ok('quota' in json && 'rate' in json);
 });
 
 test('recordsToCsv monta header e protege valores com separador/aspas', () => {

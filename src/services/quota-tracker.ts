@@ -164,6 +164,7 @@ export interface QuotaTrackerStats {
     exhaustedUntil: number;
     learnedLimitTokens: number;
     learnedLimitRequests: number;
+    lastErrorAt: number;
   }>;
 }
 
@@ -183,6 +184,7 @@ export function getQuotaTrackerStats(): QuotaTrackerStats {
       exhaustedUntil: e.exhaustedUntil,
       learnedLimitTokens: e.learnedLimitTokens,
       learnedLimitRequests: e.learnedLimitRequests,
+      lastErrorAt: e.lastErrorAt,
     });
   }
   models.sort((a, b) => b.requests - a.requests);

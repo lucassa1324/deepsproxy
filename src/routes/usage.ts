@@ -4,11 +4,13 @@
  * Endpoints REST do painel de Uso & Métricas (alimentam a UI e os relatórios):
  *  - GET /api/usage/summary?period=24h|7d|30d|all  — métricas consolidadas
  *  - GET /api/usage/models?period=...&limit=15     — ranking de modelos
+ *  - GET /api/usage/advanced?period=...            — consumo/cotas por modelo + dados avançados
  *  - GET /api/usage/export?format=csv|json&period=... — download do relatório
  */
 
 import { Hono } from 'hono';
 import {
+  computeAdvancedUsage,
   computeModelRanking,
   computeSummary,
   getUsageRecords,
@@ -40,6 +42,12 @@ usageRoutes.get('/api/usage/models', (c) => {
     since: periodToSince(period).since,
     models: computeModelRanking(period, Number.isFinite(limit) ? limit : 15),
   });
+});
+
+/** Relatório avançado: consumo/cotas por modelo, timeline, failovers e trackers. */
+usageRoutes.get('/api/usage/advanced', (c) => {
+  const period = normalizePeriod(c.req.query('period'));
+  return c.json(computeAdvancedUsage(period));
 });
 
 /**

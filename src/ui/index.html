@@ -2423,6 +2423,125 @@
       background: rgba(90, 150, 220, .1);
     }
 
+    /* Uso & Métricas — sub-abas, consumo por modelo e avançado */
+    .usage-scroll {
+      overflow-x: auto;
+      margin-top: 8px;
+      padding-bottom: 2px;
+    }
+
+    .usage-row.usage-model-grid {
+      grid-template-columns: minmax(190px, 2.4fr) 64px 86px 86px 90px minmax(180px, 1.9fr) 76px 84px;
+      min-width: 920px;
+    }
+
+    .usage-row.usage-provider-grid {
+      grid-template-columns: minmax(150px, 2fr) 70px 70px 90px 110px 110px 70px 90px;
+      min-width: 780px;
+    }
+
+    .usage-row.usage-quota-grid {
+      grid-template-columns: minmax(170px, 2fr) 70px 110px 110px 140px 110px 100px;
+      min-width: 800px;
+    }
+
+    .usage-row.usage-rate-grid {
+      grid-template-columns: minmax(200px, 2.4fr) 80px 110px 80px 110px;
+      min-width: 620px;
+    }
+
+    .usage-row.usage-transition-grid {
+      grid-template-columns: minmax(150px, 1.6fr) minmax(150px, 1.6fr) minmax(100px, 1fr) 70px 70px;
+      min-width: 620px;
+    }
+
+    .usage-num {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .quota-bar {
+      height: 6px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .07);
+      overflow: hidden;
+      margin: 4px 0 3px;
+    }
+
+    .quota-bar > span {
+      display: block;
+      height: 100%;
+      background: var(--green);
+      transition: width .2s ease;
+    }
+
+    .quota-bar > span.warn {
+      background: var(--yellow);
+    }
+
+    .quota-bar > span.danger {
+      background: var(--red);
+    }
+
+    .usage-badge-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .usage-timeline {
+      display: flex;
+      align-items: flex-end;
+      gap: 4px;
+      min-height: 130px;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
+
+    .timeline-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      min-width: 30px;
+      flex: 1 0 30px;
+    }
+
+    .timeline-track {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      height: 90px;
+      width: 100%;
+      background: rgba(255, 255, 255, .04);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+
+    .timeline-bar {
+      width: 70%;
+      border-radius: 4px 4px 0 0;
+      background: var(--accent);
+      min-height: 2px;
+    }
+
+    .timeline-bar.has-error {
+      background: var(--red);
+    }
+
+    .timeline-label {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .timeline-value {
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
     .badge.primary {
       color: #c4bbff;
       border-color: rgba(124, 108, 255, .3);
@@ -6419,47 +6538,194 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             <button class="btn ghost" id="btnUsageExportCsv">Exportar CSV</button>
             <button class="btn ghost" id="btnUsageExportJson">Exportar JSON</button>
           </div>
-          <p class="note" style="margin:6px 0 14px;">
-            Métricas de consumo dos modelos (inclusive os escolhidos pelo modo automático).
-            Cada requisição concluída no <code class="inline">/v1/chat/completions</code> gera um registro
-            com modelo pedido, modelo final (from orquestrador/failover), provedor, tokens e latência.
-          </p>
 
-          <div class="grid cols-4" id="usageCards" style="margin-bottom:16px;">
-            <div class="card">
-              <h3>Total de Requisições</h3>
-              <div class="value" id="usageTotalReq">—</div>
-              <div class="note" id="usageErrors" style="margin-top:4px;">Erros: —</div>
-            </div>
-            <div class="card">
-              <h3>Modelo Mais Utilizado</h3>
-              <div class="value" id="usageTopModel" style="font-size:18px;">—</div>
-              <div class="note" id="usageTopProvider" style="margin-top:4px;">—</div>
-            </div>
-            <div class="card">
-              <h3>Auto vs Manual</h3>
-              <div class="value" id="usageAutoPct">—</div>
-              <div class="note" id="usageAutoSplit" style="margin-top:4px;">—</div>
-            </div>
-            <div class="card">
-              <h3>Total de Tokens</h3>
-              <div class="value" id="usageTokens">—</div>
-              <div class="note" id="usageLatency" style="margin-top:4px;">Latência média: —</div>
-            </div>
+          <div class="subtabs" role="tablist" aria-label="Seções de uso e métricas">
+            <button class="active" type="button" role="tab" aria-selected="true" data-usage-tab="overview">Visão
+              geral</button>
+            <button type="button" role="tab" aria-selected="false" data-usage-tab="models">
+              Consumo por modelo
+              <span class="tab-count" id="usageModelsBadge">0</span>
+            </button>
+            <button type="button" role="tab" aria-selected="false" data-usage-tab="advanced">Avançado</button>
           </div>
 
-          <div class="card" style="margin-top:16px;">
-            <h3>Modelos Mais Utilizados</h3>
-            <div id="usageRanking" class="note">Sem dados de uso no período selecionado.</div>
-          </div>
-
-          <div class="card" style="margin-top:16px;">
-            <h3>Últimas Requisições (Rastreabilidade)</h3>
-            <p class="note" style="margin:0 0 10px;">
-              Mapeamento exato entre o <b>pedido</b> do usuário, o modelo escolhido pelo
-              orquestrador (<b>final</b>) e o <b>provedor</b> que executou a chamada.
+          <div class="subtab-panel" id="usage-overview">
+            <p class="note" style="margin:0 0 14px;">
+              Métricas de consumo dos modelos (inclusive os escolhidos pelo modo automático).
+              Cada requisição concluída no <code class="inline">/v1/chat/completions</code> gera um registro
+              com modelo pedido, modelo final (from orquestrador/failover), provedor, tokens e latência.
             </p>
-            <div id="usageRecent" class="note">Sem registros ainda.</div>
+
+            <div class="grid cols-4" id="usageCards">
+              <div class="card">
+                <h3>Total de Requisições</h3>
+                <div class="value" id="usageTotalReq">—</div>
+                <div class="note" id="usageErrors" style="margin-top:4px;">Erros: —</div>
+              </div>
+              <div class="card">
+                <h3>Modelo Mais Utilizado</h3>
+                <div class="value" id="usageTopModel" style="font-size:18px;">—</div>
+                <div class="note" id="usageTopProvider" style="margin-top:4px;">—</div>
+              </div>
+              <div class="card">
+                <h3>Auto vs Manual</h3>
+                <div class="value" id="usageAutoPct">—</div>
+                <div class="note" id="usageAutoSplit" style="margin-top:4px;">—</div>
+              </div>
+              <div class="card">
+                <h3>Total de Tokens</h3>
+                <div class="value" id="usageTokens">—</div>
+                <div class="note" id="usageLatency" style="margin-top:4px;">Latência média: —</div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Modelos Mais Utilizados</h3>
+              <div id="usageRanking" class="note">Sem dados de uso no período selecionado.</div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Últimas Requisições (Rastreabilidade)</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Mapeamento exato entre o <b>pedido</b> do usuário, o modelo escolhido pelo
+                orquestrador (<b>final</b>) e o <b>provedor</b> que executou a chamada.
+              </p>
+              <div id="usageRecent" class="note">Sem registros ainda.</div>
+            </div>
+          </div>
+
+          <div class="subtab-panel hidden" id="usage-models">
+            <div class="grid cols-4">
+              <div class="card">
+                <h3>Modelos com uso</h3>
+                <div class="value" id="umModels">—</div>
+                <div class="note" id="umModelsSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Tokens gastos</h3>
+                <div class="value" id="umTokens">—</div>
+                <div class="note" id="umTokensSplit">—</div>
+              </div>
+              <div class="card">
+                <h3>Tokens restantes</h3>
+                <div class="value" id="umRemaining">—</div>
+                <div class="note" id="umRemainingSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Modelos esgotados</h3>
+                <div class="value" id="umExhausted">—</div>
+                <div class="note" id="umExhaustedSub">—</div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <div class="logs-header">
+                <h3 style="margin:0;">Consumo e cota por modelo</h3>
+                <span class="spacer"></span>
+                <label for="usageModelSort" style="font-size:12px;color:var(--muted);">Ordenar:</label>
+                <select id="usageModelSort" style="max-width:210px;">
+                  <option value="tokens" selected>Mais tokens gastos</option>
+                  <option value="requests">Mais requisições</option>
+                  <option value="remaining">Menos tokens restantes</option>
+                  <option value="name">Nome do modelo</option>
+                </select>
+              </div>
+              <p class="note" style="margin:0 0 10px;">
+                <b>Gasto</b> usa o período selecionado. <b>Restante</b> usa a janela deslizante do
+                quota-tracker e o limite aprendido a partir de erros 429/quota — quando o provedor
+                ainda não devolveu um erro de cota, o restante aparece como “sem limite aprendido”.
+              </p>
+              <div id="umList" class="note">Sem dados de uso no período selecionado.</div>
+            </div>
+          </div>
+
+          <div class="subtab-panel hidden" id="usage-advanced">
+            <div class="grid cols-4">
+              <div class="card">
+                <h3>Tokens de entrada (prompt)</h3>
+                <div class="value" id="uaPrompt">—</div>
+                <div class="note" id="uaPromptSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Tokens de saída (completion)</h3>
+                <div class="value" id="uaCompletion">—</div>
+                <div class="note" id="uaCompletionSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Latência p50 / p95</h3>
+                <div class="value" id="uaLatency" style="font-size:18px;">—</div>
+                <div class="note" id="uaLatencySub">—</div>
+              </div>
+              <div class="card">
+                <h3>Failover automático</h3>
+                <div class="value" id="uaFailovers">—</div>
+                <div class="note" id="uaFailoverSub">—</div>
+              </div>
+            </div>
+
+            <div class="grid cols-4" style="margin-top:16px;">
+              <div class="card">
+                <h3>Taxa de sucesso</h3>
+                <div class="value" id="uaSuccess">—</div>
+                <div class="note" id="uaSuccessSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Requisições sem tokens</h3>
+                <div class="value" id="uaNoTokens">—</div>
+                <div class="note" id="uaNoTokensSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Modelos / provedores</h3>
+                <div class="value" id="uaUniques" style="font-size:18px;">—</div>
+                <div class="note" id="uaUniquesSub">—</div>
+              </div>
+              <div class="card">
+                <h3>Janela de cota</h3>
+                <div class="value" id="uaQuotaWindow">—</div>
+                <div class="note" id="uaQuotaWindowSub">—</div>
+              </div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Consumo por provedor</h3>
+              <div id="uaProviders" class="note">Sem dados de uso no período selecionado.</div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Linha do tempo de consumo</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Barras por hora (24h) ou por dia (7d, 30d, todo o período). Vermelho indica
+                requisições com erro no intervalo.
+              </p>
+              <div id="uaTimeline" class="note">Sem dados de uso no período selecionado.</div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Quotas por modelo (janela deslizante)</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Limites aprendidos automaticamente quando um provedor devolve 429/quota.
+                “Restante” é a diferença entre o limite aprendido e o consumo da janela.
+              </p>
+              <div id="uaQuota" class="note">Nenhuma cota observada ainda.</div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Rate limit local por chave</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Reservas locais da janela de 60s (RPM/TPM) usadas pela rotação para pular
+                uma chave antes do provedor devolver 429.
+              </p>
+              <div id="uaRate" class="note">Nenhuma chave com tráfego na janela atual.</div>
+            </div>
+
+            <div class="card" style="margin-top:16px;">
+              <h3>Transições de roteamento (pedido → final)</h3>
+              <p class="note" style="margin:0 0 10px;">
+                Pares requestModel → finalModel observados no modo automático, incluindo
+                failovers entre modelos.
+              </p>
+              <div id="uaTransitions" class="note">Nenhuma transição registrada.</div>
+            </div>
           </div>
         </div>
       </section>
@@ -11111,12 +11377,49 @@ for await (const chunk of stream) {
       }
 
       // ---------- Uso & Métricas (painel) ----------
+      const usageSubtabButtons = document.querySelectorAll("[data-usage-tab]");
+
+      function showUsageTab(name) {
+        const target = name || "overview";
+        usageSubtabButtons.forEach((btn) => {
+          const active = btn.dataset.usageTab === target;
+          btn.classList.toggle("active", active);
+          btn.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        document.querySelectorAll("#tab-usage .subtab-panel").forEach((panel) => {
+          panel.classList.toggle("hidden", panel.id !== "usage-" + target);
+        });
+      }
+
+      function currentUsageTab() {
+        const active = document.querySelector("[data-usage-tab].active");
+        return active ? active.dataset.usageTab : "overview";
+      }
+
+      function refreshUsageTab() {
+        if (currentUsageTab() === "overview") loadUsageDashboard();
+        else loadUsageAdvanced();
+      }
+
+      usageSubtabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+          showUsageTab(btn.dataset.usageTab);
+          refreshUsageTab();
+        });
+      });
+      showUsageTab("overview");
+
       const tabUsage = document.querySelector('[data-tab="usage"]');
       if (tabUsage) {
-        tabUsage.addEventListener("click", () => loadUsageDashboard());
+        tabUsage.addEventListener("click", () => refreshUsageTab());
       }
-      if ($("#usagePeriod")) $("#usagePeriod").addEventListener("change", () => loadUsageDashboard());
-      if ($("#btnUsageRefresh")) $("#btnUsageRefresh").addEventListener("click", () => loadUsageDashboard());
+      if ($("#usagePeriod")) $("#usagePeriod").addEventListener("change", () => refreshUsageTab());
+      if ($("#btnUsageRefresh")) $("#btnUsageRefresh").addEventListener("click", () => refreshUsageTab());
+      if ($("#usageModelSort")) {
+        $("#usageModelSort").addEventListener("change", () => {
+          if (usageAdvancedCache) renderUsageModels(usageAdvancedCache);
+        });
+      }
       if ($("#btnUsageExportCsv")) {
         $("#btnUsageExportCsv").addEventListener("click", () => {
           location.href = "/api/usage/export?format=csv&period=" + encodeURIComponent($("#usagePeriod").value || "all");
@@ -11134,6 +11437,26 @@ for await (const chunk of stream) {
 
       function escapeHtml(s) {
         return String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+      }
+
+      function fmtPct(n) {
+        const v = Number(n);
+        return Number.isFinite(v) ? v.toFixed(1) + "%" : "—";
+      }
+
+      function fmtDuration(ms) {
+        const total = Math.max(0, Math.round((Number(ms) || 0) / 1000));
+        if (total < 60) return total + "s";
+        const minutes = Math.round(total / 60);
+        if (minutes < 60) return minutes + "min";
+        const hours = Math.floor(minutes / 60);
+        const rest = minutes % 60;
+        return hours + "h" + (rest ? " " + rest + "min" : "");
+      }
+
+      function usageStamp() {
+        const stamp = $("#usageUpdatedAt");
+        if (stamp) stamp.textContent = `Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`;
       }
 
       async function loadUsageDashboard() {
@@ -11164,8 +11487,9 @@ for await (const chunk of stream) {
           $("#usageAutoSplit").textContent = `${fmtInt(summary.autoRequests)} auto · ${fmtInt(summary.manualRequests)} manual`;
           $("#usageTokens").textContent = fmtInt(summary.totalTokens);
           $("#usageLatency").textContent = `Latência média: ${fmtInt(summary.avgLatencyMs)} ms · Período: ${summary.period}`;
-          const stamp = $("#usageUpdatedAt");
-          if (stamp) stamp.textContent = `Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`;
+          const badge = $("#usageModelsBadge");
+          if (badge) badge.textContent = fmtInt(summary.uniqueModels);
+          usageStamp();
 
           // Ranking de modelos
           const rows = ranking.models || [];
@@ -11215,7 +11539,7 @@ for await (const chunk of stream) {
                 const when = new Date(r.ts).toLocaleTimeString("pt-BR");
                 const done = r.status >= 400 || r.status === 0;
                 return `
-                  <div class="usage-row ${done ? "" : ""}">
+                  <div class="usage-row">
                     <div>
                       <div class="usage-model" title="${escapeHtml(r.requestedModel)}">→ ${escapeHtml(r.requestedModel || "—")}</div>
                       <div class="usage-sub">${when}</div>
@@ -11245,6 +11569,327 @@ for await (const chunk of stream) {
         }
       }
 
+      let usageAdvancedCache = null;
+
+      function usageQuotaCell(q) {
+        if (!q) {
+          return '<div class="usage-sub">sem dados de cota</div>';
+        }
+        const limitTokens = Number(q.learnedLimitTokens) || 0;
+        const limitRequests = Number(q.learnedLimitRequests) || 0;
+        const exhausted = q.exhausted
+          ? `<div class="usage-sub" style="color:var(--red);">esgotado · ${fmtDuration(q.resetsInMs)}</div>`
+          : "";
+        if (limitTokens > 0) {
+          const used = Number(q.usedTokens) || 0;
+          const ratio = Math.min(100, Math.round((used / limitTokens) * 1000) / 10);
+          const tone = ratio >= 95 ? "danger" : ratio >= 80 ? "warn" : "";
+          const remaining = q.remainingTokens != null ? q.remainingTokens : Math.max(0, limitTokens - used);
+          return `
+            <div class="quota-bar"><span class="${tone}" style="width:${ratio}%"></span></div>
+            <div class="usage-sub">${fmtInt(remaining)} tokens restantes · ${fmtPct(ratio)} usado</div>
+            ${exhausted}`;
+        }
+        if (limitRequests > 0) {
+          const used = Number(q.usedRequests) || 0;
+          const ratio = Math.min(100, Math.round((used / limitRequests) * 1000) / 10);
+          const tone = ratio >= 95 ? "danger" : ratio >= 80 ? "warn" : "";
+          const remaining = q.remainingRequests != null ? q.remainingRequests : Math.max(0, limitRequests - used);
+          return `
+            <div class="quota-bar"><span class="${tone}" style="width:${ratio}%"></span></div>
+            <div class="usage-sub">${fmtInt(remaining)} req restantes · ${fmtPct(ratio)} usado</div>
+            ${exhausted}`;
+        }
+        return `
+          <div class="usage-sub">sem limite aprendido</div>
+          <div class="usage-sub">gasto ${fmtInt(q.usedTokens)} tok / ${fmtInt(q.usedRequests)} req</div>
+          ${exhausted}`;
+      }
+
+      function usageModeBadge(mode) {
+        return mode === "auto"
+          ? '<span class="badge auto">Auto</span>'
+          : mode === "manual"
+            ? '<span class="badge manual">Manual</span>'
+            : "—";
+      }
+
+      function renderUsageModels(data) {
+        const models = data.models || [];
+        const summary = data.summary || {};
+        const badge = $("#usageModelsBadge");
+        if (badge) badge.textContent = fmtInt(models.length);
+
+        const known = models.filter((m) => m.quota && m.quota.remainingTokens != null);
+        const remaining = known.reduce((sum, m) => sum + (Number(m.quota.remainingTokens) || 0), 0);
+        const exhausted = models.filter((m) => m.quota && m.quota.exhausted);
+        const windowHours = data.quota?.windowHours;
+
+        $("#umModels").textContent = fmtInt(models.length);
+        $("#umModelsSub").textContent = `${fmtInt(summary.uniqueProviders)} provedor(es) · ${fmtInt(summary.totalRequests)} requisições`;
+        $("#umTokens").textContent = fmtInt(summary.totalTokens);
+        $("#umTokensSplit").textContent = `Entrada: ${fmtInt(summary.tokensPrompt)} · Saída: ${fmtInt(summary.tokensCompletion)}`;
+        $("#umRemaining").textContent = known.length ? fmtInt(remaining) + " tokens" : "—";
+        $("#umRemainingSub").textContent = known.length
+          ? `${known.length} modelo(s) com limite aprendido · janela ${windowHours}h`
+          : "Nenhum limite aprendido (sem erro 429/quota observado)";
+        $("#umExhausted").textContent = fmtInt(exhausted.length);
+        $("#umExhaustedSub").textContent = exhausted.length
+          ? exhausted.map((m) => m.model).join(", ")
+          : "Nenhum modelo em cooldown por cota";
+
+        const box = $("#umList");
+        if (!models.length) {
+          box.className = "note";
+          box.textContent = "Sem dados de uso no período selecionado.";
+          return;
+        }
+
+        const sort = $("#usageModelSort")?.value || "tokens";
+        const sorted = [...models].sort((a, b) => {
+          if (sort === "requests") return b.requests - a.requests || b.tokens - a.tokens;
+          if (sort === "remaining") {
+            const ra = a.quota && a.quota.remainingTokens != null ? a.quota.remainingTokens : Number.POSITIVE_INFINITY;
+            const rb = b.quota && b.quota.remainingTokens != null ? b.quota.remainingTokens : Number.POSITIVE_INFINITY;
+            return ra - rb || b.tokens - a.tokens;
+          }
+          if (sort === "name") return String(a.model).localeCompare(String(b.model));
+          return b.tokens - a.tokens || b.requests - a.requests;
+        });
+
+        const head = `
+          <div class="usage-row usage-head usage-model-grid">
+            <div>Modelo / Provedor</div>
+            <div>Req</div>
+            <div>Entrada</div>
+            <div>Saída</div>
+            <div>Total</div>
+            <div>Cota restante</div>
+            <div>Latência</div>
+            <div>Saúde</div>
+          </div>`;
+
+        box.className = "";
+        box.innerHTML = '<div class="usage-scroll">' + head + sorted.map((m) => {
+          const quota = m.quota;
+          const failed = Number(m.errors) > 0;
+          const health = quota && quota.exhausted
+            ? '<span class="badge" style="color:var(--red);border-color:rgba(242,100,95,.4);">Esgotado</span>'
+            : failed
+              ? `<span class="badge" style="color:var(--yellow);border-color:rgba(232,181,58,.4);">${fmtPct(m.successRate)}</span>`
+              : `<span class="badge auto">${fmtPct(m.successRate)}</span>`;
+          return `
+            <div class="usage-row usage-model-grid">
+              <div>
+                <div class="usage-model" title="${escapeHtml(m.model)}">${escapeHtml(m.model)}</div>
+                <div class="usage-sub">${escapeHtml(m.provider || "—")} · ${usageModeBadge(m.predominantMode)}</div>
+              </div>
+              <div class="usage-cell usage-num">${fmtInt(m.requests)}</div>
+              <div class="usage-cell usage-num">${fmtInt(m.tokensPrompt)}</div>
+              <div class="usage-cell usage-num">${fmtInt(m.tokensCompletion)}</div>
+              <div class="usage-model usage-num">${fmtInt(m.tokens)}</div>
+              <div>${usageQuotaCell(quota)}</div>
+              <div class="usage-cell usage-num" title="p95: ${fmtInt(m.p95LatencyMs)} ms">${fmtInt(m.avgLatencyMs)} ms</div>
+              <div>${health}</div>
+            </div>`;
+        }).join("") + "</div>";
+      }
+
+      function renderUsageAdvanced(data) {
+        const s = data.summary || {};
+        const rate = data.rate || {};
+        const quota = data.quota || {};
+
+        $("#uaPrompt").textContent = fmtInt(s.tokensPrompt);
+        $("#uaPromptSub").textContent = `Média: ${fmtInt(s.avgTokensPerRequest)} tokens por requisição`;
+        $("#uaCompletion").textContent = fmtInt(s.tokensCompletion);
+        $("#uaCompletionSub").textContent = `Total: ${fmtInt(s.totalTokens)} tokens`;
+        $("#uaLatency").textContent = `${fmtInt(s.p50LatencyMs)} / ${fmtInt(s.p95LatencyMs)} ms`;
+        $("#uaLatencySub").textContent = `Média: ${fmtInt(s.avgLatencyMs)} ms`;
+        $("#uaFailovers").textContent = fmtInt(s.failovers);
+        $("#uaFailoverSub").textContent = `${fmtPct(s.autoRate)} do tráfego em modo auto`;
+        $("#uaSuccess").textContent = fmtPct(s.successRate);
+        $("#uaSuccessSub").textContent = `${fmtInt(s.totalErrors)} erro(s) em ${fmtInt(s.totalRequests)} requisições`;
+        $("#uaNoTokens").textContent = fmtInt(s.requestsWithoutTokens);
+        $("#uaNoTokensSub").textContent = "Respostas streaming/erros sem usage reportado";
+        $("#uaUniques").textContent = `${fmtInt(s.uniqueModels)} / ${fmtInt(s.uniqueProviders)}`;
+        $("#uaUniquesSub").textContent = "Modelos finais / provedores distintos";
+        $("#uaQuotaWindow").textContent = quota.windowHours != null ? quota.windowHours + "h" : "—";
+        $("#uaQuotaWindowSub").textContent = quota.enabled === false
+          ? "Quota tracking desligado"
+          : `${fmtInt((quota.models || []).length)} modelo(s) rastreado(s)`;
+
+        const providers = data.providers || [];
+        const pBox = $("#uaProviders");
+        if (!providers.length) {
+          pBox.className = "note";
+          pBox.textContent = "Sem dados de uso no período selecionado.";
+        } else {
+          pBox.className = "";
+          pBox.innerHTML = '<div class="usage-scroll">' + `
+            <div class="usage-row usage-head usage-provider-grid">
+              <div>Provedor</div>
+              <div>Req</div>
+              <div>Erros</div>
+              <div>Sucesso</div>
+              <div>Tokens</div>
+              <div>Entrada / Saída</div>
+              <div>Modelos</div>
+              <div>Latência</div>
+            </div>` + providers.map((p) => `
+              <div class="usage-row usage-provider-grid">
+                <div class="usage-model" title="${escapeHtml(p.provider)}">${escapeHtml(p.provider)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.requests)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.errors)}</div>
+                <div class="usage-cell usage-num">${fmtPct(p.successRate)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.tokens)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.tokensPrompt)} / ${fmtInt(p.tokensCompletion)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.models)}</div>
+                <div class="usage-cell usage-num">${fmtInt(p.avgLatencyMs)} ms</div>
+              </div>`).join("") + "</div>";
+        }
+
+        const timeline = data.timeline || [];
+        const tBox = $("#uaTimeline");
+        if (!timeline.length) {
+          tBox.className = "note";
+          tBox.textContent = "Sem dados de uso no período selecionado.";
+        } else {
+          const maxReq = Math.max(1, ...timeline.map((t) => Number(t.requests) || 0));
+          tBox.className = "";
+          tBox.innerHTML = '<div class="usage-timeline">' + timeline.map((t) => {
+            const height = t.requests ? Math.max(2, Math.round((t.requests / maxReq) * 100)) : 0;
+            const title = `${t.label}: ${fmtInt(t.requests)} req · ${fmtInt(t.tokens)} tokens${t.errors ? ` · ${fmtInt(t.errors)} erro(s)` : ""}`;
+            return `
+              <div class="timeline-col" title="${escapeHtml(title)}">
+                <div class="timeline-value">${t.requests ? fmtInt(t.requests) : ""}</div>
+                <div class="timeline-track">
+                  <div class="timeline-bar ${t.errors ? "has-error" : ""}" style="height:${height}%"></div>
+                </div>
+                <div class="timeline-label">${escapeHtml(t.label)}</div>
+              </div>`;
+          }).join("") + "</div>";
+        }
+
+        const quotaModels = quota.models || [];
+        const qBox = $("#uaQuota");
+        if (!quotaModels.length) {
+          qBox.className = "note";
+          qBox.textContent = "Nenhuma cota observada ainda.";
+        } else {
+          qBox.className = "";
+          qBox.innerHTML = '<div class="usage-scroll">' + `
+            <div class="usage-row usage-head usage-quota-grid">
+              <div>Modelo</div>
+              <div>Req</div>
+              <div>Tokens na janela</div>
+              <div>Limite tokens</div>
+              <div>Restante</div>
+              <div>Limite req</div>
+              <div>Status</div>
+            </div>` + quotaModels.map((q) => {
+              const remaining = q.learnedLimitTokens > 0
+                ? Math.max(0, q.learnedLimitTokens - q.tokens)
+                : null;
+              const status = q.exhausted
+                ? `<span style="color:var(--red);">Esgotado · ${fmtDuration(q.exhaustedUntil - Date.now())}</span>`
+                : q.lastErrorAt
+                  ? "Cota recuperada"
+                  : "OK";
+              return `
+                <div class="usage-row usage-quota-grid">
+                  <div class="usage-model" title="${escapeHtml(q.modelId)}">${escapeHtml(q.modelId)}</div>
+                  <div class="usage-cell usage-num">${fmtInt(q.requests)}</div>
+                  <div class="usage-cell usage-num">${fmtInt(q.tokens)}</div>
+                  <div class="usage-cell usage-num">${q.learnedLimitTokens > 0 ? fmtInt(q.learnedLimitTokens) : "—"}</div>
+                  <div class="usage-cell usage-num">${remaining != null ? fmtInt(remaining) : "—"}</div>
+                  <div class="usage-cell usage-num">${q.learnedLimitRequests > 0 ? fmtInt(q.learnedLimitRequests) : "—"}</div>
+                  <div class="usage-cell">${status}</div>
+                </div>`;
+            }).join("") + "</div>";
+        }
+
+        const rateKeys = rate.keys || [];
+        const rBox = $("#uaRate");
+        if (!rateKeys.length) {
+          rBox.className = "note";
+          rBox.textContent = rate.enabled === false
+            ? "Rate limit tracking desligado."
+            : "Nenhuma chave com tráfego na janela atual.";
+        } else {
+          rBox.className = "";
+          rBox.innerHTML = '<div class="usage-scroll">' + `
+            <div class="usage-row usage-head usage-rate-grid">
+              <div>Chave (provedor::conta)</div>
+              <div>Req / min</div>
+              <div>Tokens / min</div>
+              <div>RPM</div>
+              <div>TPM</div>
+            </div>` + rateKeys.map((k) => `
+              <div class="usage-row usage-rate-grid">
+                <div class="usage-model" title="${escapeHtml(k.key)}">${escapeHtml(k.key)}</div>
+                <div class="usage-cell usage-num">${fmtInt(k.requests)}</div>
+                <div class="usage-cell usage-num">${fmtInt(k.tokens)}</div>
+                <div class="usage-cell usage-num">${fmtInt(rate.rpm)}</div>
+                <div class="usage-cell usage-num">${fmtInt(rate.tpm)}</div>
+              </div>`).join("") + "</div>";
+        }
+
+        const transitions = data.transitions || [];
+        const trBox = $("#uaTransitions");
+        if (!transitions.length) {
+          trBox.className = "note";
+          trBox.textContent = "Nenhuma transição registrada.";
+        } else {
+          trBox.className = "";
+          trBox.innerHTML = '<div class="usage-scroll">' + `
+            <div class="usage-row usage-head usage-transition-grid">
+              <div>Modelo Pedido</div>
+              <div>Modelo Final</div>
+              <div>Provedor</div>
+              <div>Modo</div>
+              <div>Ocorrências</div>
+            </div>` + transitions.map((t) => `
+              <div class="usage-row usage-transition-grid">
+                <div class="usage-model" title="${escapeHtml(t.requested)}">${escapeHtml(t.requested)}</div>
+                <div class="usage-cell" title="${escapeHtml(t.final)}">${escapeHtml(t.final)}</div>
+                <div class="usage-cell">${escapeHtml(t.provider || "—")}</div>
+                <div>${usageModeBadge(t.mode)}</div>
+                <div class="usage-cell usage-num">${fmtInt(t.count)}</div>
+              </div>`).join("") + "</div>";
+        }
+      }
+
+      async function loadUsageAdvanced() {
+        const period = $("#usagePeriod")?.value || "all";
+        if (loadUsageAdvanced._inflight) return;
+        loadUsageAdvanced._inflight = true;
+        try {
+          const res = await fetch(`/api/usage/advanced?period=${encodeURIComponent(period)}`);
+          if (!res.ok) throw new Error(String(res.status));
+          const data = await res.json();
+          usageAdvancedCache = data;
+          renderUsageModels(data);
+          renderUsageAdvanced(data);
+          usageStamp();
+        } catch {
+          const box = $("#umList");
+          if (box) {
+            box.className = "note";
+            box.textContent = "Falha ao carregar o consumo por modelo (verifique a API key do painel).";
+          }
+          ["#uaProviders", "#uaTimeline", "#uaQuota", "#uaRate", "#uaTransitions"].forEach((sel) => {
+            const el = $(sel);
+            if (el) {
+              el.className = "note";
+              el.textContent = "Falha ao carregar as informações avançadas.";
+            }
+          });
+        } finally {
+          loadUsageAdvanced._inflight = false;
+        }
+      }
+
       // ---------- Init ----------
       initSettings();
       loadRoutingSettings();
@@ -11259,7 +11904,7 @@ for await (const chunk of stream) {
       // servindo para forçar na hora e o seletor de período para recortar.
       setInterval(() => {
         const active = document.querySelector('#tab-usage.active');
-        if (active) loadUsageDashboard();
+        if (active) refreshUsageTab();
       }, 10000);
 
       // SSE: ao salvar/ligar/desligar provedores no dashboard, atualiza na hora

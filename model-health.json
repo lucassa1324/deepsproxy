@@ -1,0 +1,500 @@
+{
+  "version": 1,
+  "savedAt": 1792935223799,
+  "models": {
+    "auto": {
+      "status": "working",
+      "lastTested": 1792935181637
+    },
+    "auto-free": {
+      "status": "working",
+      "lastTested": 1792935181637
+    },
+    "deepseek-thinking": {
+      "status": "working",
+      "lastTested": 1792935181799,
+      "providerId": "env_deepseek",
+      "providerType": "deepseek"
+    },
+    "deepseek-no-thinking": {
+      "status": "working",
+      "lastTested": 1792935181799,
+      "providerId": "env_deepseek",
+      "providerType": "deepseek"
+    },
+    "qwen3.7-plus": {
+      "status": "broken",
+      "lastTested": 1792935182216,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "qwen3.8-max": {
+      "status": "broken",
+      "lastTested": 1792935182358,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "qwen3.8-omni-flash": {
+      "status": "broken",
+      "lastTested": 1792935182780,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "qwen3.7-plus-no-thinking": {
+      "status": "broken",
+      "lastTested": 1792935182769,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "qwen3.8-max-no-thinking": {
+      "status": "broken",
+      "lastTested": 1792935183175,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "qwen3.8-omni-flash-no-thinking": {
+      "status": "broken",
+      "lastTested": 1792935183343,
+      "error": "Nenhum provedor encontrado para este modelo"
+    },
+    "gemini-2.5-flash-preview-tts": {
+      "status": "broken",
+      "lastTested": 1792935183855,
+      "error": "HTTP 400 [{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"The requested combination of response modalities (TEXT) is not supporte",
+      "latencyMs": 521,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-2.5-pro-preview-tts": {
+      "status": "broken",
+      "lastTested": 1792935183813,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 312,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemma-4-26b-a4b-it": {
+      "status": "working",
+      "lastTested": 1792935185034,
+      "latencyMs": 843,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemma-4-31b-it": {
+      "status": "working",
+      "lastTested": 1792935191026,
+      "latencyMs": 6704,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-flash-latest": {
+      "status": "broken",
+      "lastTested": 1792935193195,
+      "error": "Timeout no teste",
+      "latencyMs": 8008,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-flash-lite-latest": {
+      "status": "working",
+      "lastTested": 1792935191803,
+      "latencyMs": 616,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-pro-latest": {
+      "status": "broken",
+      "lastTested": 1792935192261,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 292,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-2.5-flash-lite": {
+      "status": "broken",
+      "lastTested": 1792935192859,
+      "error": "HTTP 404 [{\n  \"error\": {\n    \"code\": 404,\n    \"message\": \"This model models/gemini-2.5-flash-lite is no longer available to new u",
+      "latencyMs": 434,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-2.5-flash-image": {
+      "status": "broken",
+      "lastTested": 1792935193325,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 304,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3-flash-preview": {
+      "status": "working",
+      "lastTested": 1792935201264,
+      "latencyMs": 7913,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-pro-preview": {
+      "status": "broken",
+      "lastTested": 1792935193781,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 290,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-pro-preview-customtools": {
+      "status": "broken",
+      "lastTested": 1792935194229,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 284,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-lite-preview": {
+      "status": "working",
+      "lastTested": 1792935194867,
+      "latencyMs": 487,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-lite": {
+      "status": "working",
+      "lastTested": 1792935195529,
+      "latencyMs": 505,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3-pro-image-preview": {
+      "status": "broken",
+      "lastTested": 1792935195967,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 284,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3-pro-image": {
+      "status": "broken",
+      "lastTested": 1792935196410,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 287,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "nano-banana-pro-preview": {
+      "status": "broken",
+      "lastTested": 1792935197129,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 304,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-image-preview": {
+      "status": "broken",
+      "lastTested": 1792935197570,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 281,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-image": {
+      "status": "broken",
+      "lastTested": 1792935198025,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 297,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-lite-image": {
+      "status": "broken",
+      "lastTested": 1792935198462,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 281,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-nano-banana-2.1": {
+      "status": "broken",
+      "lastTested": 1792935198900,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 281,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.5-flash": {
+      "status": "working",
+      "lastTested": 1792935199906,
+      "latencyMs": 853,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.5-flash-lite": {
+      "status": "working",
+      "lastTested": 1792935200732,
+      "latencyMs": 670,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-omni-flash-preview": {
+      "status": "broken",
+      "lastTested": 1792935201180,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 292,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-omni-1.1-flash": {
+      "status": "broken",
+      "lastTested": 1792935201607,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 264,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.5-transcribe": {
+      "status": "working",
+      "lastTested": 1792935201748,
+      "latencyMs": 328,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.6-flash": {
+      "status": "working",
+      "lastTested": 1792935203086,
+      "latencyMs": 1324,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.7-flash": {
+      "status": "broken",
+      "lastTested": 1792935209904,
+      "error": "Timeout no teste",
+      "latencyMs": 8004,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.8-flash": {
+      "status": "broken",
+      "lastTested": 1792935211246,
+      "error": "Timeout no teste",
+      "latencyMs": 8010,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-4-argon": {
+      "status": "broken",
+      "lastTested": 1792935210517,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 457,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "lyria-3-clip-preview": {
+      "status": "broken",
+      "lastTested": 1792935211309,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 275,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "lyria-3-pro-preview": {
+      "status": "broken",
+      "lastTested": 1792935212257,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 417,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "lyria-3.5": {
+      "status": "broken",
+      "lastTested": 1792935211974,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 286,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.1-flash-tts-preview": {
+      "status": "broken",
+      "lastTested": 1792935212826,
+      "error": "HTTP 400 [{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"Request contains an invalid argument.\",\n    \"status\": \"INVALID_ARGUMENT",
+      "latencyMs": 694,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.8-flash-tts": {
+      "status": "working",
+      "lastTested": 1792935213190,
+      "latencyMs": 777,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-3.8-flash-lite-tts": {
+      "status": "working",
+      "lastTested": 1792935213471,
+      "latencyMs": 480,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-robotics-er-2-preview": {
+      "status": "working",
+      "lastTested": 1792935214031,
+      "latencyMs": 690,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-2.5-computer-use-preview-10-2025": {
+      "status": "broken",
+      "lastTested": 1792935213904,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 281,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "antigravity-preview-05-2026": {
+      "status": "broken",
+      "lastTested": 1792935214967,
+      "error": "HTTP 400 [{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"This model only supports Interactions API.\",\n    \"status\": \"INVALID_ARG",
+      "latencyMs": 550,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "antigravity-preview-09-2026": {
+      "status": "broken",
+      "lastTested": 1792935215068,
+      "error": "HTTP 400 [{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"This model only supports Interactions API.\",\n    \"status\": \"INVALID_ARG",
+      "latencyMs": 644,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "antigravity-preview-latest": {
+      "status": "broken",
+      "lastTested": 1792935216015,
+      "error": "HTTP 400 [{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"This model only supports Interactions API.\",\n    \"status\": \"INVALID_ARG",
+      "latencyMs": 666,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "deep-research-max-preview-04-2026": {
+      "status": "broken",
+      "lastTested": 1792935216100,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 630,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "deep-research-preview-04-2026": {
+      "status": "broken",
+      "lastTested": 1792935217022,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 606,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "deep-research-pro-preview-12-2025": {
+      "status": "broken",
+      "lastTested": 1792935216802,
+      "error": "HTTP 429 [{\n  \"error\": {\n    \"code\": 429,\n    \"message\": \"You exceeded your current quota, please check your plan and billing det",
+      "latencyMs": 300,
+      "providerId": "pv_msnv9i51",
+      "providerType": "gemini"
+    },
+    "gemini-2.5-flash": {
+      "status": "working",
+      "lastTested": 1792935216958,
+      "providerId": "builtin_gemini_web",
+      "providerType": "gemini-web"
+    },
+    "gemini-2.5-pro": {
+      "status": "working",
+      "lastTested": 1792935217113,
+      "providerId": "builtin_gemini_web",
+      "providerType": "gemini-web"
+    },
+    "gemini-3-flash": {
+      "status": "working",
+      "lastTested": 1792935217177,
+      "providerId": "builtin_gemini_web",
+      "providerType": "gemini-web"
+    },
+    "gemini-3-pro": {
+      "status": "working",
+      "lastTested": 1792935217270,
+      "providerId": "builtin_gemini_web",
+      "providerType": "gemini-web"
+    },
+    "whisper-large-v3": {
+      "status": "broken",
+      "lastTested": 1792935217662,
+      "error": "HTTP 400 {\"error\":{\"message\":\"The model `whisper-large-v3` does not support chat completions\",\"type\":\"invalid_request_error\"}}\n",
+      "latencyMs": 105,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "openai/gpt-oss-120b": {
+      "status": "working",
+      "lastTested": 1792935218006,
+      "latencyMs": 352,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "canopylabs/orpheus-v1-english": {
+      "status": "broken",
+      "lastTested": 1792935218306,
+      "error": "HTTP 400 {\"error\":{\"message\":\"The model `canopylabs/orpheus-v1-english` requires terms acceptance. Please have the org admin acce",
+      "latencyMs": 70,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "allam-2-7b": {
+      "status": "working",
+      "lastTested": 1792935218947,
+      "latencyMs": 346,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "openai/gpt-oss-safeguard-20b": {
+      "status": "working",
+      "lastTested": 1792935223382,
+      "latencyMs": 4687,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "canopylabs/orpheus-arabic-saudi": {
+      "status": "broken",
+      "lastTested": 1792935219407,
+      "error": "HTTP 400 {\"error\":{\"message\":\"The model `canopylabs/orpheus-arabic-saudi` requires terms acceptance. Please have the org admin ac",
+      "latencyMs": 70,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "meta-llama/llama-prompt-guard-2-22m": {
+      "status": "working",
+      "lastTested": 1792935220273,
+      "latencyMs": 364,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "whisper-large-v3-turbo": {
+      "status": "broken",
+      "lastTested": 1792935220725,
+      "error": "HTTP 400 {\"error\":{\"message\":\"The model `whisper-large-v3-turbo` does not support chat completions\",\"type\":\"invalid_request_error",
+      "latencyMs": 69,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "openai/gpt-oss-20b": {
+      "status": "working",
+      "lastTested": 1792935221531,
+      "latencyMs": 300,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "meta-llama/llama-prompt-guard-2-86m": {
+      "status": "working",
+      "lastTested": 1792935222296,
+      "latencyMs": 376,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    },
+    "qwen/qwen3.8-27b": {
+      "status": "working",
+      "lastTested": 1792935222961,
+      "latencyMs": 279,
+      "providerId": "pv_mtoxpqw5",
+      "providerType": "openai-compatible"
+    }
+  }
+}

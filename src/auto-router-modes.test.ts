@@ -103,6 +103,41 @@ test('filtro rígido: contexto insuficiente é excluído', () => {
   assert.ok(result.exclusions?.some((e) => e.modelId === 'small-ctx' && /contexto/.test(e.reason)));
 });
 
+test('filtro não-chat: TTS/imagem/música/transcrição/deep-research não são candidatos', () => {
+  // Modelos que herdam capacidade alta pelo nome e custo 0, mas não atendem
+  // /v1/chat/completions — antes venciam o score de tarefas comuns.
+  const nonChat = [
+    'gemini-2.5-pro-preview-tts',
+    'gemini-2.5-flash-preview-tts',
+    'gemini-2.5-flash-image',
+    'imagen-4.0-generate-001',
+    'lyria-3-pro-preview',
+    'veo-3.0-generate-preview',
+    'gemini-2.5-flash-preview-native-audio-dialog',
+    'whisper-large-v3',
+    'text-embedding-004',
+    'deep-research-pro-preview',
+    'computer-use-preview',
+  ];
+  const models = [...nonChat.map((id) => model(id)), model('gemini-2.5-pro-chat')];
+  const result = selectBestModel(models, classification({}), CONFIG);
+
+  assert.strictEqual(result.selectedModelId, 'gemini-2.5-pro-chat');
+  for (const id of nonChat) {
+    assert.ok(
+      result.exclusions?.some((e) => e.modelId === id && /não-conversável/.test(e.reason)),
+      `${id} deveria ter sido excluído como não-conversável`
+    );
+  }
+});
+
+test('filtro não-chat: só modelos não-conversáveis => falha explícita', () => {
+  const models = [model('gemini-2.5-flash-image'), model('lyria-3-pro-preview')];
+  const result = selectBestModel(models, classification({}), CONFIG);
+  assert.strictEqual(result.selectedModelId, '');
+  assert.match(result.reason, /não-conversável/);
+});
+
 test('routeRequest: costPolicy do registro sobrepõe a config global', () => {
   registerModel('mode-free', {
     providerId: 'p-free',

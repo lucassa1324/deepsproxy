@@ -273,8 +273,19 @@ function scoreModel(
 
 // ── Filtragem rígida (política de custo + requisitos) ───────────────────
 
-/** Ids de modelos que nunca devem ser candidatos a chat no modo automático. */
-export const NON_CHAT_MODEL_PATTERN = /prompt-guard|moderation|moderator|embedding|whisper|text-to-speech|tts/i;
+/**
+ * Ids/nomes de modelos que JAMAIS podem virar candidatos a chat no modo
+ * automático. O catálogo dos provedores lista, junto com os modelos de texto,
+ * modelos que NÃO atendem /v1/chat/completions: voz (TTS/STT/transcrição),
+ * imagem/vídeo, música (lyria), embeddings/rerank, guardas de moderação e
+ * agentes especializados (deep-research, computer-use). Eles herdam capacidade
+ * alta do próprio nome ("gemini", "pro") e custo 0 por falta de preço, então
+ * venceriam o score de tarefas comuns (ex.: gemini-2.5-flash-image numa tarefa
+ * de código, ou gemini-2.5-pro-preview-tts numa conta simples). Excluir ANTES
+ * de pontuar evita 400/404 garantidos e desvios grosseiros de roteamento.
+ */
+export const NON_CHAT_MODEL_PATTERN =
+  /prompt-guard|guard|moderation|moderator|embedding|embed-|rerank|whisper|tts|text-to-speech|speech-to-text|transcribe|transcription|audio|image|imagen|lyria|veo|dall-e|deep-research|computer-use|aqa/i;
 
 function filterCandidates(
   models: ModelMetadata[],
@@ -289,12 +300,13 @@ function filterCandidates(
     const reasons: string[] = [];
 
     if (!model.isAvailable) reasons.push('indisponível');
-    // Modelos não-conversáveis (guardas de prompt, moderação, STT/TTS,
-    // embeddings) aparecem no catálogo do provedor, mas JAMAIS atendem um
-    // chat — excluir antes de pontuar evita tentativas com 400 garantido
-    // (ex.: llama-prompt-guard do Groq tentado como modelo de programação).
+    // Modelos não-conversáveis (guarda de prompt, moderação, TTS/STT/áudio,
+    // imagem/vídeo/música, embeddings, agentes especializados) aparecem no
+    // catálogo do provedor, mas JAMAIS atendem um chat — excluir antes de
+    // pontuar evita tentativas com 400 garantido (ex.: llama-prompt-guard do
+    // Groq ou gemini-2.5-flash-image tentados como modelo de programação).
     if (NON_CHAT_MODEL_PATTERN.test(model.id) || NON_CHAT_MODEL_PATTERN.test(model.name || '')) {
-      reasons.push('modelo não-conversável (guarda/moderação/STT/TTS)');
+      reasons.push('modelo não-conversável (voz/imagem/embedding/especializado)');
     }
     if (config.costPolicy === 'free-only' && !model.isFree) reasons.push('política free-only (modelo pago)');
     if (config.costPolicy === 'paid-only' && model.isFree) reasons.push('política paid-only (modelo gratuito)');

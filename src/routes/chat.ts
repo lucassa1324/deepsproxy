@@ -81,6 +81,8 @@ import {
   recordSuccessfulModel,
 } from '../services/context-handoff.ts';
 import { isFusionModel, runFusionChat } from '../services/fusion.ts';
+import { debugSession } from '../services/debug-session.ts';
+import { injectActiveSkills } from '../services/skills-store.ts';
 
 interface DeepSeekAccumulated {
   reasoning: string;
@@ -609,6 +611,29 @@ async function resolveAutoModel(
     }
   );
 
+  try {
+    debugSession.record({
+      type: 'router:decision',
+      requestId,
+      appId: gwEntry?.id || null,
+      appName: gwEntry?.name || null,
+      modelRequested: body.model,
+      modelSelected: decision.selectedModelId,
+      strategy: (decision as any).strategy || 'auto-router',
+      reason: decision.reason,
+      usedOrchestrator: (decision as any).usedOrchestrator || false,
+      activity: (decision as any).taskClassification?.description || (decision as any).task || null,
+      details: {
+        selectedModelName: decision.selectedModelName,
+        considered: decision.consideredModels ?? availableModels.length,
+        excluded: decision.exclusions?.length ?? 0,
+        exclusions: (decision.exclusions || []).map((e: any) => ({ modelId: e.modelId, reason: e.reason })),
+        isBrowserOnly,
+        hasTools: hasTools(body),
+      },
+    });
+  } catch {}
+
   recordRoutingDiagnostic({
     at: Date.now(),
     requestId,
@@ -928,6 +953,22 @@ export async function chatCompletions(c: Context) {
     const successModelKey = (modelId?: string) => `${activeProviderName ?? 'unknown'}/${modelId ?? body.model}`;
     const rememberSuccess = (modelId?: string) => recordSuccessfulModel({ sessionKey, modelKey: successModelKey(modelId) });
 
+    // Debug Session: registrar início da requisição
+    try {
+      const gwEntryDbg = (c as any).get('gatewayAppEntry') as GatewayApp | undefined;
+      debugSession.record({
+        type: 'request:start',
+        requestId,
+        appId: gwEntryDbg?.id || null,
+        appName: gwEntryDbg?.name || null,
+        port: (c as any).req?.raw?.url?.includes(':3006') ? 3006 : ((c as any).req?.url?.includes(':3006') ? 3006 : (process.env.GATEWAY_PORT ? parseInt(process.env.GATEWAY_PORT) : null)),
+        path: c.req.path,
+        method: c.req.method,
+        modelRequested: body.model,
+        details: { stream: isStream },
+      });
+    } catch {}
+
     // Sanitização de prompt do Gateway Puro: injeta a diretiva ANTI-LAZY &
     // AGENTIC EXECUTION no INÍCIO do system message de TODAS as requisições
     // que atravessam o proxy (idempotente). O I/O local de arquivos foi
@@ -1021,6 +1062,14 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
         }
       }
     }
+
+    // Injeção de skills da Loja (aplica em 3005 e 3006 conforme escopo da skill)
+    try {
+      const portCtx: 3005 | 3006 = gwEntry ? 3006 : 3005;
+      if (Array.isArray(body.messages)) {
+        body.messages = injectActiveSkills(body.messages as any, portCtx) as any;
+      }
+    } catch {}
 
     // ── Fusion multi-modelo: modelo virtual "fusion[:m1,m2,m3]" que roda a
     // banca em paralelo e sintetiza a resposta. Roda DEPOIS da injeção do
@@ -1690,6 +1739,18 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
       // Stream concluído com sucesso: registra o modelo como bom para o handoff.
       rememberSuccess();
 
+      try {
+        debugSession.record({
+          type: 'request:end',
+          requestId,
+          modelSelected: body.model,
+          provider: activeProviderName || null,
+          status: 200,
+          latencyMs: Date.now() - startedAt,
+          details: { stream: true, tokens: completionTokens + promptTokens },
+        });
+      } catch {}
+
       console.log(
         `[chat] done model=${body.model} ${Date.now() - startedAt}ms tokens=${completionTokens + promptTokens} finish=${finalFinishReason}`
       );
@@ -1697,6 +1758,17 @@ BUSCA POR CURINGA (Wildcard Search) — OBRIGATÓRIA EM FALHA DE CAMINHO EXATO:
   } catch (err: any) {
     console.error('Error in chatCompletions:', err);
     reportAutoOutcome(autoRouted, false, err?.message);
+    try {
+      debugSession.record({
+        type: 'request:end',
+        requestId,
+        modelSelected: (body as any)?.model || null,
+        provider: activeProviderName || null,
+        status: 500,
+        latencyMs: Date.now() - startedAt,
+        error: err?.message || String(err),
+      });
+    } catch {}
     return c.json({ error: { message: err.message } }, 500);
   }
 }

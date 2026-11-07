@@ -170,12 +170,12 @@ function openFile(filePath: string, platform: NodeJS.Platform = process.platform
   }
 }
 
-/* ------------------- auto-atualização (portátil Windows) ------------------- */
+/* ------------------- auto-atualização (portátil Windows/Linux) ------------------- */
 
 const UPDATE_DIR = path.join(os.tmpdir(), 'deepsproxy-update');
 
-// Arquivos/dirs criados pelo usuário que DEVM ser preservados no swap.
-const USER_FILES = ['providers.json', 'gateway-apps.json', 'gateway-economy.json', 'gateway-booster.json'];
+// Arquivos/dirs criados pelo usuário que DEVEM ser preservados no swap.
+const USER_FILES = ['providers.json', 'gateway-apps.json', 'gateway-economy.json', 'gateway-booster.json', 'skills-store.json', 'skills-store.sqlite', '.env'];
 const PROFILE_DIRS = ['deepseek_profile', 'qwen_profile', 'gemini_profile'];
 
 function psQuote(p: string): string {
@@ -195,6 +195,19 @@ export function extractZip(zipPath: string, destDir: string): void {
   if (ps.error || ps.status !== 0) {
     throw new Error(`Falha ao extrair o pacote de atualização (${ps.error?.message ?? `status ${ps.status}`})`);
   }
+}
+
+export function extractTarGz(tarPath: string, destDir: string): void {
+  fs.mkdirSync(destDir, { recursive: true });
+  const r = spawnSync('tar', ['-xzf', tarPath, '-C', destDir], { stdio: 'ignore' });
+  if (r.error || r.status !== 0) {
+    throw new Error(`Falha ao extrair o pacote .tar.gz (${r.error?.message ?? `status ${r.status}`})`);
+  }
+}
+
+function extractPackage(pkgPath: string, destDir: string): void {
+  if (/\.tar\.gz$|\.tgz$/i.test(pkgPath)) return extractTarGz(pkgPath, destDir);
+  return extractZip(pkgPath, destDir);
 }
 
 /** Se o zip tem uma única pasta raiz (padrão do build), retorna essa pasta; senão, o próprio dir. */
@@ -273,51 +286,106 @@ Log 'fim'
 `;
 }
 
+export function updaterScriptLinux(): string {
+  return `#!/usr/bin/env bash
+set -u
+APP="$DEEPSPROXY_UPDATE_APP"
+STAGED="$DEEPSPROXY_UPDATE_STAGED"
+LOG="$DEEPSPROXY_UPDATE_LOG"
+NODE_PID="$DEEPSPROXY_UPDATE_NODE_PID"
+log(){ printf '%s %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG" 2>/dev/null || true; }
+log "inicio updater linux"
+deadline=$(($(date +%s)+300))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+  if [ -n "$NODE_PID" ] && kill -0 "$NODE_PID" 2>/dev/null; then sleep 0.5; else break; fi
+done
+if [ -n "$NODE_PID" ] && kill -0 "$NODE_PID" 2>/dev/null; then log "timeout esperando node"; exit 2; fi
+sleep 1
+# copia sobre o app preservando estrutura (staged contém a raiz do release)
+swapped=0
+for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+  if cp -a "$STAGED"/. "$APP"/ 2>>"$LOG"; then swapped=1; break; fi
+  log "tentativa $i falhou, aguardando..."
+  sleep 2
+done
+if [ "$swapped" -ne 1 ]; then log "falha final no swap"; exit 3; fi
+# garante permissão de execução
+chmod +x "$APP/deepsproxy" "$APP/node" 2>/dev/null || true
+log "swap ok, relancando"
+cd "$APP" || exit 4
+if [ -x "$APP/deepsproxy" ]; then
+  nohup "$APP/deepsproxy" start >> "$APP/server.log" 2>&1 &
+else
+  PLAYWRIGHT_BROWSERS_PATH="$APP/browsers" nohup "$APP/node" "$APP/dist/index.js" >> "$APP/server.log" 2>&1 &
+fi
+log "fim"
+`;
+}
+
 /**
- * Prepara e dispara a auto-atualização: extrai o zip baixado, preserva os
- * dados do usuário e sobe o updater detached. O servidor deve ser encerrado
- * logo após esta chamada para o updater conseguir trocar os arquivos.
+ * Prepara e dispara a auto-atualização: extrai o pacote baixado (.zip ou .tar.gz),
+ * preserva os dados do usuário e sobe o updater detached. O servidor deve ser
+ * encerrado logo após esta chamada para o updater conseguir trocar os arquivos.
  */
 export function applySelfUpdate(appDir: string): { ok: true; mode: 'self-update' } {
-  const zip = downloadedPath;
-  if (!zip || !fs.existsSync(zip)) throw new Error('Pacote de atualização ainda não foi baixado.');
+  const pkg = downloadedPath;
+  if (!pkg || !fs.existsSync(pkg)) throw new Error('Pacote de atualização ainda não foi baixado.');
 
+  const isLinuxPkg = /\.tar\.gz$|\.tgz$/i.test(pkg);
   const jobDir = path.join(UPDATE_DIR, `job-${process.pid}`);
   fs.rmSync(jobDir, { recursive: true, force: true });
   const extractDir = path.join(jobDir, 'unpacked');
-  extractZip(zip, extractDir);
+  extractPackage(pkg, extractDir);
 
   const stagedRoot = findTopDir(extractDir);
-  if (!fs.existsSync(path.join(stagedRoot, 'DeepsProxy.exe'))) {
-    throw new Error('O pacote de atualização não contém DeepsProxy.exe (formato inválido?).');
-  }
   if (!fs.existsSync(path.join(stagedRoot, 'dist', 'index.js'))) {
     throw new Error('O pacote de atualização está incompleto (dist/index.js ausente).');
   }
 
-  // Preserva .env, configs e perfis de login na versão nova.
+  // Validação por plataforma/pacote
+  if (!isLinuxPkg && process.platform === 'win32' && !fs.existsSync(path.join(stagedRoot, 'DeepsProxy.exe'))) {
+    throw new Error('O pacote .zip de atualização não contém DeepsProxy.exe (formato inválido?).');
+  }
+
+  // Preserva configs/perfis do usuário na versão nova.
   copyUserData(appDir, stagedRoot);
 
-  // Avisa o launcher da bandeja para encerrar de forma graciosa.
-  try { fs.writeFileSync(path.join(appDir, 'update.flag'), String(process.pid)); } catch {}
-
-  const scriptPath = path.join(jobDir, 'apply-update.ps1');
-  fs.writeFileSync(scriptPath, updaterScript(), 'utf-8');
   const logPath = path.join(jobDir, 'updater.log');
 
-  spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-    env: {
-      ...process.env,
-      DEEPSPROXY_UPDATE_APP: appDir,
-      DEEPSPROXY_UPDATE_STAGED: stagedRoot,
-      DEEPSPROXY_UPDATE_NODE_PID: String(process.pid),
-      DEEPSPROXY_UPDATE_LAUNCHER_PID: String(process.ppid ?? 0),
-      DEEPSPROXY_UPDATE_LOG: logPath,
-    },
-  }).unref();
+  if (process.platform !== 'win32' || isLinuxPkg) {
+    const scriptPath = path.join(jobDir, 'apply-update.sh');
+    fs.writeFileSync(scriptPath, updaterScriptLinux(), { encoding: 'utf-8', mode: 0o755 });
+    try { fs.chmodSync(scriptPath, 0o755); } catch {}
+    spawn('bash', [scriptPath], {
+      detached: true,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        DEEPSPROXY_UPDATE_APP: appDir,
+        DEEPSPROXY_UPDATE_STAGED: stagedRoot,
+        DEEPSPROXY_UPDATE_NODE_PID: String(process.pid),
+        DEEPSPROXY_UPDATE_LOG: logPath,
+      },
+    }).unref();
+  } else {
+    // Avisa o launcher da bandeja para encerrar de forma graciosa.
+    try { fs.writeFileSync(path.join(appDir, 'update.flag'), String(process.pid)); } catch {}
+    const scriptPath = path.join(jobDir, 'apply-update.ps1');
+    fs.writeFileSync(scriptPath, updaterScript(), 'utf-8');
+    spawn('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath], {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      env: {
+        ...process.env,
+        DEEPSPROXY_UPDATE_APP: appDir,
+        DEEPSPROXY_UPDATE_STAGED: stagedRoot,
+        DEEPSPROXY_UPDATE_NODE_PID: String(process.pid),
+        DEEPSPROXY_UPDATE_LAUNCHER_PID: String(process.ppid ?? 0),
+        DEEPSPROXY_UPDATE_LOG: logPath,
+      },
+    }).unref();
+  }
 
   return { ok: true, mode: 'self-update' };
 }
@@ -353,12 +421,12 @@ updateApp.post('/api/update/launch', async (c) => {
   if (!downloadedPath || !fs.existsSync(downloadedPath)) {
     return c.json({ ok: false, error: 'Instalador ainda não foi baixado.' }, 400);
   }
-  // Modo portátil Windows (launcher 'DeepsProxy.exe' junto ao servidor):
-  // auto-atualização — troca os arquivos e reinicia sozinho.
   const appDir = process.cwd();
-  const packaged =
-    fs.existsSync(path.join(appDir, 'DeepsProxy.exe')) && fs.existsSync(path.join(appDir, 'node.exe'));
-  if (packaged && /\.zip$/i.test(downloadedPath)) {
+  const packagedWin = fs.existsSync(path.join(appDir, 'DeepsProxy.exe')) && fs.existsSync(path.join(appDir, 'node.exe'));
+  const packagedLinux = process.platform !== 'win32' && fs.existsSync(path.join(appDir, 'node')) && fs.existsSync(path.join(appDir, 'dist', 'index.js')) && (fs.existsSync(path.join(appDir, 'deepsproxy')) || fs.existsSync(path.join(appDir, 'package.json')));
+  const isZip = /\.zip$/i.test(downloadedPath);
+  const isTar = /\.tar\.gz$|\.tgz$/i.test(downloadedPath);
+  if ((packagedWin && isZip) || (packagedLinux && isTar)) {
     try {
       const r = applySelfUpdate(appDir);
       // Responde antes de encerrar o servidor; o updater espera o node sair.
@@ -368,10 +436,10 @@ updateApp.post('/api/update/launch', async (c) => {
       return c.json({ ok: false, error: String(err?.message ?? err) }, 500);
     }
   }
-  // Fallback (desenvolvimento, asset .exe ou Linux): apenas abre o arquivo.
+  // Fallback (desenvolvimento, asset .exe, ou não-portátil): apenas abre o arquivo.
   try {
     openFile(downloadedPath);
-    return c.json({ ok: true });
+    return c.json({ ok: true, mode: 'open' });
   } catch (err: any) {
     return c.json({ ok: false, error: String(err?.message ?? err) }, 500);
   }

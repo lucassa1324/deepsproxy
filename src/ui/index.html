@@ -4772,6 +4772,54 @@
         gap: 8px;
       }
     }
+
+    .debug-feed{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto;padding:12px;background:var(--panel-2);border:1px solid var(--border);border-radius:12px}
+    .debug-feed::-webkit-scrollbar{width:8px}
+    .debug-feed::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:8px}
+    .debug-empty{color:var(--text-sub);text-align:center;padding:18px}
+    .debug-item{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,.01),rgba(255,255,255,.00))}
+    .debug-item.ok{border-color:rgba(60,180,120,.45)}
+    .debug-item.err{border-color:rgba(255,90,90,.5)}
+    .debug-item.warn{border-color:rgba(255,200,80,.4)}
+    .debug-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    .debug-title{display:flex;align-items:center;gap:8px;font-weight:600}
+    .debug-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--text-sub);font-size:12px}
+    .debug-tags{display:flex;gap:6px;flex-wrap:wrap}
+    .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);font-size:11px;color:var(--text-sub)}
+    .tag.ok{color:rgba(120,220,160,.9);border-color:rgba(60,180,120,.5)}
+    .tag.err{color:rgba(255,110,110,.95);border-color:rgba(255,90,90,.55)}
+    .tag.warn{color:rgba(255,210,120,.95);border-color:rgba(255,200,80,.5)}
+    .tag.info{color:rgba(160,190,255,.95);border-color:rgba(120,150,255,.5)}
+    .debug-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 12px}
+    .debug-kv{display:flex;gap:8px;align-items:baseline}
+    .debug-k{color:var(--text-sub);min-width:90px}
+    .debug-v{word-break:break-word}
+    .debug-err{color:rgba(255,120,120,.95);white-space:pre-wrap}
+
+
+    .debug-feed{display:flex;flex-direction:column;gap:8px;max-height:420px;overflow:auto;padding:12px;background:var(--panel-2);border:1px solid var(--border);border-radius:12px}
+    .debug-feed::-webkit-scrollbar{width:8px}
+    .debug-feed::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:8px}
+    .debug-empty{color:var(--text-sub);text-align:center;padding:18px}
+    .debug-item{display:flex;flex-direction:column;gap:6px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:linear-gradient(180deg,rgba(255,255,255,.01),rgba(255,255,255,.00))}
+    .debug-item.ok{border-color:rgba(60,180,120,.45)}
+    .debug-item.err{border-color:rgba(255,90,90,.5)}
+    .debug-item.warn{border-color:rgba(255,200,80,.4)}
+    .debug-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+    .debug-title{display:flex;align-items:center;gap:8px;font-weight:600}
+    .debug-meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--text-sub);font-size:12px}
+    .debug-tags{display:flex;gap:6px;flex-wrap:wrap}
+    .tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:999px;border:1px solid var(--border);font-size:11px;color:var(--text-sub)}
+    .tag.ok{color:rgba(120,220,160,.9);border-color:rgba(60,180,120,.5)}
+    .tag.err{color:rgba(255,110,110,.95);border-color:rgba(255,90,90,.55)}
+    .tag.warn{color:rgba(255,210,120,.95);border-color:rgba(255,200,80,.5)}
+    .tag.info{color:rgba(160,190,255,.95);border-color:rgba(120,150,255,.5)}
+    .debug-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:6px 12px}
+    .debug-kv{display:flex;gap:8px;align-items:baseline}
+    .debug-k{color:var(--text-sub);min-width:90px}
+    .debug-v{word-break:break-word}
+    .debug-err{color:rgba(255,120,120,.95);white-space:pre-wrap}
+
   </style>
 </head>
 
@@ -4859,6 +4907,27 @@
             <path d="M4 20V10m5 10V4m5 16v-7m5 7v-11" />
           </svg></span>
         Uso & Métricas
+      </button>
+      <button data-tab="debug">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 20h9"/>
+            <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            <circle cx="12" cy="12" r="1"/>
+            <path d="M3 12h2"/>
+            <path d="M12 3v2"/>
+            <path d="M12 19v2"/>
+          </svg></span>
+        Debug Session
+      </button>
+      <button data-tab="store">
+        <span class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M6 2l1.5 4h9L18 2"/>
+            <path d="M3 6h18l-2 13H5L3 6z"/>
+            <path d="M9 10v4m6-4v4"/>
+          </svg></span>
+        Loja (Skills & MCP)
       </button>
       <div class="sidebar-divider"></div>
       <div class="sidebar-section">Sistema</div>
@@ -5107,11 +5176,11 @@
             <div>
               <span class="eyebrow">Contas e chaves</span>
               <h2>Gestão de contas</h2>
-              <p class="panel-sub">Várias contas do mesmo provedor, cada uma com sua chave, status e histórico de uso.
+              <p class="panel-sub">Cadastre várias chaves/contas por provedor. Quando uma conta esgota a cota ou tokens (rate limit), o proxy detecta e passa automaticamente para a próxima chave ativa.
               </p>
             </div>
             <div class="page-actions">
-              <button class="btn" id="btnAddAccount" type="button">Adicionar nova chave</button>
+              <button class="btn" id="btnAddAccount" type="button">+ Adicionar chave (nova conta)</button>
               <button class="btn ghost" id="btnAddProvider" type="button">Novo provedor</button>
             </div>
           </div>
@@ -5227,7 +5296,7 @@
               <div class="modal-head">
                 <div>
                   <h3 id="keyModalTitle">Adicionar nova chave</h3>
-                  <div class="card-sub">Use uma conta por chave para rotacionar automaticamente.</div>
+                  <div class="card-sub">Você pode cadastrar várias chaves/contas por provedor. Se uma esgotar a cota (tokens/rate limit), o proxy passa automaticamente para a próxima.</div>
                 </div>
                 <button class="icon-btn" id="btnKeyModalClose" type="button" aria-label="Fechar" title="Fechar">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
@@ -6792,6 +6861,63 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       </section>
 
       <!-- ============ AUTO ROUTER ============ -->
+      <!-- ============ DEBUG SESSION ============ -->
+      <section class="tab" id="tab-debug">
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Diagnóstico ao vivo</span>
+            <h2>Debug Session</h2>
+            <p class="page-sub">Grave tudo o que o proxy faz enquanto você usa. Veja roteamento, orquestrador, provedores/chaves, tentativas/fallback, erros e gere um relatório completo para análise.</p>
+          </div>
+          <div class="page-actions">
+            <span id="debugStatus" class="status-badge"><span class="dot"></span>PARADO</span>
+            <button class="btn" id="btnDebugStart" type="button"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="5 3 19 12 5 21 5 3"/></svg> Iniciar captura</button>
+            <button class="btn ghost danger" id="btnDebugStop" type="button" disabled><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1"/></svg> Parar e gerar relatório</button>
+            <button class="btn ghost" id="btnDebugClear" type="button">Limpar feed</button>
+          </div>
+        </div>
+        <div class="grid two">
+          <div class="card">
+            <div class="card-head"><div><h3>Controles</h3><div class="card-sub">Aperte play, use o proxy normalmente (porta 3005 ou 3006), pare quando terminar</div></div></div>
+            <div class="stack">
+              <div class="kv"><div class="k">Status</div><div class="v" id="debugStateText">Parado</div></div>
+              <div class="kv"><div class="k">Iniciado em</div><div class="v" id="debugStartedAt">-</div></div>
+              <div class="kv"><div class="k">Duração</div><div class="v" id="debugDuration">-</div></div>
+              <div class="kv"><div class="k">Requisições capturadas</div><div class="v" id="debugCount">0</div></div>
+              <div class="hint">Dica: mantenha esta aba aberta para ver o feed ao vivo. Ao parar, o relatório é gerado automaticamente abaixo.</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><div><h3>Ações rápidas</h3><div class="card-sub">Copie o relatório para colar aqui e eu analiso</div></div></div>
+            <div class="stack">
+              <button class="btn" id="btnDebugCopyJson" type="button">Copiar JSON completo</button>
+              <button class="btn ghost" id="btnDebugCopyReport" type="button">Copiar relatório pronto p/ análise</button>
+              <button class="btn ghost" id="btnDebugDownloadJson" type="button">Baixar debug-session.json</button>
+              <div class="hint">O JSON contém tudo: decisões, tentativas, provedores/chaves (mascaradas), erros, latência.</div>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><div><h3>Feed ao vivo</h3><div class="card-sub">Cada requisição aparece assim que for roteada/processada</div></div><div class="card-actions"><label class="toggle"><input type="checkbox" id="debugAutoScroll" checked> Auto-scroll</label></div></div>
+          <div class="debug-feed" id="debugFeed"><div class="debug-empty">Nenhum evento ainda. Inicie a captura e comece a usar o proxy.</div></div>
+        </div>
+        <div class="card" style="margin-top:16px">
+          <div class="card-head"><div><h3>Relatório gerado</h3><div class="card-sub">Preenchido ao parar a captura</div></div></div>
+          <div class="stack">
+            <div class="grid two">
+              <div class="kv"><div class="k">Sessão</div><div class="v" id="debugRptSession">-</div></div>
+              <div class="kv"><div class="k">Duração</div><div class="v" id="debugRptDur">-</div></div>
+              <div class="kv"><div class="k">Total de requisições</div><div class="v" id="debugRptTotal">-</div></div>
+              <div class="kv"><div class="k">Erros / Falhas</div><div class="v" id="debugRptErrors">-</div></div>
+              <div class="kv"><div class="k">Roteador/Orquestrador</div><div class="v" id="debugRptRouting">-</div></div>
+              <div class="kv"><div class="k">Modelos distintos</div><div class="v" id="debugRptModels">-</div></div>
+            </div>
+            <div><div class="section-title">Resumo pronto p/ análise</div><textarea class="input" id="debugRptText" rows="18" readonly spellcheck="false" placeholder="Ao parar a captura, este texto será gerado aqui..."></textarea></div>
+            <div><div class="section-title">JSON bruto</div><textarea class="input" id="debugRptJson" rows="12" readonly spellcheck="false" placeholder="JSON completo da sessão..."></textarea></div>
+          </div>
+        </div>
+      </section>
+
       <section class="tab" id="tab-auto-router">
         <div class="card">
           <h3>Auto Router (Roteamento Inteligente)</h3>
@@ -6956,7 +7082,76 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
       </section>
 
       <!-- ============ CONFIGURAÇÕES ============ -->
+      <!-- ============ LOJA (SKILLS & MCP) ============ -->
+      <section class="tab" id="tab-store">
+        <div class="page-head">
+          <div>
+            <span class="eyebrow">Extensões do proxy</span>
+            <h2>Loja — Skills & MCP</h2>
+            <p class="page-sub">Instale skills (instruções) para guiar o comportamento do proxy nas portas 3005 e 3006, e copie configurações de servidores MCP para seus clientes. Use "Configurar com IA" para ajustar skills ao seu uso.</p>
+          </div>
+          <div class="page-actions">
+            <button class="btn ghost" id="btnStoreReload" type="button">Recarregar catálogo</button>
+            <button class="btn" id="btnStoreAiConfig" type="button">Configurar com IA</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div><h3>Skills (injetadas no proxy)</h3><div class="card-sub">Quando ativas, são aplicadas como instruções nas requisições (3005 direta / 3006 gateway conforme escopo). "Usar" instala e ativa. Você também pode criar skills próprias (preparado para comunidade/BD).</div></div><div><button class="btn ghost" id="btnAddCustomSkill" type="button">+ Adicionar skill</button></div></div>
+          <div class="row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <input id="storeSkillSearch" type="text" placeholder="Buscar skills (programação, arte, debug...)" style="flex:1;min-width:220px;" />
+            <select id="storeSkillFilter"><option value="">Todas categorias</option><option value="programming">Programação</option><option value="design">Design/Arte</option><option value="writing">Escrita</option><option value="data">Dados</option><option value="security">Segurança</option><option value="devops">DevOps</option><option value="product">Produto/UX</option><option value="general">Geral/Proxy</option></select>
+          </div>
+          <div id="customSkillForm" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.02);">
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px;"><input id="csName" placeholder="Nome da skill" style="flex:1;min-width:180px;"/><select id="csCat"><option value="custom">custom</option><option value="programming">programming</option><option value="design">design</option><option value="writing">writing</option><option value="data">data</option><option value="security">security</option><option value="devops">devops</option><option value="product">product</option><option value="general">general</option></select></div>
+    <input id="csDesc" placeholder="Descrição" style="width:100%;margin-bottom:8px;"/>
+    <textarea id="csInstr" rows="6" placeholder="Instruções (serão injetadas no prompt quando ativa)" style="width:100%;font-family:var(--mono,monospace);font-size:12px;"></textarea>
+    <div class="row" style="gap:8px;margin-top:8px;"><button class="btn" id="btnSaveCustomSkill" type="button">Salvar skill</button><button class="btn ghost" id="btnCancelCustomSkill" type="button">Cancelar</button></div>
+  </div>
+  <div id="storeSkillsList" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div><h3>MCP (servidores / configurações)</h3><div class="card-sub">Catálogo de MCPs para usar no seu cliente/IDE. Copie a config JSON. "Usar" salva. Você pode adicionar MCPs próprios (preparado para comunidade/BD).</div></div><div><button class="btn ghost" id="btnAddCustomMcp" type="button">+ Adicionar MCP</button></div></div>
+          <div class="row" style="margin-bottom:10px;gap:8px;flex-wrap:wrap;">
+            <input id="storeMcpSearch" type="text" placeholder="Buscar MCPs (git, filesystem, busca, db...)" style="flex:1;min-width:220px;" />
+            <select id="storeMcpFilter"><option value="">Todas categorias</option><option value="filesystem">Arquivos</option><option value="dev">Dev</option><option value="web">Web</option><option value="data">Dados</option><option value="productivity">Produtividade</option><option value="ai">IA</option><option value="general">Geral</option></select>
+          </div>
+          <div id="customMcpForm" style="display:none;margin-bottom:10px;padding:10px;border:1px solid var(--border);border-radius:10px;background:rgba(255,255,255,.02);">
+    <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px;"><input id="cmName" placeholder="Nome do MCP" style="flex:1;min-width:180px;"/><select id="cmCat"><option value="custom">custom</option><option value="filesystem">filesystem</option><option value="dev">dev</option><option value="web">web</option><option value="data">data</option><option value="productivity">productivity</option><option value="ai">ai</option><option value="cloud">cloud</option><option value="communication">communication</option><option value="general">general</option></select></div>
+    <input id="cmDesc" placeholder="Descrição" style="width:100%;margin-bottom:8px;"/>
+    <textarea id="cmConfig" rows="8" placeholder='Config JSON, ex: {"mcpServers":{"meu":{"command":"npx","args":["-y","pkg"]}}}' style="width:100%;font-family:var(--mono,monospace);font-size:12px;"></textarea>
+    <div class="row" style="gap:8px;margin-top:8px;"><button class="btn" id="btnSaveCustomMcp" type="button">Salvar MCP</button><button class="btn ghost" id="btnCancelCustomMcp" type="button">Cancelar</button></div>
+  </div>
+  <div id="storeMcpsList" class="stack"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><div><h3>Importar em massa (JSON)</h3><div class="card-sub">Cole um JSON para importar skills/MCPs (formato do proxy: <code>{"skills":[],"mcps":[]}</code> ou <code>{"mcpServers":{...}}</code> / listas estilo awesome-mcp). Itens importados entram como <b>custom/community</b> (prontos para migrar a BD/comunidade). Revise configs com placeholders antes de usar.</div></div></div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:8px;">
+            <select id="storeImportSource" title="Origem"><option value="custom">source: custom</option><option value="community">source: community</option></select>
+            <button class="btn" id="btnStoreImport" type="button">Importar JSON</button>
+            <span id="storeImportStatus" class="hint"></span>
+          </div>
+          <textarea id="storeImportJson" rows="8" placeholder='Ex.: {"mcpServers":{"filesystem":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","<PATH>"]}}}  ou  {"skills":[{"name":"Minha skill","instructions":"..."}],"mcps":[...]}' style="width:100%;font-family:var(--mono,monospace);font-size:12px;"></textarea>
+          <div class="hint" style="margin-top:6px;">Dica: você pode colar configs de MCP no formato padrão <code>mcpServers</code> (compatível com vários clientes). Para skills/MCPs do GitHub, copie a descrição+instruções/config e cole aqui; a loja guarda com metadados (fonte/autor/repo) quando informados.</div>
+        </div>
+
+        <div class="card" id="storeAiPanel" style="display:none;">
+          <div class="card-head"><div><h3>Configuração com IA</h3><div class="card-sub">Prompt gerado com base no catálogo e (opcionalmente) no uso. Copie e cole no chat do proxy ou em outro modelo para receber recomendações, depois aplique manualmente.</div></div></div>
+          <textarea id="storeAiPrompt" rows="12" style="width:100%;font-family:var(--mono, monospace);font-size:12px;"></textarea>
+          <div class="row" style="margin-top:8px;gap:8px;"><button class="btn" id="btnStoreCopyAiPrompt" type="button">Copiar prompt</button><span class="hint">Dica: peça à IA para devolver JSON com "recommendations" e depois aplique ativando/ajustando skills na loja.</span></div>
+        </div>
+      </section>
+
       <section class="tab" id="tab-settings">
+        <div class="card">
+          <div class="card-head"><div><h3>Atualizações</h3><div class="card-sub">Verifique e instale novas versões direto pela interface (GitHub Releases / <code>UPDATE_REPO</code>). Em builds portáteis (exe/Linux), o proxy baixa e aplica a atualização e reinicia.</div></div></div>
+          <div class="row" style="gap:8px;flex-wrap:wrap;align-items:center;">
+            <button class="btn" id="btnCheckUpdate" type="button">Verificar atualizações</button>
+            <span id="updateCheckStatus" class="hint"></span>
+          </div>
+        </div>
         <div class="card">
           <div
             style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; margin-bottom:10px;">
@@ -8421,7 +8616,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             );
             return;
           }
-          keys.forEach((k) => {
+          keys.forEach((k, ki) => {
             const st = keyState(k);
             rows.push(
               '<div class="account-row' + (k.status === "disabled" ? " is-paused" : "") + '">' +
@@ -8434,7 +8629,7 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
                   (k.limitTokens ? fmtCompactNum(k.limitTokens) + ' tokens' : '') +
                   (k.limitTokens && k.limitRequests ? ' · ' : '') +
                   (k.limitRequests ? fmtCompactNum(k.limitRequests) + ' reqs' : '') +
-                  (k.limitPeriod === 'month' ? '/mês' : '/dia') + '</span>'
+                  (k.limitPeriod === "month" ? "/mês" : "/dia") + "</span>"
                 : '') +
               '</div>' +
               '<div class="account-status-cell">' +
@@ -8443,6 +8638,11 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
               '</div>' +
               '<div class="account-last">' + fmtLastUsed(k.lastUsedAt) + '</div>' +
               '<div class="account-actions">' +
+              (ki === 0
+                ? '<button class="icon-btn sm" type="button" data-account-act="add" data-provider-id="' + p.id + '" title="Adicionar outra chave para este provedor (rotação automática em caso de cota)" aria-label="Adicionar outra chave">' +
+                  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>' +
+                  '</button>'
+                : '') +
               '<button class="icon-btn sm" type="button" data-account-act="edit" data-provider-id="' + p.id + '" data-key-id="' + k.id + '" title="Editar chave" aria-label="Editar chave">' +
               '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z"/></svg>' +
               '</button>' +
@@ -8497,6 +8697,9 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             '<span class="track"></span>' +
             '</label>' +
             (p.id !== activeProviderId ? '' : '') +
+            ((p.type !== "deepseek" && p.type !== "qwen" && p.type !== "gemini-web")
+              ? '<button class="btn ghost sm" data-act="addkey" data-id="' + p.id + '" title="Adicionar outra chave de API para este provedor (rotação automática em caso de cota)">+ Chave</button>'
+              : '') +
             '<button class="btn ghost sm" data-act="edit" data-id="' + p.id + '">Editar</button>' +
             '<button class="btn ghost sm danger" data-act="remove" data-id="' + p.id + '">Excluir</button>' +
             '</div>';
@@ -8753,6 +8956,8 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
             activeProviderId = data.active;
             renderProviderList();
             loadStatus();
+          } else if (btn.dataset.act === "addkey") {
+            openKeyModal(id);
           } else if (btn.dataset.act === "edit") {
             openEditor(id);
           } else if (btn.dataset.act === "remove") {
@@ -8846,6 +9051,30 @@ DEBUG DE BUG INTERMITENTE. NÃO tente adivinhar a causa. Siga o processo:
         if (type === "openai-compatible" && !$("#pvBaseUrl").value.trim()) {
           fb.textContent = "Informe a Base URL.";
           return;
+        }
+        // Auto-consolida a chave digitada no formulário se o usuário clicou em
+        // "Salvar provedor" sem antes clicar em "+ Adicionar". Isso evita perder
+        // chaves (inclusive a 2ª, 3ª...) ao salvar — múltiplas chaves por provedor
+        // são suportadas e rotacionadas automaticamente em caso de cota esgotada.
+        if (!isBrowser) {
+          const draftKey = $("#pvKeyValue").value.trim();
+          if (draftKey) {
+            const draftLabel = $("#pvKeyLabel").value.trim() || ("Conta " + (editingKeys.length + (editingKeyId ? 0 : 1)));
+            const draftLimits = readKeyLimits();
+            if (editingKeyId) {
+              const dk = editingKeys.find((x) => x.id === editingKeyId);
+              if (dk) {
+                dk.label = draftLabel;
+                dk.key = draftKey;
+                delete dk.limitTokens; delete dk.limitRequests; delete dk.limitPeriod;
+                Object.assign(dk, draftLimits);
+              }
+            } else {
+              editingKeys.push({ id: _newKeyClientId(), label: draftLabel, key: draftKey, status: 'active', resetAt: null, lastUsedAt: null, useCount: 0, lastResult: null, ...draftLimits });
+            }
+            resetKeyForm();
+            renderEditingKeys();
+          }
         }
         if ((type === "gemini" || type === "anthropic") && !editingKeys.length) {
           fb.textContent = "Informe ao menos uma API Key para " + defaultName + " (obrigatório).";
@@ -12265,6 +12494,28 @@ for await (const chunk of stream) {
     })();
   </script>
   <div id="appVersion">v__APP_VERSION__ · __APP_TAG__</div>
+  <script src="/debug_session.js"></script>
+  <script src="/store.js"></script>
+<script id="btnCheckUpdateScript">(function(){
+  var btn=document.getElementById('btnCheckUpdate'), st=document.getElementById('updateCheckStatus');
+  var banner=document.getElementById('updateBanner');
+  function set(t){ if(st) st.textContent=t||''; }
+  async function check(showNo){
+    if(btn){ btn.disabled=true; btn.textContent='Verificando...'; }
+    set('');
+    try{
+      var r=await fetch('/api/update/check'); var s=await r.json();
+      if(!s||s.enabled===false){ set('Atualização desativada (configure UPDATE_REPO).'); }
+      else if(s.error){ set('Erro: '+s.error); }
+      else if(s.updateAvailable){
+        set('Nova versão '+(s.latest||'')+' disponível. Use o banner para baixar e atualizar.');
+        if(banner){ document.getElementById('ubVersion').textContent=s.latest||''; document.getElementById('ubCurrent').textContent=s.currentVersion||''; var link=document.getElementById('ubLink'); if(s.releaseUrl&&link) link.href=s.releaseUrl; banner.hidden=false; }
+      } else { if(showNo) set('Você já está na versão mais recente ('+(s.currentVersion||'')+').'); }
+    }catch(e){ set('Falha ao verificar: '+(e&&e.message||e)); }
+    if(btn){ btn.disabled=false; btn.textContent='Verificar atualizações'; }
+  }
+  if(btn) btn.addEventListener('click', function(){ check(true); });
+})();</script>
 </body>
 
 </html>

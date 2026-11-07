@@ -78,6 +78,8 @@ import {
   regenerateAppKey,
   getAppById,
 } from '../services/gateway.ts';
+import { debugSession } from '../services/debug-session.ts';
+import * as skillsStore from '../services/skills-store.ts';
 import type { ProviderRegistry } from '../services/config.ts';
 import { getModelCatalog, resolveModelEntry } from '../services/modelCatalog.ts';
 import { getTokenEconomy, updateTokenEconomy } from '../services/token-economy.ts';
@@ -1326,4 +1328,109 @@ dashboard.get('/api/auto-router/metadata', (c) => {
       };
     })
   );
+});
+
+// ── Debug Session ─────────────────────────────────────────────────────────
+
+dashboard.get('/api/debug/status', (c) => {
+  const snap = debugSession.getSnapshot(50);
+  return c.json(snap);
+});
+
+dashboard.post('/api/debug/start', async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const session = debugSession.start({ ...body, startedBy: 'ui' });
+  return c.json({ ok: true, session: { id: session.id, startedAt: session.startedAt, running: true } });
+});
+
+dashboard.post('/api/debug/stop', (c) => {
+  const stopped = debugSession.stop();
+  if (!stopped) {
+    return c.json({ ok: false, error: 'Nenhuma sessão ativa para parar' }, 400);
+  }
+  const rep = debugSession.generateReport();
+  return c.json({ ok: true, session: { id: stopped.id, startedAt: stopped.startedAt, stoppedAt: stopped.stoppedAt }, report: rep?.report || null, text: rep?.text || null });
+});
+
+dashboard.get('/api/debug/report', (c) => {
+  const rep = debugSession.generateReport();
+  if (!rep) return c.json({ ok: false, error: 'Nenhuma sessão para gerar relatório' }, 400);
+  return c.json({ ok: true, report: rep.report, text: rep.text });
+});
+
+dashboard.post('/api/debug/clear', (c) => {
+  debugSession.clear();
+  return c.json({ ok: true });
+});
+
+
+// ===================== SKILLS & MCP STORE (Loja) =====================
+dashboard.get('/api/store/catalog', (c) => c.json({ ok: true, ...skillsStore.listCatalog() }));
+dashboard.get('/api/store/storage', (c) => c.json({ ok: true, ...skillsStore.getStorageInfo() }));
+dashboard.post('/api/store/import', async (c) => {
+  try {
+    const body = await c.req.json();
+    const r = skillsStore.importCatalog(body);
+    return c.json(r);
+  } catch (e: any) { return c.json({ ok:false, error: e?.message || String(e) }, 400); }
+});
+dashboard.post('/api/store/skills/install', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  return c.json(skillsStore.installSkill(String(body.id||''), body));
+});
+dashboard.post('/api/store/skills/uninstall', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  return c.json(skillsStore.uninstallSkill(String(body.id||'')));
+});
+dashboard.post('/api/store/skills/update', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  const { id, ...patch } = body || {};
+  return c.json(skillsStore.updateSkill(String(id||''), patch));
+});
+dashboard.post('/api/store/mcps/install', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  return c.json(skillsStore.installMcp(String(body.id||''), body));
+});
+dashboard.post('/api/store/mcps/uninstall', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  return c.json(skillsStore.uninstallMcp(String(body.id||'')));
+});
+dashboard.post('/api/store/mcps/update', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  const { id, ...patch } = body || {};
+  return c.json(skillsStore.updateMcp(String(id||''), patch));
+});
+dashboard.post('/api/store/ai-configure', async (c) => {
+  const body = await c.req.json().catch(()=>({}));
+  // Retorna prompt pronto para o cliente usar com um modelo; opcionalmente o usuário pode colar no chat.
+  // (Execução automática via provider requer seleção de provider/modelo ativo; deixamos como assistente guiado.)
+  const prompt = skillsStore.buildAiConfigPrompt(body.usageSummary);
+  return c.json({ ok: true, prompt });
+});
+
+dashboard.post('/api/store/skills/create', async (c) => c.json(skillsStore.createCustomSkill(await c.req.json().catch(()=>({})))));
+dashboard.post('/api/store/skills/update-custom', async (c) => { const b=await c.req.json().catch(()=>({})); return c.json(skillsStore.updateCustomSkill(String(b.id||''), b)); });
+dashboard.post('/api/store/skills/delete-custom', async (c) => { const b=await c.req.json().catch(()=>({})); return c.json(skillsStore.deleteCustomSkill(String(b.id||''))); });
+dashboard.post('/api/store/mcps/create', async (c) => c.json(skillsStore.createCustomMcp(await c.req.json().catch(()=>({})))));
+dashboard.post('/api/store/mcps/update-custom', async (c) => { const b=await c.req.json().catch(()=>({})); return c.json(skillsStore.updateCustomMcp(String(b.id||''), b)); });
+dashboard.post('/api/store/mcps/delete-custom', async (c) => { const b=await c.req.json().catch(()=>({})); return c.json(skillsStore.deleteCustomMcp(String(b.id||''))); });
+
+
+dashboard.get('/debug_session.js', (c) => {
+  try {
+    const content = readFileSync(fileURLToPath(new URL('./debug_session.js', import.meta.url)), 'utf8');
+    return c.text(content, 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+  } catch (e: any) {
+    return c.text(`console.error(${JSON.stringify(e.message)});`, 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+  }
+});
+
+
+dashboard.get('/store.js', (c) => {
+  try {
+    const content = readFileSync(fileURLToPath(new URL('./store.js', import.meta.url)), 'utf8');
+    return c.text(content, 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+  } catch (e: any) {
+    return c.text('console.error(' + JSON.stringify(e.message) + ');', 200, { 'Content-Type': 'application/javascript; charset=utf-8' });
+  }
 });
